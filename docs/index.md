@@ -14,8 +14,15 @@ tampered measurement each produce a distinct, explained denial.
 |---|---|
 | Understand what the demonstrator does | [Features and journeys](features.md) |
 | Stand it up or tear it down | [Deployment](deployment.md) |
+| Know how it is built and shipped | [Packaging and containers](packaging.md) |
+| Follow the orchestrated journeys | [Orchestrated flows](flows.md) |
+| Wire up identity | [Keycloak integration](keycloak.md) |
 | Call its APIs | [API documentation](api-docs.md) |
+| See how acceptance is proven | [BDD acceptance](bdd.md) |
 | Understand the pipeline | [CI/CD](ci-cd.md) |
+| Diagnose a problem | [Troubleshooting](troubleshooting.md) |
+| Check what it depends on | [OSS dependencies](dependencies.md) |
+| Find where we depart from the specification | [Specification changes](specifications.md) |
 | Understand why it is built this way | [Architecture decisions](adr/index.md) |
 
 ## Project context

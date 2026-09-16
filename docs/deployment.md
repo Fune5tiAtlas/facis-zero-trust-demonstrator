@@ -1,7 +1,5 @@
 # Deployment and teardown
 
-> **Status:** structure established. Commands are added as the umbrella chart lands.
-
 ## Preconditions
 
 - Kubernetes **1.29 or later** on each target cluster.
@@ -17,9 +15,10 @@ management and data planes into distinct namespaces and orders installation so t
 identity exists before any workload starts.
 
 ```bash
-# placeholder — the umbrella chart lands with the platform work
 helm install ztd deployment/helm/ztd -n ztd-mgmt --create-namespace -f <values file>
 ```
+
+Chart values are documented with each chart under `deployment/helm/`.
 
 ## Teardown
 
@@ -32,6 +31,6 @@ scenario rather than by inspection.
 
 ## Reproducibility
 
-Every environment is reproducible from this repository plus its values files. Nothing is configured
-by hand on a cluster — if a step cannot be expressed in the chart or a script, that is a defect
-rather than a documentation gap.
+Every environment is reproducible from this repository plus its values files. No step is performed
+by hand against a cluster; anything that cannot be expressed in a chart or a script belongs in
+`scripts/`.

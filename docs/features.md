@@ -1,8 +1,5 @@
 # Features and journeys
 
-> **Status:** structure established. Each section below is filled as the corresponding capability
-> lands; the headings are the agreed shape, not placeholders to be renamed.
-
 ## The successful journey
 
 A participant backend in zone A calls a protected resource in zone B. Every hop is checked:
@@ -12,8 +9,7 @@ verified credential presentation rather than a shared secret.
 
 ## The refusal journeys
 
-The demonstrator treats denials as first-class demonstrations, because a zero-trust system that only
-shows the happy path has not shown anything:
+Refusals are demonstrated as deliberately as successes:
 
 - a **revoked credential** — verification flips negative, the grant refuses, the token store fails
   closed;

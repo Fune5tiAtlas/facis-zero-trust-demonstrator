@@ -34,6 +34,8 @@ demonstration services are purpose-built. What is *not* mocked is the security m
 | Path | Contents |
 |---|---|
 | `services/` | Go services — connector, guard adapter, token store, gateway, demonstration services |
+| `flows/` | ORCE orchestration flows |
+| `ui/` | ORCE Builder nodes and the demonstrator UI |
 | `deployment/helm/` | Helm charts, including the umbrella chart that installs a full zone |
 | `deployment/docker/` | Container build contexts |
 | `docs/` | Project documentation, published to GitHub Pages via MkDocs |
@@ -50,8 +52,11 @@ The demonstrator targets Kubernetes 1.29 or later. Full instructions live in the
 
 - [Deployment and teardown](docs/deployment.md)
 - [Features and journeys](docs/features.md)
+- [Packaging and containers](docs/packaging.md)
+- [Keycloak integration](docs/keycloak.md)
 - [CI/CD pipeline](docs/ci-cd.md)
 - [API documentation](docs/api-docs.md)
+- [Troubleshooting](docs/troubleshooting.md)
 - [Architecture decisions](docs/adr/)
 
 Environment variables and chart values are documented alongside each chart under

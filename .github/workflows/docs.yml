@@ -1,8 +1,6 @@
 name: Publish documentation
 
-# Builds the MkDocs site and publishes it to the gh-pages branch.
-# Requires GitHub Pages to be enabled on the repository with its source set to
-# the gh-pages branch — a one-time repository setting.
+# Requires GitHub Pages enabled with its source set to the gh-pages branch.
 on:
   workflow_dispatch:
   push:

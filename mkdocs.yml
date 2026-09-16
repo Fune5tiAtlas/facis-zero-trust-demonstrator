@@ -11,8 +11,15 @@ nav:
   - Home: index.md
   - Features and journeys: features.md
   - Deployment: deployment.md
+  - Packaging and containers: packaging.md
+  - Orchestrated flows: flows.md
+  - Keycloak integration: keycloak.md
   - API documentation: api-docs.md
+  - BDD acceptance: bdd.md
   - CI/CD: ci-cd.md
+  - Troubleshooting: troubleshooting.md
+  - OSS dependencies: dependencies.md
+  - Specification changes: specifications.md
   - Architecture decisions:
       - Overview: adr/index.md
       - 0001 Service mesh mode: adr/0001-service-mesh-mode-istio-ambient-with-cilium.md
