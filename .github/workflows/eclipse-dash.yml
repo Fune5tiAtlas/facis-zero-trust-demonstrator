@@ -1,0 +1,20 @@
+name: Call Eclipse Dash License Scanner (Go)
+
+# Triggers match the Eclipse XFSC convention. This becomes a blocking pull-request
+# gate once the Go module exists — the shared scanner reads go.sum and has nothing
+# to scan before then.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 1 * *'
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  call-remote-dash-workflow:
+    secrets: inherit
+    uses: eclipse-xfsc/dev-ops/.github/workflows/eclipse-dash-licence-go.yml@main

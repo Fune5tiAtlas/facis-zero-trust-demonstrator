@@ -1,0 +1,26 @@
+# Build output
+/site/
+/dist/
+/bin/
+*.test
+*.out
+
+# Go
+vendor/
+
+# Helm
+deployment/helm/**/charts/
+deployment/helm/**/*.tgz
+
+# Secrets and local config — never commit these
+.env
+.env.*
+*.pem
+*.p12
+*.key
+kubeconfig*
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store

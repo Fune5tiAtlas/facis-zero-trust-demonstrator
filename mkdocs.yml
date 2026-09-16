@@ -1,0 +1,28 @@
+site_name: FACIS Zero Trust Demonstrator
+site_description: Zero Trust demonstrator for the FACIS project, released under Eclipse XFSC
+repo_url: https://github.com/eclipse-xfsc/facis-zero-trust-demonstrator
+edit_uri: edit/main/docs/
+copyright: Apache-2.0
+
+theme:
+  name: readthedocs
+
+nav:
+  - Home: index.md
+  - Features and journeys: features.md
+  - Deployment: deployment.md
+  - API documentation: api-docs.md
+  - CI/CD: ci-cd.md
+  - Architecture decisions:
+      - Overview: adr/index.md
+      - 0001 Service mesh mode: adr/0001-service-mesh-mode-istio-ambient-with-cilium.md
+      - 0002 Gatekeeper external data provider: adr/0002-gatekeeper-external-data-provider-for-cosign-verification.md
+      - 0003 OAuth2 surface in the Go connector: adr/0003-oauth2-authorisation-surface-in-the-go-connector.md
+      - 0004 OpenBao as X.509 key-value store: adr/0004-openbao-as-x509-key-value-store.md
+      - 0005 Three-cluster target environment: adr/0005-three-cluster-reading-of-the-target-environment.md
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
