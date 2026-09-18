@@ -10,7 +10,12 @@ theme:
 nav:
   - Home: index.md
   - Features and journeys: features.md
+  - Using the demonstrator: usage.md
   - Deployment: deployment.md
+  - Environments:
+      - Overview: environments/index.md
+      - T-Systems OSC: environments/osc.md
+      - IONOS Cloud: environments/ionos.md
   - Packaging and containers: packaging.md
   - Orchestrated flows: flows.md
   - Keycloak integration: keycloak.md

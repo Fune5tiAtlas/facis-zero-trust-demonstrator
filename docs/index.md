@@ -13,7 +13,9 @@ tampered measurement each produce a distinct, explained denial.
 | If you want to | Read |
 |---|---|
 | Understand what the demonstrator does | [Features and journeys](features.md) |
+| Drive it and read what it tells you | [Using the demonstrator](usage.md) |
 | Stand it up or tear it down | [Deployment](deployment.md) |
+| Set up a specific cluster step by step | [Environments](environments/index.md) |
 | Know how it is built and shipped | [Packaging and containers](packaging.md) |
 | Follow the orchestrated journeys | [Orchestrated flows](flows.md) |
 | Wire up identity | [Keycloak integration](keycloak.md) |
@@ -24,6 +26,20 @@ tampered measurement each produce a distinct, explained denial.
 | Check what it depends on | [OSS dependencies](dependencies.md) |
 | Find where we depart from the specification | [Specification changes](specifications.md) |
 | Understand why it is built this way | [Architecture decisions](adr/index.md) |
+
+## Conventions this documentation follows
+
+Documentation follows the [Eclipse Project Handbook](https://www.eclipse.org/projects/handbook/):
+everything a contributor or user needs lives in this repository, in Markdown, under `docs/` or in
+the README, and is published from the same commit as the code it describes.
+
+The FAP Partner Onboarding project is the reference for structure —
+[its specification](https://github.com/eclipse-xfsc/facis/tree/main/FAP/Partner%20Onboarding%20(Reference%20FAP)/specification)
+and [its implementation](https://github.com/eclipse-xfsc/facis-fap-partner-onboarding) — so a reader
+who knows one FACIS repository can navigate this one without relearning where things are.
+
+The site is built with [MkDocs](https://www.mkdocs.org/) and published to GitHub Pages on every
+change to `main`.
 
 ## Project context
 

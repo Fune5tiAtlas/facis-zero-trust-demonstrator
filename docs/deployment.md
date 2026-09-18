@@ -1,5 +1,8 @@
 # Deployment and teardown
 
+How a zone is installed and removed, whichever cluster it is on. For the step-by-step setup of a
+specific cluster, with the check that proves each stage, see [Environments](environments/index.md).
+
 ## Preconditions
 
 - Kubernetes **1.29 or later** on each target cluster.
