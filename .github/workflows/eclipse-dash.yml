@@ -33,8 +33,24 @@ jobs:
           fi
 
   call-remote-dash-workflow:
-    name: Licence gate # the job name is what branch protection requires
     needs: detect-go-module
     if: needs.detect-go-module.outputs.scannable == 'true'
     secrets: inherit
     uses: eclipse-xfsc/dev-ops/.github/workflows/eclipse-dash-licence-go.yml@main
+
+  # A call to a shared workflow is reported under a check name that changes once it
+  # stops being skipped, which a required check cannot follow. This job is the stable
+  # name branch protection requires.
+  licence-gate:
+    name: Licence gate
+    needs: [detect-go-module, call-remote-dash-workflow]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report the scan result
+        run: |
+          result='${{ needs.call-remote-dash-workflow.result }}'
+          echo "Eclipse Dash scan: $result"
+          if [ "$result" = 'failure' ]; then
+            exit 1
+          fi

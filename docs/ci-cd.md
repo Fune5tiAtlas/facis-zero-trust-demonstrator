@@ -14,6 +14,37 @@ pull request here.
 | `.github/workflows/sbom.yml` | schedule, release, manual | Calls the shared SBOM generator |
 | `.github/workflows/docs.yml` | push to `main` affecting `docs/`, manual | Builds the MkDocs site and publishes it to the `gh-pages` branch |
 | `.github/workflows/workflow-hygiene.yml` | every pull request, manual | Fails the pull request when an action is not pinned to a commit or a token scope is too wide |
+| `.github/workflows/ci.yml` | every pull request, push to `main`, manual | Go lint and tests, image build with the Linux assertion and a Trivy scan, chart lint and dry-run render |
+
+## The service pipeline
+
+`ci.yml` is one pipeline shape that every service in the monorepo reuses, so quality is consistent
+and nobody hand-rolls their own:
+
+| Job | What it does | Blocking |
+|---|---|---|
+| `Go tests` | Calls the shared `go-test.yml`, which runs the tests of every Go module it finds | yes |
+| `Go lint` | `golangci-lint run ./...` | yes |
+| `Image build and scan` | Builds each context under `deployment/docker/` for `linux/amd64`, asserts the built image's OS, then scans it with Trivy for HIGH and CRITICAL vulnerabilities | yes |
+| `Chart lint and render` | `helm lint` and a `helm template` dry-run render of every chart under `deployment/helm/` | yes |
+
+ZT-13 requires Linux images. The pipeline reads the OS back off the built image with
+`docker image inspect` and fails if it is anything but `linux/amd64`, rather than trusting the
+Dockerfile to be right. The platform it read is printed in the job output either way.
+
+Each job passes quietly while the thing it checks does not exist yet — no Go module, no build
+context, no chart — so the pipeline is green on an empty skeleton and starts enforcing the moment
+the first service lands.
+
+### Go module layout
+
+The demonstrator is **one Go module at the repository root**, with each service a package under
+`services/` and shared code in `internal/`. This is not a style preference: the Eclipse Dash
+scanner and the shared SBOM generator both read the root `go.sum`, and a module per service would
+leave the licence gate and the release SBOM with nothing to read.
+
+`go.mod` declares **Go 1.24**, matching the `golang:1.24.x` containers the shared org workflows run
+in. A newer toolchain directive would break them.
 
 ## Repository protection and least privilege
 
@@ -30,7 +61,7 @@ organisation setting and cannot be declared from this repository's tree. The req
 | Direct pushes to `main` | Blocked; changes arrive by pull request |
 | Approving reviews | At least one, from someone other than the author |
 | Stale approvals | Dismissed when new commits are pushed |
-| Required status checks | `Workflow hygiene` and `Licence gate / Scan Go module licenses with Eclipse Dash` |
+| Required status checks | `Workflow hygiene`, `Licence gate`, `Go lint`, `Image build and scan`, `Chart lint and render` |
 | Force pushes and branch deletion | Blocked |
 | Enforcement | Applies to administrators |
 
