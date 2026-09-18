@@ -5,12 +5,42 @@ but does not own.
 
 ## Licence compliance
 
-Every dependency clears Eclipse Dash before it ships. A dependency under a licence the project
-cannot accept is replaced, not waived; anything Dash cannot clear automatically goes to the Eclipse
-IP team for review. See [CI/CD](ci-cd.md).
+Every dependency clears Eclipse Dash before it ships. The scan runs on every pull request and a
+dependency Dash marks `restricted` blocks the merge; anything Dash cannot clear automatically goes
+to the Eclipse IP team for review. See [CI/CD](ci-cd.md).
+
+A dependency under a licence the project cannot accept is replaced, not waived. The exception below
+is the only other route, and it is not a way to waive the rule.
 
 Generated inventories — the CycloneDX SBOM and the Dash summary — are published with each release
 and are the authoritative list. This page records the components chosen and why.
+
+## Licence exceptions
+
+When a component under a non-Apache-2.0-compatible licence is **prescribed by the requirements** and
+therefore cannot be replaced, the Technical Development Requirements oblige us to inform the client
+in writing *before* it is included. The merge stays blocked until the client's written decision
+arrives.
+
+A licence exception notice states:
+
+- the component, its version and its licence;
+- the requirement that prescribes it, and why no compliant alternative satisfies that requirement;
+- how the component is consumed — a deployed service called through its API, or code linked into a
+  deliverable — since that is what decides whether its obligations reach project code;
+- the effect on the Apache-2.0 outbound licence of the demonstrator;
+- the decision requested, and what happens if it is declined.
+
+### Worked example — OpenBao
+
+**Licence Exception Notice v1.0** (8 September 2026, submitted with Project Plan v1.7) covers
+OpenBao, MPL-2.0, prescribed by ZT-11, and Grafana, AGPL-3.0, for optional internal use. OpenBao is
+deployed as a cluster-internal service and consumed unmodified through its API, so its file-level
+copyleft does not reach newly developed components, which stay Apache-2.0. The FACIS decision is
+open and tracked as follow-up requirement F-07.
+
+The reasoning, the consequences if the exception is declined, and the references are recorded in
+[ADR-0004](adr/0004-openbao-as-x509-key-value-store.md).
 
 ## External XFSC components
 

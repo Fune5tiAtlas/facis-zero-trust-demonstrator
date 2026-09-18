@@ -1,8 +1,8 @@
 name: Call Eclipse Dash License Scanner (Go)
 
-# The shared Go scanner reads go.sum; it runs on release and on a monthly schedule.
 on:
   workflow_dispatch:
+  pull_request:
   schedule:
     - cron: '0 0 1 * *'
   release:
@@ -10,9 +10,31 @@ on:
 
 permissions:
   contents: read
-  actions: write
 
 jobs:
+  # The shared scanner reads the root go.sum and fails on a file that is not there,
+  # so the call waits until the Go module exists.
+  detect-go-module:
+    runs-on: ubuntu-latest
+    outputs:
+      scannable: ${{ steps.go-sum.outputs.exists }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Look for a Go module to scan
+        id: go-sum
+        run: |
+          if [ -f go.sum ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo 'No go.sum in the repository - nothing for the licence gate to scan.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   call-remote-dash-workflow:
+    name: Licence gate # the job name is what branch protection requires
+    needs: detect-go-module
+    if: needs.detect-go-module.outputs.scannable == 'true'
     secrets: inherit
     uses: eclipse-xfsc/dev-ops/.github/workflows/eclipse-dash-licence-go.yml@main

@@ -7,8 +7,13 @@ on:
   release:
     types: [published]
 
+permissions:
+  contents: read
+
 jobs:
   call-remote-workflow:
+    permissions:
+      contents: write # the shared workflow uploads the SBOM onto the release
     uses: eclipse-xfsc/dev-ops/.github/workflows/sbom-golang.yml@main
     secrets:
       GH_TOKEN: ${{ github.token }}
