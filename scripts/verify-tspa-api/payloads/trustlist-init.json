@@ -1,0 +1,21 @@
+{
+  "TrustServiceStatusList": {
+    "FrameworkInformation": {
+      "TSLVersionIdentifier": "1",
+      "TSLSequenceNumber": "1",
+      "TSLType": "http://TRAIN/TrstSvc/TrustedList/TSLType/facis-ztd-local",
+      "FrameworkOperatorName": { "Name": "FACIS ZTD (local round-trip)" },
+      "FrameworkOperatorAddress": {
+        "PostalAddresses": { "PostalAddress": [ { "StreetAddress": "n/a", "Locality": "Mindelo", "PostalCode": "2110", "CountryName": "CV" } ] },
+        "ElectronicAddress": { "URI": "mailto:platform@facis-ztd.local" }
+      },
+      "FrameworkName": { "Name": "facis-ztd.local" },
+      "FrameworkInformationURI": { "URI": "https://facis-ztd.local/train" },
+      "FrameworkAuditURI": { "URI": "https://facis-ztd.local/train/audit" },
+      "FrameworkTypeCommunityRules": { "URI": "https://facis-ztd.local/train/rules" },
+      "FrameworkScope": "EU",
+      "PolicyOrLegalNotice": { "TSLLegalNotice": "Local verification only (FZTD-162)." },
+      "ListIssueDateTime": "2026-09-16T00:00:00Z"
+    }
+  }
+}
