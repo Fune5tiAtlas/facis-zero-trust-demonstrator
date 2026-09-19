@@ -32,25 +32,66 @@ jobs:
             echo 'No go.sum in the repository - nothing for the licence gate to scan.' >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  # The shared scanner runs with -review, which needs an organisation secret a
+  # pull request from a fork cannot see. Fork pull requests therefore skip the
+  # scan rather than fail on a missing token; the scheduled and release runs
+  # happen in the base repository, where the secret exists, and those enforce.
   call-remote-dash-workflow:
     needs: detect-go-module
-    if: needs.detect-go-module.outputs.scannable == 'true'
+    if: >-
+      needs.detect-go-module.outputs.scannable == 'true'
+      && (github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
     secrets: inherit
     uses: eclipse-xfsc/dev-ops/.github/workflows/eclipse-dash-licence-go.yml@main
 
+  # A fork pull request cannot read the organisation secret the shared scanner's
+  # -review mode needs. Rather than report success without having checked, it runs
+  # the same Eclipse Dash tool in check-only mode: it cannot file IP review
+  # requests, but it still fails on a restricted licence. The jar is fetched the
+  # way the shared org workflow fetches it.
+  fork-licence-scan:
+    needs: detect-go-module
+    if: >-
+      needs.detect-go-module.outputs.scannable == 'true'
+      && github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Download the Eclipse Dash licence tool
+        run: |
+          curl -sSL -o dash-licenses.jar \
+            "https://repo.eclipse.org/service/local/artifact/maven/redirect?r=dash-licenses&g=org.eclipse.dash&a=org.eclipse.dash.licenses&v=LATEST"
+
+      - name: Scan the Go dependencies
+        run: java -jar dash-licenses.jar go.sum
+
   # A call to a shared workflow is reported under a check name that changes once it
   # stops being skipped, which a required check cannot follow. This job is the stable
-  # name branch protection requires.
+  # name branch protection requires, and it is green only when a scan actually ran.
   licence-gate:
     name: Licence gate
-    needs: [detect-go-module, call-remote-dash-workflow]
+    needs: [detect-go-module, call-remote-dash-workflow, fork-licence-scan]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Report the scan result
         run: |
-          result='${{ needs.call-remote-dash-workflow.result }}'
-          echo "Eclipse Dash scan: $result"
-          if [ "$result" = 'failure' ]; then
+          shared='${{ needs.call-remote-dash-workflow.result }}'
+          fork='${{ needs.fork-licence-scan.result }}'
+          echo "Eclipse Dash scan - shared: $shared, fork: $fork"
+
+          if [ "$shared" = 'failure' ] || [ "$fork" = 'failure' ]; then
+            exit 1
+          fi
+
+          # Nothing scanned while there is something to scan would be a green
+          # check that proves nothing. Fail instead of reporting false assurance.
+          if [ '${{ needs.detect-go-module.outputs.scannable }}' = 'true' ] \
+            && [ "$shared" = 'skipped' ] && [ "$fork" = 'skipped' ]; then
+            echo '::error::a Go module exists but no licence scan ran'
             exit 1
           fi
