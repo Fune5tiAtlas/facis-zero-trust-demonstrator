@@ -61,10 +61,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      # The maven redirect service the shared workflow uses answers 404 and hands
+      # back an HTML error page, which only surfaces later as "invalid or corrupt
+      # jarfile". The artefact is fetched from the repository directly, at a
+      # pinned version, and checked to be an archive before it is run.
       - name: Download the Eclipse Dash licence tool
+        env:
+          DASH_VERSION: 1.1.0
         run: |
-          curl -sSL -o dash-licenses.jar \
-            "https://repo.eclipse.org/service/local/artifact/maven/redirect?r=dash-licenses&g=org.eclipse.dash&a=org.eclipse.dash.licenses&v=LATEST"
+          curl -fsSL -o dash-licenses.jar \
+            "https://repo.eclipse.org/content/repositories/dash-licenses-releases/org/eclipse/dash/org.eclipse.dash.licenses/${DASH_VERSION}/org.eclipse.dash.licenses-${DASH_VERSION}.jar"
+          unzip -t dash-licenses.jar > /dev/null
 
       - name: Scan the Go dependencies
         run: java -jar dash-licenses.jar go.sum
