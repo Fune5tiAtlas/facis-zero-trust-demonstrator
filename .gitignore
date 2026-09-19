@@ -8,6 +8,12 @@
 # Go
 vendor/
 
+# Node
+node_modules/
+
+# Generated acceptance evidence — the pipeline regenerates it on every run
+bundles/
+
 # Helm
 deployment/helm/**/charts/
 deployment/helm/**/*.tgz
