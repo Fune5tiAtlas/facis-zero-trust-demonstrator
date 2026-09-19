@@ -12,6 +12,65 @@ covers, so that traceability from requirement to test is generated rather than m
 - Negative cases assert against the audit entry that recorded the refusal, not merely against a
   failed response.
 
+## The harness
+
+Two runners, one report. Go scenarios run under [godog](https://github.com/cucumber/godog) and
+JavaScript scenarios under [Cucumber.js](https://github.com/cucumber/cucumber-js); both emit the
+same legacy cucumber-JSON, so their results merge by concatenation and produce a single
+traceability sheet.
+
+| | Runner | Scenarios | Steps | Report |
+|---|---|---|---|---|
+| Go | godog | `features/go/` | `internal/bdd/` | `bundles/bdd/go-report.json` |
+| JavaScript | Cucumber.js | `features/js/` | `features/js/steps/` | `bundles/bdd/js-report.json` |
+
+**Each runner owns its own directory, and a scenario belongs to exactly one.** A runner that
+loads the other's scenarios cannot execute their steps; it would report them as undefined and —
+unless the suite is strict — still pass, marking those Annex rows covered by scenarios that never
+ran. Both runners therefore run strict: an undefined or pending step fails the suite.
+
+```bash
+GODOG_CUCUMBER_OUT=bundles/bdd/go-report.json go test ./internal/bdd   # Go scenarios
+npm ci && npm run bdd                                                  # JavaScript scenarios
+go run ./cmd/bddreport --rows features/annex-rows.txt --out bundles/bdd \
+  bundles/bdd/go-report.json bundles/bdd/js-report.json                # merge + sheet
+```
+
+Cucumber.js describes its `json` formatter as being in maintenance mode; it is the interchange
+format both runners share today, and the documented upgrade path when that changes is the
+`message` format. Nothing else in the harness depends on the choice.
+
+### Tags
+
+A scenario carries two tags: the **requirement row** it covers and the **test identifier** from
+Annex A.
+
+```gherkin
+@ZT-56 @BDD-ZT-056
+Scenario: Every workflow is pinned to a commit and scoped to what it needs
+```
+
+Only the row tag drives coverage. A tag shaped like a row id that matches no row in
+`features/annex-rows.txt` **fails the run** — a typo would otherwise leave the scenario passing
+while proving nothing about the row it was meant to cover.
+
+### Running one Annex row
+
+```bash
+go test ./internal/bdd -godog.tags=@ZT-56    # Go
+npm run bdd:row -- @ZT-17                    # JavaScript
+```
+
+### The traceability sheet
+
+`features/annex-rows.txt` holds the 92 Annex A row ids in Annex order and is the denominator: the
+sheet reports every row, covered or not, so a gap is visible rather than absent. `cmd/bddreport`
+generates `traceability.md` and `traceability.csv` from the tags in the merged report — the sheet
+is never edited by hand.
+
+The pipeline runs all of this on every pull request, writes the sheet into the job summary, and
+publishes `bundles/bdd` as the `bdd-evidence` artefact, which is the per-gate evidence bundle.
+
 ## Scenario inventory
 
 The scenarios are grouped by the part of the architecture they exercise. Each family carries the
