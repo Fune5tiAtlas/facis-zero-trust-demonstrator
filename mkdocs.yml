@@ -10,6 +10,7 @@ theme:
 nav:
   - Home: index.md
   - Features and journeys: features.md
+  - Architecture: architecture.md
   - Using the demonstrator: usage.md
   - Deployment: deployment.md
   - Environments:
