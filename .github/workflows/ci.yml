@@ -13,6 +13,10 @@ jobs:
   tests:
     name: Go tests
     uses: eclipse-xfsc/dev-ops/.github/workflows/go-test.yml@main
+    # The shared workflow defaults to Go 1.24 and cannot read go.mod; keep this
+    # in step with the go directive there.
+    with:
+      go-version: '1.27'
 
   lint:
     name: Go lint
@@ -21,14 +25,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      # golangci-lint refuses a module whose go directive is newer than the Go it
+      # was built with, which a published container image cannot follow. Building
+      # the pinned version with the toolchain go.mod names keeps the two in step.
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
       - name: Run golangci-lint
+        env:
+          GOLANGCI_LINT_VERSION: v2.13.2
         run: |
-          if [ ! -f go.mod ]; then
-            echo 'No Go module at the repository root yet - nothing to lint.'
-            exit 0
-          fi
-          docker run --rm -v "$PWD:/app" -w /app \
-            golangci/golangci-lint:v2.13.2 golangci-lint run ./...
+          go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
+          "$(go env GOPATH)/bin/golangci-lint" run ./...
 
   images:
     name: Image build and scan

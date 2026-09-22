@@ -6,12 +6,17 @@ rather than copying them. Keeping the bodies upstream is what the Technical Deve
 Requirements ask for, and it means a fix to a shared workflow reaches this repository without a
 pull request here.
 
+Two workflows are the exception, and run in this repository instead: the licence scan and the SBOM.
+The shared versions cannot process this module — see [Go version](#go-version) for why and for what
+would let them be referenced again. This is a departure from the Technical Development Requirements
+and is declared as such in [Specification changes](specifications.md#readings-and-additions).
+
 ## Workflows in this repository
 
 | Workflow | Triggers | What it does |
 |---|---|---|
-| `.github/workflows/eclipse-dash.yml` | every pull request, schedule, release, manual | Calls the shared Eclipse Dash licence scanner and files IP review requests for dependencies |
-| `.github/workflows/sbom.yml` | schedule, release, manual | Calls the shared SBOM generator |
+| `.github/workflows/eclipse-dash.yml` | every pull request, schedule, release, manual | Runs the Eclipse Dash licence scanner on `go.sum` and files IP review requests for dependencies |
+| `.github/workflows/sbom.yml` | schedule, release, manual | Generates a CycloneDX SBOM for every release that has none and attaches it |
 | `.github/workflows/docs.yml` | push to `main` affecting `docs/`, manual | Builds the MkDocs site and publishes it to the `gh-pages` branch |
 | `.github/workflows/workflow-hygiene.yml` | every pull request, manual | Fails the pull request when an action is not pinned to a commit or a token scope is too wide |
 | `.github/workflows/ci.yml` | every pull request, push to `main`, manual | Go lint and tests, image build with the Linux assertion and a Trivy scan, chart lint and dry-run render |
@@ -24,7 +29,7 @@ and nobody hand-rolls their own:
 | Job | What it does | Blocking |
 |---|---|---|
 | `Go tests` | Calls the shared `go-test.yml`, which runs the tests of every Go module it finds | yes |
-| `Go lint` | `golangci-lint run ./...` | yes |
+| `Go lint` | `golangci-lint run ./...`, with a pinned golangci-lint built by the Go version `go.mod` names | yes |
 | `Image build and scan` | Builds each context under `deployment/docker/` for `linux/amd64`, asserts the built image's OS, then scans it with Trivy for HIGH and CRITICAL vulnerabilities | yes |
 | `Chart lint and render` | `helm lint` and a `helm template` dry-run render of every chart under `deployment/helm/` | yes |
 
@@ -43,8 +48,30 @@ The demonstrator is **one Go module at the repository root**, with each service 
 scanner and the shared SBOM generator both read the root `go.sum`, and a module per service would
 leave the licence gate and the release SBOM with nothing to read.
 
-`go.mod` declares **Go 1.24**, matching the `golang:1.24.x` containers the shared org workflows run
-in. A newer toolchain directive would break them.
+### Go version
+
+`go.mod` declares **Go 1.27**. The version is not chosen freely: a module cannot declare a lower Go
+version than its dependencies, and `authelia.com/provider/oauth2` v0.3.2, which the connector's
+OAuth2 provider is built on, requires Go 1.27.
+
+Nothing in the shared org workflows reads `go.mod`. Each sets up its own fixed Go version, and
+`actions/setup-go` disables automatic toolchain download, so an older Go stops with
+`go.mod requires go >= 1.27` before it does any work. How each job gets its Go version:
+
+| Job | How it gets Go | Consequence |
+|---|---|---|
+| `Go tests` (shared `go-test.yml`) | `go-version` input, default 1.24 | `ci.yml` passes `1.27`; keep it in step with `go.mod` by hand |
+| `Go lint`, BDD suite, `sbom.yml` | `go-version-file: go.mod` | follow `go.mod` by themselves |
+| Licence scan in `eclipse-dash.yml` | none | the Eclipse Dash tool reads `go.sum` and needs no Go toolchain |
+| shared `eclipse-dash-licence-go.yml` | hard-coded 1.21, no input | cannot run on this module — not used |
+| shared `sbom-golang.yml` | hard-coded 1.23.8, no input | cannot run on this module — not used |
+
+The last two are why the licence scan and the SBOM run locally. The local jobs do what the shared
+ones do — the same Eclipse Dash tool with the same review arguments, the same `cyclonedx-gomod`
+version and the same rule of attaching an SBOM to every release that lacks one — with the pinned
+actions and declared permissions this repository requires of its own workflows. They can go back to
+being references once the shared workflows accept a Go version or read `go.mod`; that is a change to
+propose in `eclipse-xfsc/dev-ops`.
 
 ## Repository protection and least privilege
 
@@ -101,10 +128,15 @@ Every third-party dependency must clear Eclipse Dash before it ships. The scan i
 pull-request gate**: a dependency Dash marks `restricted` fails the `Licence gate` job and the
 merge is refused.
 
-The shared Go scanner reads `go.sum`, so the gate skips itself while no Go module exists — a
+The scanner reads `go.sum`, so the gate skips itself while no Go module exists — a
 preceding job looks for the file and the scan runs only when it is there. The workflow itself is
 not filtered by path, so the required check is always reported: a skipped job counts as passing,
 whereas a workflow that never starts leaves the pull request waiting forever.
+
+On a run that can see the organisation's review token the scanner files IP review requests for
+whatever it cannot clear. A pull request from a fork cannot see that secret, so there the same tool
+runs check-only: it files nothing, but it still fails on a licence that is not approved. If the
+licence services cannot be reached the job fails and asks to be rerun, rather than pass unverified.
 
 Dependencies that Dash cannot clear automatically go to the Eclipse IP team for review. A dependency
 under a licence that the project cannot accept is replaced, not waived — and where the requirements
@@ -120,7 +152,8 @@ maintainer applies.
 
 ## Adding a workflow
 
-Reference the shared workflow rather than reimplementing it:
+Reference the shared workflow rather than reimplementing it, unless it cannot run on this module
+(see [Go version](#go-version)):
 
 ```yaml
 jobs:
