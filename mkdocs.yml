@@ -22,6 +22,7 @@ nav:
   - Keycloak integration: keycloak.md
   - Connector OAuth2 provider: oauth2-provider.md
   - API documentation: api-docs.md
+  - TRAIN trust-list publishing: tspa-publish-api.md
   - BDD acceptance: bdd.md
   - CI/CD: ci-cd.md
   - Troubleshooting: troubleshooting.md

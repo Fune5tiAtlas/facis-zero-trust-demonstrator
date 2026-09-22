@@ -1,0 +1,34 @@
+diff --git a/service/src/main/java/eu/xfsc/train/tcr/server/service/DIDResolver.java b/service/src/main/java/eu/xfsc/train/tcr/server/service/DIDResolver.java
+index 16a430f..8c40832 100644
+--- a/service/src/main/java/eu/xfsc/train/tcr/server/service/DIDResolver.java
++++ b/service/src/main/java/eu/xfsc/train/tcr/server/service/DIDResolver.java
+@@ -123,9 +123,9 @@ public class DIDResolver implements HealthIndicator {
+ 		Stream<Service> services;
+ 		DIDDocument diDoc = resolveDidDocument(did);
+ 		if (types == null || types.isEmpty()) {
+-			services = diDoc.getServices().stream();
++			services = (diDoc.getServices() == null ? java.util.List.<Service>of() : diDoc.getServices()).stream();
+ 		} else {
+-			services = diDoc.getServices().stream().filter(s -> {
++			services = (diDoc.getServices() == null ? java.util.List.<Service>of() : diDoc.getServices()).stream().filter(s -> {
+ 				if (s.getTypes() != null && !s.getTypes().isEmpty()) {
+ 					return types.stream().anyMatch(t -> s.getTypes().contains(t));
+ 				}
+@@ -136,7 +136,7 @@ public class DIDResolver implements HealthIndicator {
+ 				.toList();
+ 		String origin = resolveOrigin(diDoc.getId());
+ 		if (origin == null) {
+-			origin = diDoc.getControllers().stream().map(uri -> resolveOrigin(uri)).findFirst().orElse(null);
++			origin = (diDoc.getControllers() == null ? java.util.List.<java.net.URI>of() : diDoc.getControllers()).stream().map(uri -> resolveOrigin(uri)).findFirst().orElse(null);
+ 		}
+ 		if (origin == null && !endpoints.isEmpty()) {
+ 			origin = endpoints.stream().map(epp -> resolveOrigin(fromString(epp.getUrl()))).findFirst().orElse(null);
+@@ -353,7 +353,7 @@ public class DIDResolver implements HealthIndicator {
+ 	private boolean verifyVCSignature(JsonLDObject payload, String did, String alg) {
+ 		log.debug("verifyVCSignature.enter; did: {}, alg: {}, payload: {}", did, alg, payload);
+ 		DIDDocument diDoc = resolveDidDocument(did);
+-		List<VerificationMethod> vrMethods = diDoc.getVerificationMethods();
++		List<VerificationMethod> vrMethods = diDoc.getVerificationMethods() == null ? java.util.List.of() : diDoc.getVerificationMethods();
+ 		payload.setDocumentLoader(docLoader);
+ 		LdProof proof = LdProof.fromJsonObject((Map<String, Object>) payload.getJsonObject().get("proof"));
+ 		log.debug("verifyVCSignature; methods: {}; resolved proof: {}", vrMethods, proof);
