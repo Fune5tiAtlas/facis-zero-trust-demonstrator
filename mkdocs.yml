@@ -10,6 +10,7 @@ theme:
 nav:
   - Home: index.md
   - Features and journeys: features.md
+  - Architecture: architecture.md
   - Using the demonstrator: usage.md
   - Deployment: deployment.md
   - Environments:
@@ -19,6 +20,7 @@ nav:
   - Packaging and containers: packaging.md
   - Orchestrated flows: flows.md
   - Keycloak integration: keycloak.md
+  - Connector OAuth2 provider: oauth2-provider.md
   - API documentation: api-docs.md
   - BDD acceptance: bdd.md
   - CI/CD: ci-cd.md

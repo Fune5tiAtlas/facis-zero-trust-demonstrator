@@ -47,3 +47,12 @@ The reasoning, the consequences if the exception is declined, and the references
 The demonstrator integrates XFSC components rather than reimplementing them: the Trust Services API
 for policy evaluation, the Organisation Credential Manager for wallets, TRAIN for trust anchoring,
 and ORCE for orchestration. Versions are pinned at deployment and recorded with the release.
+
+## Go dependencies
+
+Direct dependencies of the Go module. Transitive dependencies are listed in the SBOM.
+
+| Dependency | Version | Licence | Purpose |
+|---|---|---|---|
+| `authelia.com/provider/oauth2` | v0.3.2 | Apache-2.0 | OAuth 2.0 framework behind the connector's provider adapter: RFC 7591 client registration and RFC 9449 DPoP. Requires Go 1.27.x. |
+| `golang.org/x/crypto` | v0.57.0 | BSD-3-Clause | bcrypt hashing of client secrets |

@@ -1,4 +1,4 @@
-name: Trigger Remote SBOM Workflow
+name: Release SBOM (CycloneDX)
 
 on:
   workflow_dispatch:
@@ -10,10 +10,79 @@ on:
 permissions:
   contents: read
 
+# The SBOM is generated here rather than through the shared org workflow. That
+# workflow sets up a fixed Go version, and an older Go refuses to read a module
+# whose go directive is newer, so it cannot produce an SBOM for this module.
+# The behaviour is otherwise the same: every published release that has no SBOM
+# attached yet gets one, so a release run covers the new tag and the scheduled
+# run backfills anything that was missed.
 jobs:
-  call-remote-workflow:
+  sbom:
+    name: Generate and attach the SBOM
+    runs-on: ubuntu-latest
     permissions:
-      contents: write # the shared workflow uploads the SBOM onto the release
-    uses: eclipse-xfsc/dev-ops/.github/workflows/sbom-golang.yml@main
-    secrets:
+      contents: write # uploads the SBOM onto the release
+    env:
       GH_TOKEN: ${{ github.token }}
+      SBOM_NAME: sbom.json
+      CYCLONEDX_GOMOD_VERSION: v1.9.0
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # every tag has to be reachable
+
+      - name: Look for a Go module
+        id: go-mod
+        run: |
+          if [ -f go.mod ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo 'No go.mod in the repository - nothing to describe in an SBOM.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Set up Go
+        if: steps.go-mod.outputs.exists == 'true'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install cyclonedx-gomod
+        if: steps.go-mod.outputs.exists == 'true'
+        run: go install "github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@${CYCLONEDX_GOMOD_VERSION}"
+
+      - name: Attach an SBOM to every release that lacks one
+        if: steps.go-mod.outputs.exists == 'true'
+        run: |
+          tool="$(go env GOPATH)/bin/cyclonedx-gomod"
+          failed=0
+
+          while read -r tag; do
+            [ -n "$tag" ] || continue
+
+            if gh release view "$tag" --json assets --jq '.assets[].name' | grep -qxF "$SBOM_NAME"; then
+              echo "SBOM already attached to $tag"
+              continue
+            fi
+
+            if ! git cat-file -e "refs/tags/$tag:go.mod" 2>/dev/null; then
+              echo "No go.mod at $tag - skipped"
+              continue
+            fi
+
+            echo "Generating the SBOM for $tag"
+            workdir="$(mktemp -d)"
+            git worktree add --quiet --detach "$workdir" "refs/tags/$tag"
+
+            if (cd "$workdir" && "$tool" mod -licenses -json -output "$SBOM_NAME"); then
+              gh release upload "$tag" "$workdir/$SBOM_NAME" --clobber
+            else
+              echo "::error::could not generate the SBOM for $tag"
+              failed=1
+            fi
+
+            git worktree remove --force "$workdir"
+          done < <(gh release list --limit 200 --json tagName --jq '.[].tagName')
+
+          exit "$failed"
