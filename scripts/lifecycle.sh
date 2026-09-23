@@ -98,7 +98,10 @@ if ! kubectl get namespace "$namespace" -o name >"$work/ns.out" 2>&1; then
   if grep -qi forbidden "$work/ns.out"; then
     fail namespaceNotPermitted "this identity may not deploy into namespace $namespace" namespace
   fi
-  fail namespaceNotFound "namespace $namespace does not exist; it is provisioned, never created here" namespace
+  if grep -qi notfound "$work/ns.out"; then
+    fail namespaceNotFound "namespace $namespace does not exist; it is provisioned, never created here" namespace
+  fi
+  fail clusterUnreachable "the Kubernetes API could not be reached"
 fi
 
 if [ "$action" = uninstall ]; then
