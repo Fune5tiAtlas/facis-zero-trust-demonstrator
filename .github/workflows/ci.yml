@@ -94,6 +94,9 @@ jobs:
       - name: Install the JavaScript runner
         run: npm ci
 
+      - name: Test the ORCE Builder nodes
+        run: node --test ui/nodes/*/test/*.test.mjs
+
       - name: Run the Go scenarios
         run: GODOG_CUCUMBER_OUT=bundles/bdd/go-report.json go test ./internal/bdd
 
