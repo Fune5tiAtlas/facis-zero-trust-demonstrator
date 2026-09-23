@@ -29,7 +29,10 @@ RUN set -eux; \
     rm -f /usr/local/bin/filebrowser; \
     # The upstream demo flows carry a live cloud API token; this image loads its own flow file.
     rm -f /data/flows.json /data/.flows.json.backup /data/flows_cred.json; \
-    mv /data/settings.js /data/settings.upstream.js
+    mv /data/settings.js /data/settings.upstream.js; \
+    # The upstream settings stay as the base of ours, without their fixed or sample password hashes.
+    sed -i -E 's/((password|pass): *")[$]2[aby][$][^"]*"/\1"/g' /data/settings.upstream.js; \
+    ! grep -qE '[$]2[aby][$][0-9]{2}[$]' /data/settings.upstream.js
 
 COPY deployment/docker/orce/settings.js /data/settings.js
 COPY flows/lifecycle.json /data/lifecycle.json
