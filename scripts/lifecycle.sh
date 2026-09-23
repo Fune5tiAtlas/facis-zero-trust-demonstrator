@@ -134,6 +134,17 @@ else
 fi
 values_hash="sha256:$(sha256 "$values_file" | cut -d' ' -f1)"
 
+# Server-side dry-run first: the chart's schema, rendering and the API server's admission are all
+# checked before anything is persisted (the TDR's QA dry-run, on every deployment).
+event dry-run running
+if ! helm upgrade "$release" "$chart" --install --namespace "$namespace" \
+    --values "$values_file" --dry-run=server >"$work/helm.out" 2>&1; then
+  if grep -q "values don't meet the specifications of the schema" "$work/helm.out"; then
+    fail valuesSchemaRejected "the chart rejected the deployment values; nothing was created"
+  fi
+  fail dryRunRejected "the server-side dry-run refused the release; nothing was created"
+fi
+
 event deploy running
 if ! helm upgrade "$release" "$chart" --install --namespace "$namespace" \
     --values "$values_file" --rollback-on-failure --wait=watcher --timeout "$timeout" \
