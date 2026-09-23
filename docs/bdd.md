@@ -68,6 +68,10 @@ sheet reports every row, covered or not, so a gap is visible rather than absent.
 generates `traceability.md` and `traceability.csv` from the tags in the merged report — the sheet
 is never edited by hand.
 
+Covered is not proven. Each row also carries a **result** taken from the step and hook results of
+every execution that covers it: `passed` only when every execution passed, on every target and for
+every Outline example; `failed` when any one failed; `not run` when any was skipped or had no steps.
+
 The pipeline runs all of this on every pull request, writes the sheet into the job summary, and
 publishes `bundles/bdd` as the `bdd-evidence` artefact, which is the per-gate evidence bundle.
 
