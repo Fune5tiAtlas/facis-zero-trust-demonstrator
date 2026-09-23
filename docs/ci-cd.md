@@ -75,11 +75,18 @@ propose in `eclipse-xfsc/dev-ops`.
 
 ## Lifecycle scenarios on the client targets
 
-The `bdd-cluster` job runs the deployment-lifecycle scenarios (TDR-BDD-01..04) against each client
+The `bdd` job runs on every pull request: `bddpack -check`, the strict and catalogue runs of both
+runners and the cluster dry run, then `bddreport --require-complete` over the five reports, so a
+row that is uncovered or failed fails the job (see [BDD acceptance](bdd.md#the-harness)). The dry
+run exists only in this job: where a cluster run happens, its real report is used instead.
+
+The `bdd-cluster` job runs the cluster scenarios (TDR-BDD-01..04 and TDR-BDD-06) against each client
 target, and `bdd-cluster-report` merges every target into one traceability sheet in which a row is
 proven only if it passed everywhere. They run on pushes to `main`, on every published release and
 on demand — never on pull requests — and one run at a time per target. Evidence is published even
-when the run fails, and the job keeps its failure. See [BDD acceptance](bdd.md) for what they prove.
+when the run fails, and the job keeps its failure. See [BDD acceptance](bdd.md) for what they prove. Each target's evidence and the cross-target
+sheet also carry a `bdd-catalogue.md` rendered from that run (`bddpack -evidence`), whose evidence
+basis column says what each row was proven with — for example the fixture release.
 
 Both jobs stay off until the repository variable `BDD_CLUSTER_ENABLED` is `true`. A target
 `<KEY>` (for example `IONOS`) then needs, as repository secrets, `BDD_<KEY>_OBSERVER_KUBECONFIG`

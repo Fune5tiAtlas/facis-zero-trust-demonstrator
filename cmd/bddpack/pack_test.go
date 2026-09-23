@@ -288,3 +288,63 @@ func TestCheckFailsOnAStaleGeneratedFile(t *testing.T) {
 	write("features/go/retired.feature", "# "+generated+"\nFeature: retired\n")
 	wantError(t, run(root, true), "features/go/retired.feature is generated but the Annex no longer produces it")
 }
+
+func TestCatalogueEvidenceBasisComesFromTheRun(t *testing.T) {
+	dir := t.TempDir()
+	for path, content := range map[string]string{
+		"bdd-tdr-001/ionos/main/scenario.json":  `{"row":"TDR-BDD-01","target":"ionos","run":"ci-1","chart":"/opt/ztd/charts/lifecycle-fixture","fixture":true}`,
+		"bdd-tdr-001/osc/main/scenario.json":    `{"row":"TDR-BDD-01","target":"osc","run":"ci-1","chart":"/opt/ztd/charts/umbrella","fixture":false}`,
+		"bdd-tdr-001/ionos/other/scenario.json": `{"row":"TDR-BDD-01","target":"ionos","run":"ci-1","chart":"/opt/ztd/charts/lifecycle-fixture","fixture":true}`,
+	} {
+		full := filepath.Join(dir, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	basis, err := evidenceBasis(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "fixture release on ionos (run ci-1); release /opt/ztd/charts/umbrella on osc (run ci-1)"
+	if basis["TDR-BDD-01"] != want {
+		t.Fatalf("basis = %q, want %q", basis["TDR-BDD-01"], want)
+	}
+
+	page := renderCatalogue(sample(), basis)
+	for _, fragment := range []string{
+		"| Evidence basis | " + want + " |",
+		"| Evidence basis | none (pending) |",
+		"| Test data | `features/fixtures/charts/lifecycle-fixture/`",
+		"one shared execution for BDD-ZT-042 and BDD-ZT-079",
+		"Then the setup/usage is reproduced.\n```",
+	} {
+		if !strings.Contains(page, fragment) {
+			t.Errorf("the catalogue lacks %q", fragment)
+		}
+	}
+	if !strings.Contains(renderCatalogue(sample(), nil), "| Evidence basis | recorded per run |") {
+		t.Error("the committed catalogue claims a basis without a run")
+	}
+}
+
+// A crashed run leaves no evidence, or a truncated record: the catalogue is still rendered.
+func TestCatalogueSurvivesACrashedRun(t *testing.T) {
+	basis, err := evidenceBasis(filepath.Join(t.TempDir(), "missing"))
+	if err != nil || len(basis) != 0 {
+		t.Fatalf("missing evidence dir: basis %v, err %v", basis, err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "scenario.json"), []byte(`{"row":"TDR-BDD-01","tar`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	basis, err = evidenceBasis(dir)
+	if err != nil || len(basis) != 0 {
+		t.Fatalf("truncated record: basis %v, err %v", basis, err)
+	}
+	if !strings.Contains(renderCatalogue(sample(), basis), "| Evidence basis | no evidence in this run |") {
+		t.Fatal("a row without evidence is not marked")
+	}
+}

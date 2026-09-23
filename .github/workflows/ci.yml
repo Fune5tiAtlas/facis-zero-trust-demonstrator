@@ -268,6 +268,7 @@ jobs:
             bundles/bdd/go-catalogue-report.json bundles/bdd/js-catalogue-report.json \
             bundles/bdd/js-cluster-report-*.json
           cat bundles/bdd/traceability.md >> "$GITHUB_STEP_SUMMARY"
+          go run ./cmd/bddpack -evidence bundles/bdd/evidence -catalogue bundles/bdd/bdd-catalogue.md
 
       - name: Publish the evidence bundle
         if: always()
@@ -304,6 +305,7 @@ jobs:
             evidence/*/go-catalogue-report.json evidence/*/js-catalogue-report.json \
             evidence/*/js-cluster-report-*.json
           cat bundles/bdd/traceability.md >> "$GITHUB_STEP_SUMMARY"
+          go run ./cmd/bddpack -evidence evidence -catalogue bundles/bdd/bdd-catalogue.md
 
       - name: Publish the cross-target sheet
         if: always()

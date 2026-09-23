@@ -305,7 +305,7 @@ func render(annex Annex) map[string]string {
 	files["internal/bdd/pending_gen_test.go"] = renderGoPending(pendingTexts(annex.Rows, "go"))
 	files["features/js/steps/pending.gen.mjs"] = renderJSPending(pendingTexts(annex.Rows, "js"))
 	files["features/annex-rows.txt"] = renderRows(annex)
-	files["docs/bdd-catalogue.md"] = renderCatalogue(annex)
+	files["docs/bdd-catalogue.md"] = renderCatalogue(annex, nil)
 	return files
 }
 
@@ -361,22 +361,6 @@ func renderRows(annex Annex) string {
 	fmt.Fprintf(&b, "# %s\n# Source: %s (sha256 %s).\n", generated, annex.Source, annex.SHA256)
 	for _, r := range annex.Rows {
 		b.WriteString(r.ID + "\n")
-	}
-	return b.String()
-}
-
-func cell(s string) string { return strings.ReplaceAll(s, "|", `\|`) }
-
-func renderCatalogue(annex Annex) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "<!-- %s -->\n\n# BDD catalogue\n\n", generated)
-	fmt.Fprintf(&b, "Every Annex A row, its acceptance criterion and its scenario, worded exactly as in `%s` (SHA-256 `%s`).\n\n", annex.Source, annex.SHA256)
-	b.WriteString("| Row | Test ID | Requirement | Acceptance criterion | Scenario | Evidence | Gate | Test type | Status | Runner | File |\n")
-	b.WriteString("|---|---|---|---|---|---|---|---|---|---|---|\n")
-	for _, r := range annex.Rows {
-		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | `%s` | %s | %s | %s | %s | `%s` |\n",
-			r.ID, r.TestID, cell(r.Requirement), cell(r.AcceptanceCriterion), cell(r.Statement),
-			r.EvidencePath, cell(r.Gate), cell(r.TestType), r.Status, runnerName[r.Runner], featurePath(r))
 	}
 	return b.String()
 }

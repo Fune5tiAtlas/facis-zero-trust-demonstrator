@@ -23,7 +23,9 @@ nav:
   - Connector OAuth2 provider: oauth2-provider.md
   - API documentation: api-docs.md
   - TRAIN trust-list publishing: tspa-publish-api.md
-  - BDD acceptance: bdd.md
+  - BDD acceptance:
+      - Harness and pack: bdd.md
+      - Catalogue: bdd-catalogue.md
   - CI/CD: ci-cd.md
   - Troubleshooting: troubleshooting.md
   - OSS dependencies: dependencies.md

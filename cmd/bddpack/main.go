@@ -3,6 +3,8 @@
 //
 //	go run ./cmd/bddpack          # regenerate the pack
 //	go run ./cmd/bddpack -check   # fail if a generated file is stale or a scenario is not verbatim
+//	go run ./cmd/bddpack -evidence bundles/bdd/evidence -catalogue bundles/bdd/bdd-catalogue.md
+//	                              # a run's catalogue, with the evidence basis read from the run
 //
 // Run it from the repository root. Generated: the feature files of every family except the
 // hand-written ones, the pending step registrations of both runners, the row list and the
@@ -21,7 +23,20 @@ import (
 
 func main() {
 	check := flag.Bool("check", false, "fail if a generated file differs instead of writing it")
+	evidence := flag.String("evidence", "", "a run's evidence directory; with -catalogue, render that run's catalogue")
+	catalogue := flag.String("catalogue", "", "where to write the run's catalogue (with -evidence)")
 	flag.Parse()
+	if (*evidence == "") != (*catalogue == "") {
+		fmt.Fprintln(os.Stderr, "bddpack: -evidence and -catalogue go together")
+		os.Exit(2)
+	}
+	if *evidence != "" {
+		if err := runCatalogue(".", *evidence, *catalogue); err != nil {
+			fmt.Fprintln(os.Stderr, "bddpack:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(".", *check); err != nil {
 		fmt.Fprintln(os.Stderr, "bddpack:", err)
 		os.Exit(1)
@@ -76,6 +91,21 @@ func run(root string, check bool) error {
 		}
 	}
 	return verify(annex, features)
+}
+
+func runCatalogue(root, evidence, out string) error {
+	annex, err := loadAnnex(filepath.Join(root, annexPath))
+	if err != nil {
+		return err
+	}
+	basis, err := evidenceBasis(evidence)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(out, []byte(renderCatalogue(annex, basis)), 0o644)
 }
 
 // readFeatures reads every feature file of both runners, keyed by its path from the root.
