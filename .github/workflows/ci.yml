@@ -72,8 +72,25 @@ jobs:
               exit 1
             fi
 
+            # A time-boxed, documented exception may exclude named upstream paths from the gate;
+            # an expired exception fails the build. Everything else stays under the gate.
+            skips=()
+            exception="$(dirname "$dockerfile")/scan-exception.json"
+            if [ -f "$exception" ]; then
+              expires=$(jq -r '.expires' "$exception")
+              if [[ "$(date -u +%F)" > "$expires" ]]; then
+                echo "::error::$exception expired on $expires - renew it or remove the upstream findings"
+                exit 1
+              fi
+              mapfile -t skips < <(jq -r '(.skipDirs[] | "--skip-dirs", .), (.skipFiles[] | "--skip-files", .)' "$exception")
+              {
+                echo "### Scan exception for $image (expires $expires)"
+                jq -r '.reason, "", .tracking, "", "Excluded: " + ((.skipDirs + .skipFiles) | join(", "))' "$exception"
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+
             docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-              aquasec/trivy:0.74.0 image --exit-code 1 --severity HIGH,CRITICAL "$image"
+              aquasec/trivy:0.74.0 image --exit-code 1 --severity HIGH,CRITICAL "${skips[@]}" "$image"
           done
 
   bdd:
