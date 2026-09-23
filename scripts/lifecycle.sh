@@ -44,10 +44,11 @@ event() {
 }
 
 # Mask anything that looks like a credential before it can reach a log, the ORCE context or
-# the evidence: key=value and key: value pairs, bearer tokens, and JWTs.
+# the evidence: key=value and key: value pairs, quoted or not (Helm output quotes values), bearer
+# tokens, and JWTs. The Builder Node masks the same way.
 mask() {
   sed -E \
-    -e 's/((password|passwd|secret|token|apikey|api-key|client-secret)[^=:]{0,20}[=:][[:space:]]*)[^[:space:],"}]+/\1[masked]/Ig' \
+    -e 's/((password|passwd|secret|token|apikey|api-key|client-secret)[^=:]{0,20}[=:][[:space:]]*["'"'"']?)[^[:space:],"'"'"'}]+/\1[masked]/Ig' \
     -e 's/(Bearer[[:space:]]+)[A-Za-z0-9._~+/=-]+/\1[masked]/g' \
     -e 's/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/[masked-jwt]/g'
 }

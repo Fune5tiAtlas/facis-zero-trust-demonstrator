@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -133,6 +134,50 @@ test('a secret never reaches the log or the context', async () => {
   const everything = JSON.stringify(rt.context()) + rt.logs.join('\n')
   assert.doesNotMatch(everything, /hunter2/)
   assert.doesNotMatch(everything, /token: abc/)
+})
+
+test('a finished requestId is not run again', async () => {
+  const rt = runtime(); const s = stub(['RESULT_JSON={"ok":true}'])
+  const node = rt.node({ script: s.script })
+  await send(node, deploy('r10'))
+  const first = await finalResult(rt, 'r10')
+  const again = await send(node, deploy('r10'))
+  assert.equal(again.errors.action, 'duplicateRequest')
+  assert.deepEqual(rt.context().jobs.r10.result, first)
+})
+
+test('a script path that does not exist ends in exactly one systemError', async () => {
+  const rt = runtime()
+  await send(rt.node({ script: '/nonexistent/lifecycle.sh' }), deploy('r11'))
+  const final = await finalResult(rt, 'r11')
+  assert.equal(final.errors.action, 'systemError')
+  await new Promise((r) => setTimeout(r, 200))
+  assert.equal(rt.logs.filter((l) => l.includes('"requestId":"r11"')).length, 1)
+})
+
+// The node and the script must mask the same inputs, including quoted values: Helm output quotes
+// scalars and JSON quotes every string.
+const SECRETS = [
+  ['password=hunter2', 'hunter2'],
+  ['token: abc123', 'abc123'],
+  ['{"password":"hunter2"}', 'hunter2'],
+  ['adminPassword: "hunter2"', 'hunter2'],
+  ["client-secret: 'hunter2'", 'hunter2'],
+  ['Authorization: Bearer abc.def-ghi', 'abc.def-ghi'],
+  ['jwt eyJhbGciOiJ.eyJzdWIiOiJ4.c2lnbmF0dXJl here', 'eyJzdWIiOiJ4']
+]
+
+test('the node masks credentials, quoted or not', () => {
+  for (const [input, secret] of SECRETS) {
+    assert.doesNotMatch(lifecycle.mask(input), new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), input)
+  }
+})
+
+test('the lifecycle script masks the same credentials', () => {
+  const script = readFileSync(new URL('../../../../scripts/lifecycle.sh', import.meta.url), 'utf8')
+  const fn = script.slice(script.indexOf('mask() {'), script.indexOf('\n}\n', script.indexOf('mask() {')) + 3)
+  const out = execFileSync('bash', ['-c', fn + '\nmask'], { input: SECRETS.map(([i]) => i).join('\n') + '\n' }).toString()
+  for (const [, secret] of SECRETS) assert.doesNotMatch(out, new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
 })
 
 test('a requestId still running is not started twice', async () => {

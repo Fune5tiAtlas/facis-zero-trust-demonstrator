@@ -49,10 +49,11 @@ function validate (command) {
   return fields
 }
 
-// Credentials never leave the node: key=value and key: value pairs, bearer tokens and JWTs.
+// Credentials never leave the node: key=value and key: value pairs, quoted or not (Helm output
+// quotes values, JSON always does), bearer tokens and JWTs. scripts/lifecycle.sh masks the same way.
 function mask (text) {
   return String(text || '')
-    .replace(/((password|passwd|secret|token|apikey|api-key|client-secret)[^=:\n]{0,20}[=:]\s*)[^\s,"}]+/gi, '$1[masked]')
+    .replace(/((password|passwd|secret|token|apikey|api-key|client-secret)[^=:\n]{0,20}[=:]\s*["']?)[^\s,"'}]+/gi, '$1[masked]')
     .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/g, '$1[masked]')
     .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '[masked-jwt]')
 }
@@ -131,8 +132,10 @@ module.exports = function (RED) {
         return done()
       }
 
-      const running = (flow.get('lifecycle') || { jobs: {} }).jobs[command.requestId]
-      if (running && running.result === null) {
+      // A requestId names one execution: a repeat is refused, whether it is still running or
+      // finished, so a recorded result can never be overwritten.
+      const seen = (flow.get('lifecycle') || { jobs: {} }).jobs[command.requestId]
+      if (seen) {
         msg.payload = result(command, false, null, { action: 'duplicateRequest' })
         send(msg)
         return done()
@@ -177,7 +180,11 @@ module.exports = function (RED) {
         }
       })
       child.stderr.on('data', () => {}) // the script reports through RESULT_JSON; stderr is not relayed
+      // A spawn that fails emits both 'error' and 'close'; the job finishes exactly once.
+      let completed = false
       const complete = () => {
+        if (completed) return
+        completed = true
         if (valuesDir) fs.rmSync(valuesDir, { recursive: true, force: true })
         finish(command, fromScript(command, scriptResult))
       }
