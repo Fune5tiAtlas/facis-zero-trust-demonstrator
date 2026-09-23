@@ -121,17 +121,27 @@ jobs:
 
       - name: Set up Helm
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          # One pinned Helm for QA and for the lifecycle workflow; its flags differ by major version.
+          version: v4.1.3
 
+      # The fixture chart under features/ is linted like a release chart: the TDR's lint and
+      # dry-run rule applies to every chart the pipeline installs. A chart whose values have no
+      # defaults ships its valid baseline in ci/values.yaml.
       - name: Lint and render every chart
         run: |
           shopt -s nullglob
-          charts=(deployment/helm/*/Chart.yaml)
+          charts=(deployment/helm/*/Chart.yaml features/fixtures/charts/*/Chart.yaml)
           if [ ${#charts[@]} -eq 0 ]; then
             echo 'No chart yet - nothing to lint.'
             exit 0
           fi
           for chart in "${charts[@]}"; do
             directory=$(dirname "$chart")
-            helm lint "$directory"
-            helm template "$directory" >/dev/null
+            values=()
+            if [ -f "$directory/ci/values.yaml" ]; then
+              values=(-f "$directory/ci/values.yaml")
+            fi
+            helm lint "$directory" "${values[@]}"
+            helm template "$directory" "${values[@]}" >/dev/null
           done
