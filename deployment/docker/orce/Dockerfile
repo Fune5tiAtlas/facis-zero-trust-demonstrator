@@ -27,6 +27,8 @@ RUN set -eux; \
     rm -rf /tmp/helm.tgz /tmp/linux-amd64 /tmp/kubectl; \
     apk upgrade --no-cache; \
     rm -f /usr/local/bin/filebrowser; \
+    # The upstream demo flows carry a live cloud API token; this image loads its own flow file.
+    rm -f /data/flows.json /data/.flows.json.backup /data/flows_cred.json; \
     mv /data/settings.js /data/settings.upstream.js
 
 COPY deployment/docker/orce/settings.js /data/settings.js
