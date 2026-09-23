@@ -7,7 +7,7 @@
 # Unlike the upstream image it does not run as root, removes the unauthenticated file browser
 # rather than starting it, takes the Alpine security updates, and has no built-in credentials
 # (see settings.js).
-FROM ecofacis/xfsc-orce:2.0.13@sha256:52e4f98ff21a45225525057612f065ee8b32234f1f444d61cc83efded2949b80
+FROM ecofacis/xfsc-orce:2.0.13@sha256:52e4f98ff21a45225525057612f065ee8b32234f1f444d61cc83efded2949b80 AS orce
 
 ARG HELM_VERSION=v4.3.0
 ARG HELM_SHA256=86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb
@@ -39,8 +39,15 @@ COPY features/fixtures/charts/lifecycle-fixture/ /opt/ztd/charts/lifecycle-fixtu
 
 RUN chown -R node-red:node-red /data && chmod 0755 /opt/ztd/scripts/lifecycle.sh
 
+# Flatten: deleting files in a layer leaves them readable in the layers below, and the upstream
+# layers carry the demo flows' live credential. Only the cleaned filesystem is shipped.
+FROM scratch
+COPY --from=orce / /
+ENV PATH=/usr/src/node-red/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    NODE_PATH=/usr/src/node-red/node_modules:/data/node_modules \
+    HOME=/data
+WORKDIR /data
 USER node-red
-ENV HOME=/data
 EXPOSE 1880
 ENTRYPOINT ["node", "/opt/maestro/MBE/packages/node_modules/node-red/red.js", "--userDir", "/data/", "--settings", "/data/settings.js"]
 CMD []
