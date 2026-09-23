@@ -348,3 +348,28 @@ func TestCatalogueSurvivesACrashedRun(t *testing.T) {
 		t.Fatal("a row without evidence is not marked")
 	}
 }
+
+// Every field check of the source has its own failing case.
+func TestValidateRejectsMalformedFields(t *testing.T) {
+	for name, tc := range map[string]struct {
+		mutate func(*Row)
+		err    string
+	}{
+		"row id":        {func(r *Row) { r.ID = "ZT-1" }, `"ZT-1": invalid or duplicate row id`},
+		"test id":       {func(r *Row) { r.TestID = "BDD-ZT-1" }, `invalid test id "BDD-ZT-1"`},
+		"family":        {func(r *Row) { r.Family = "nowhere" }, `unknown family "nowhere"`},
+		"runner":        {func(r *Row) { r.Runner = "py" }, "runner must be go or js"},
+		"status":        {func(r *Row) { r.Status = "done" }, "status must be implemented or pending"},
+		"evidence path": {func(r *Row) { r.EvidencePath = "evidence/zt-001/" }, `evidence path "evidence/zt-001/"`},
+		"padded clause": {func(r *Row) { r.Given = " x"; r.Statement = "GIVEN  x WHEN " + r.When + " THEN " + r.Then }, "a clause is empty, padded or spans lines"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			annex := sample()
+			tc.mutate(&annex.Rows[0])
+			wantError(t, validate(annex), tc.err)
+		})
+	}
+	annex := sample()
+	annex.Rows[1].ID = annex.Rows[0].ID
+	wantError(t, validate(annex), `"ZT-01": invalid or duplicate row id`)
+}

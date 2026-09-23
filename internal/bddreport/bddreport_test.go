@@ -330,3 +330,12 @@ func TestCompleteNamesGapsAndFailures(t *testing.T) {
 		t.Fatalf("a covered sheet with no failure is complete: %v", err)
 	}
 }
+
+// A scenario whose Before hook failed may be reported without steps; it must still fail the row.
+func TestAFailedHookFailsTheRowEvenWithoutSteps(t *testing.T) {
+	element := `{"type":"scenario","name":"deploy","tags":[{"name":"@TDR-BDD-01"}],` +
+		`"before":[{"result":{"status":"failed"}}],"steps":[]}`
+	if got := resultOf(t, element); got != Failed {
+		t.Fatalf("result = %q, want %q", got, Failed)
+	}
+}

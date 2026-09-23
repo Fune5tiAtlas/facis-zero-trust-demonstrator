@@ -58,9 +58,6 @@ const (
 // implemented yet); anywhere else it is a stray and fails the row.
 func (e Element) status() string {
 	steps := append(append(append([]Step{}, e.Before...), e.Steps...), e.After...)
-	if len(e.Steps) == 0 {
-		return NotRun
-	}
 	pendingRow := false
 	for _, tag := range e.Tags {
 		pendingRow = pendingRow || tag.Name == "@pending"
@@ -79,6 +76,10 @@ func (e Element) status() string {
 		default:
 			result = NotRun
 		}
+	}
+	// A failed hook fails the row even without steps; with nothing failed, no steps proves nothing.
+	if len(e.Steps) == 0 {
+		return NotRun
 	}
 	return result
 }

@@ -16,7 +16,9 @@ Neither identity below can.
 | `ServiceAccount` per identity | release namespace | only when `create` is `true` |
 
 The deployer cannot create namespaces, RBAC objects, CRDs or any cluster-scoped object, cannot
-touch a namespace outside the pool, and cannot create Pods or StatefulSets directly. The observer
+touch a namespace outside the pool, and cannot create Pods or StatefulSets directly. Every pool
+namespace enforces the **restricted** Pod Security Standard, so a Deployment it creates cannot run a
+privileged pod, mount a host path or join a host namespace. The observer
 cannot write anything. The observer does read the Secrets of the pool namespaces, because the Helm
 release records it checks are Secrets; nothing else is stored there.
 

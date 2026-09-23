@@ -69,8 +69,8 @@ chart exists (FZTD-187).
 ```bash
 kubectl apply -f deployment/orce-minimal/base.yaml
 
-# Credentials: generate them, keep the plaintext in the team's password manager, and store only
-# bcrypt hashes (and the read token) in the cluster.
+# Credentials: generate them, store only bcrypt hashes (and the read token) in the cluster, and
+# keep the plaintext in the team's password manager (see below).
 hash() { docker run --rm --platform linux/amd64 --entrypoint node "$IMAGE" \
   -e "console.log(require('/opt/maestro/MBE/node_modules/bcryptjs').hashSync(process.argv[1], 10))" "$1"; }
 admin_pass=$(openssl rand -hex 16); http_pass=$(openssl rand -hex 16); read_token=$(openssl rand -hex 32)
@@ -81,6 +81,10 @@ kubectl -n ztd-orce create secret generic orce-credentials \
 
 sed "s|__IMAGE__|$IMAGE|" deployment/orce-minimal/orce.yaml | kubectl apply -f -
 ```
+
+Before closing the shell, copy `$admin_pass`, `$http_pass` and `$read_token` into the password
+manager one at a time through the clipboard (for example `printf %s "$admin_pass" | pbcopy` on
+macOS), rather than echoing them to the terminal; they exist nowhere else.
 
 **Verify:**
 

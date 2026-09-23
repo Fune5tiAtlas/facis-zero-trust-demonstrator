@@ -134,8 +134,8 @@ jobs:
           BDD_MODE=catalogue GODOG_CUCUMBER_OUT=bundles/bdd/go-catalogue-report.json go test ./internal/bdd
           npm run bdd:catalogue
 
-      # The cluster rows cannot run here; a dry run lists them as not run. Pull requests only: it is
-      # never merged where a real cluster run exists, so it cannot stand in for one.
+      # The cluster rows cannot run here; a dry run lists them as not run. Only this job's sheet
+      # merges it: the cluster jobs never do, so it cannot stand in for a real cluster run.
       - name: List the cluster scenarios
         run: npm run bdd:cluster-dryrun
 
