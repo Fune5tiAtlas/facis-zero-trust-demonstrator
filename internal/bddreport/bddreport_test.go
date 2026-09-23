@@ -184,3 +184,21 @@ func TestCSVIsGeneratedFromTheSameReport(t *testing.T) {
 		t.Errorf("CSV =\n%q\nwant\n%q", csv, want)
 	}
 }
+
+// The G7 rows added in Annex A v1.7 are row references like any other; a
+// pattern that only knew ZT and TDR-BDD would drop their tags and leave the
+// final-validation rows permanently uncovered.
+func TestCoverageRecognisesTheG7Rows(t *testing.T) {
+	const report = `[
+      {"uri":"f.feature","name":"F","tags":[],
+       "elements":[{"type":"scenario","name":"final validation","tags":[{"name":"@M7-01"}]}]}
+    ]`
+	features, err := Merge([][]byte{[]byte(report)})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	got := Coverage(features, []string{"M7-01", "M7-02"})
+	if len(got.Rows[0].Scenarios) != 1 || got.Uncovered() != 1 || len(got.UnknownTags) != 0 {
+		t.Fatalf("M7-01 not recognised as a row tag: %+v", got)
+	}
+}

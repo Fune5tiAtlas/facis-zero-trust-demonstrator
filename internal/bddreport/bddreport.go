@@ -18,7 +18,7 @@ import (
 // rowTag matches the Annex A row identifiers and nothing else. Tags like
 // @BDD-ZT-013 (the test identifier) or @platform are not row references and are
 // ignored rather than reported as unknown.
-var rowTag = regexp.MustCompile(`^(ZT-\d+|TDR-BDD-\d+)$`)
+var rowTag = regexp.MustCompile(`^(ZT-\d+|TDR-BDD-\d+|M7-\d+)$`)
 
 type Tag struct {
 	Name string `json:"name"`

@@ -63,7 +63,7 @@ npm run bdd:row -- @ZT-17                    # JavaScript
 
 ### The traceability sheet
 
-`features/annex-rows.txt` holds the 92 Annex A row ids in Annex order and is the denominator: the
+`features/annex-rows.txt` holds the 94 Annex A row ids in Annex order and is the denominator: the
 sheet reports every row, covered or not, so a gap is visible rather than absent. `cmd/bddreport`
 generates `traceability.md` and `traceability.csv` from the tags in the merged report — the sheet
 is never edited by hand.
