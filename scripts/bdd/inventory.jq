@@ -186,7 +186,7 @@ def selects($selector): . as $pod | all($selector | to_entries[]; $pod.metadata.
       baseline: [$B[] | {kind, name: .metadata.name, uid: .metadata.uid}],
       helm: [$H[] | .metadata.name],
       expected: [$E[] | {kind, name: .metadata.name, uid: .metadata.uid}],
-      descendants: [$D[] | {kind, name: .metadata.name}],
+      descendants: [$D[] | {kind, name: .metadata.name, uid: .metadata.uid}],
       unexplained: [$U[] | {kind, name: .metadata.name}]
     },
     eventsIgnored: ([$objects[] | select(.kind == "Event")] | length)
