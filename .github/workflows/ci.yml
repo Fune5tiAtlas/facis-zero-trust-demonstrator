@@ -56,10 +56,11 @@ jobs:
             exit 0
           fi
           for dockerfile in "${dockerfiles[@]}"; do
-            context=$(dirname "$dockerfile")
-            image="ci/$(basename "$context"):${{ github.sha }}"
+            # The context is the repository root, so an image can take scripts/, ui/ and
+            # flows/; .dockerignore keeps local state such as .dev/ out of it.
+            image="ci/$(basename "$(dirname "$dockerfile")"):${{ github.sha }}"
 
-            docker build --platform linux/amd64 -t "$image" "$context"
+            docker build --platform linux/amd64 -f "$dockerfile" -t "$image" .
 
             # ZT-13 requires Linux images; assert it rather than trust the Dockerfile.
             platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")
@@ -126,7 +127,7 @@ jobs:
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
           # One pinned Helm for QA and for the lifecycle workflow; its flags differ by major version.
-          version: v4.1.3
+          version: v4.3.0
 
       # The fixture chart under features/ is linted like a release chart: the TDR's lint and
       # dry-run rule applies to every chart the pipeline installs. A chart whose values have no
