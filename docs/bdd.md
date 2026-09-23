@@ -134,13 +134,15 @@ Client targets run it **only through CI** (`bdd-cluster` job, one run at a time 
 [CI/CD](ci-cd.md)). Against a developer's local cluster — never evidence:
 
 ```bash
-scripts/dev/kind-up.sh                     # kind + BDD pool + identity kubeconfigs in .dev/kind/
-KUBECONFIG=$PWD/.dev/kind/kubeconfig-ztd-bdd-observer \
-BDD_ORCE_URL=http://localhost:18800 \
-BDD_ORCE_ADMIN_TOKEN=<read-only token> BDD_ORCE_HTTP_USER=<user> BDD_ORCE_HTTP_PASS=<password> \
-BDD_ORCE_LOGS_CMD='docker logs orce-bdd' \
-npm run bdd:cluster
+scripts/dev/kind-up.sh      # kind (Kubernetes 1.35) + BDD pool + identity kubeconfigs in .dev/kind/
+scripts/dev/orce-up.sh      # the ORCE image on kind's network, deploying as the pool's deployer;
+                            # writes the runner inputs below to .dev/kind/orce.env
+set -a && . .dev/kind/orce.env && set +a
+npm run bdd:cluster         # about 40 s; evidence in bundles/bdd/evidence/
+scripts/dev/orce-down.sh && scripts/dev/kind-down.sh
 ```
+
+The ORCE image is amd64 only; on an arm64 machine Docker runs it emulated.
 
 | Input | Meaning |
 |---|---|
