@@ -27,7 +27,7 @@ setDefaultTimeout(15 * 60 * 1000)
 
 // --- helpers ---------------------------------------------------------------------------------
 
-async function observe (world, expect, { expected = [], recordBaseline = false, deadline } = {}) {
+export async function observe (world, expect, { expected = [], recordBaseline = false, deadline } = {}) {
   const dir = world.evidence
   const args = ['--namespace', world.namespace, '--release', world.release, '--expect', expect]
   writeFileSync(`${dir}/expected.json`, JSON.stringify(expected))
@@ -48,11 +48,11 @@ async function observe (world, expect, { expected = [], recordBaseline = false, 
   return state
 }
 
-function assertHolds (state, what) {
+export function assertHolds (state, what) {
   assert.equal(state.converged, true, `${what}:\n  ${state.violations.join('\n  ')}`)
 }
 
-async function command (world, action, payload) {
+export async function command (world, action, payload) {
   const requestId = `${world.release}-${randomUUID().slice(0, 8)}`
   const body = { type: 'command', action, requestId, payload, meta: { source: 'bdd', row: world.row } }
   const response = await fetch(`${world.target.orceUrl}/lifecycle`, {
@@ -66,7 +66,7 @@ async function command (world, action, payload) {
 }
 
 // The final result, read from the ORCE flow context through the read-only admin API.
-async function finalResult (world, requestId) {
+export async function finalResult (world, requestId) {
   const started = Date.now()
   while (Date.now() - started < RESULT_DEADLINE_MS) {
     const response = await fetch(`${world.target.orceUrl}/context/flow/ztd-lifecycle-tab/lifecycle`, {
@@ -91,10 +91,27 @@ async function deploy (world, values = world.values, payload = {}) {
 }
 
 // Fails if ORCE and the observer are not looking at the same cluster.
-function assertSameCluster (world, result) {
+export function assertSameCluster (world, result) {
   if (result.data && result.data.clusterId) {
     assert.equal(result.data.clusterId, world.clusterId, 'ORCE deployed to a different cluster than the one observed')
   }
+}
+
+// The ORCE log carries one JSON object per line, {time, level, type, name, id, msg}; the lifecycle
+// node's record is itself JSON inside msg. Only a line that parses whole counts as an entry.
+export async function refusalLogEntry (world, requestId) {
+  const { stdout } = await shell(world.target.logsCommand, { maxBuffer: 64 << 20 })
+  for (const line of stdout.split('\n')) {
+    let record, entry
+    try {
+      record = JSON.parse(line)
+      entry = JSON.parse(record.msg)
+    } catch {
+      continue
+    }
+    if (entry && entry.event === 'lifecycle.refused' && entry.requestId === requestId) return { line, record, entry, log: stdout }
+  }
+  return null
 }
 
 // --- lifecycle -------------------------------------------------------------------------------
@@ -162,7 +179,7 @@ Then('all required resources are created and the release reaches Ready state wit
 
 // --- TDR-BDD-02 ------------------------------------------------------------------------------
 
-const INVALID = {
+export const INVALID = {
   // rejected by the Builder Node before anything runs
   'release name missing': (world) => ({ payload: { release: undefined }, fields: 'release' }),
   'values of the wrong type': (world) => ({ values: 'two', fields: 'values' }),
@@ -198,12 +215,9 @@ Then('deployment fails cleanly, returns a machine-readable error via the automat
     assertSameCluster(this, result)
   }
   // The refusal is recorded in the ORCE log as a structured entry carrying this request.
-  const { stdout } = await shell(this.target.logsCommand, { maxBuffer: 64 << 20 })
-  const entry = stdout.split('\n').map((line) => line.slice(line.indexOf('{'))).find((line) => {
-    try { const e = JSON.parse(line); return e.event === 'lifecycle.refused' && e.requestId === requestId } catch { return false }
-  })
-  assert.ok(entry, `no structured refusal entry for ${requestId} in the ORCE log`)
-  writeFileSync(`${this.evidence}/refusal-log-entry.json`, entry)
+  const found = await refusalLogEntry(this, requestId)
+  assert.ok(found, `no structured refusal entry for ${requestId} in the ORCE log`)
+  writeFileSync(`${this.evidence}/refusal-log-entry.json`, found.line)
   // Nothing of the release exists, and no CRD appeared.
   const after = await observe(this, 'absent')
   assertHolds(after, 'a partial deployment was left behind')

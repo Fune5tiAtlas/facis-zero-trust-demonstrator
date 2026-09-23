@@ -100,7 +100,10 @@ incomplete, because the demonstrator's claim is about what it refuses.
 ## The deployment-lifecycle pack
 
 `features/js/lifecycle.feature` covers TDR-BDD-01..04: deploy, invalid parameters (three
-examples), idempotent redeploy and uninstall. Each scenario sends a command to the ORCE lifecycle
+examples), idempotent redeploy and uninstall. `features/js/orce-qa.feature` covers TDR-BDD-06: a
+controlled error (values the chart's schema rejects) whose log record must be whole-line JSON
+([ORCE logging](flows.md#orce-logging)), carry the refusal, and contain neither the ORCE HTTP
+credentials nor the read token, while its machine-readable error is read from the ORCE context. Each scenario sends a command to the ORCE lifecycle
 workflow ([IF-08](api-docs.md)), reads the final result back from the ORCE context, and decides the
 outcome from the cluster with `scripts/bdd/cluster-state.sh` under a read-only identity.
 
@@ -110,7 +113,7 @@ not run rather than as gaps.
 
 ### How the cluster decides
 
-Each row has its own namespace from the BDD pool (`ztd-bdd-tdr-001`..`004`), provisioned with ORCE
+Each row has its own namespace from the BDD pool (`ztd-bdd-tdr-001`..`004` and `006`), provisioned with ORCE
 by the `deployment/helm/bdd-pool` chart. Before a scenario the namespace must hold only its
 documented baseline; afterwards it is restored through the same workflow. Every object in it is
 classified:
@@ -151,7 +154,7 @@ The ORCE image is amd64 only; on an arm64 machine Docker runs it emulated.
 | `BDD_ORCE_URL` | ORCE base URL |
 | `BDD_ORCE_ADMIN_TOKEN` | read-only ORCE admin API bearer token |
 | `BDD_ORCE_HTTP_USER`, `BDD_ORCE_HTTP_PASS` | credentials of the ORCE HTTP endpoints |
-| `BDD_ORCE_LOGS_CMD` | a command printing the ORCE log (row 02 asserts the structured refusal entry) |
+| `BDD_ORCE_LOGS_CMD` | a command printing the ORCE log (rows 02 and 06 assert the JSON refusal record) |
 | `BDD_RELEASE_CHART` | the release under test, a chart path in the ORCE image; default the lifecycle fixture |
 | `BDD_RELEASE_VALUES` | its valid baseline values; default the fixture's `ci/values.yaml` |
 | `BDD_TARGET`, `BDD_RUN_ID` | names the target and the run in the evidence |
@@ -171,7 +174,7 @@ the fixture, its cluster-scoped deploy rights and the ownership and removal of t
 Per row, target and example: `bundles/bdd/evidence/bdd-tdr-00n/<target>/<example>/` holds the
 commands and acknowledgements, the ORCE context entry of each command (with the masked Helm output,
 release revision, chart digest and values hash), every classified inventory, the recorded baseline,
-and for row 02 the refusal log entry.
+for row 02 the refusal log record, and for row 06 the log record and a sample of the ORCE log.
 
 ## Traceability
 

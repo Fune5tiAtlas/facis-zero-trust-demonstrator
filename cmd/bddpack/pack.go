@@ -319,7 +319,7 @@ func featurePath(r Row) string {
 func renderFeature(family string, list []scenario) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\nFeature: %s\n", generated, familyTitles[family])
-	fmt.Fprintf(&b, "  Annex A rows of the %s family, worded exactly as in the Annex.\n", strings.ToLower(familyTitles[family]))
+	fmt.Fprintf(&b, "  Annex A rows for %s, worded exactly as in the Annex.\n", familyTitles[family])
 	for _, s := range list {
 		r := s.first()
 		fmt.Fprintf(&b, "\n  %s\n  Scenario: %s\n", strings.Join(s.tags(), " "), s.name())

@@ -1577,8 +1577,8 @@
       "then": "the corresponding log is structured JSON and the machine-readable error is available through the ORCE context.",
       "family": "orce-qa",
       "runner": "js",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "TDR-BDD-07",
