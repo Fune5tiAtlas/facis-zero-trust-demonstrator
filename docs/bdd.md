@@ -104,8 +104,9 @@ examples), idempotent redeploy and uninstall. Each scenario sends a command to t
 workflow ([IF-08](api-docs.md)), reads the final result back from the ORCE context, and decides the
 outcome from the cluster with `scripts/bdd/cluster-state.sh` under a read-only identity.
 
-The scenarios are tagged `@cluster`: they need a cluster with ORCE and are never part of a
-pull-request run, where the traceability sheet shows their rows as gaps.
+The scenarios are tagged `@cluster`: they need a cluster with ORCE and never run in a pull
+request. There a dry run lists them, so the traceability sheet shows their rows as covered but
+not run rather than as gaps.
 
 ### How the cluster decides
 

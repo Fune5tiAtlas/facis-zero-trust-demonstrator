@@ -117,19 +117,39 @@ jobs:
       - name: Test the ORCE Builder nodes
         run: node --test ui/nodes/*/test/*.test.mjs
 
+      # Every scenario is the Annex wording, every row has one, and the generated files are current.
+      - name: Check the pack against Annex A
+        run: go run ./cmd/bddpack -check
+
+      # Strict: the implemented, non-cluster scenarios. A pending or undefined step fails.
       - name: Run the Go scenarios
         run: GODOG_CUCUMBER_OUT=bundles/bdd/go-report.json go test ./internal/bdd
 
       - name: Run the JavaScript scenarios
         run: npm run bdd
 
-      - name: Merge the reports and generate the traceability sheet
+      # The rows not implemented yet, reported as not run rather than as gaps.
+      - name: Run the pending catalogue
         run: |
-          go run ./cmd/bddreport --rows features/annex-rows.txt --out bundles/bdd \
-            bundles/bdd/go-report.json bundles/bdd/js-report.json
+          BDD_MODE=catalogue GODOG_CUCUMBER_OUT=bundles/bdd/go-catalogue-report.json go test ./internal/bdd
+          npm run bdd:catalogue
+
+      # The cluster rows cannot run here; a dry run lists them as not run. Pull requests only: it is
+      # never merged where a real cluster run exists, so it cannot stand in for one.
+      - name: List the cluster scenarios
+        run: npm run bdd:cluster-dryrun
+
+      - name: Merge the reports and generate the traceability sheet
+        if: always()
+        run: |
+          go run ./cmd/bddreport --require-complete --rows features/annex-rows.txt --out bundles/bdd \
+            bundles/bdd/go-report.json bundles/bdd/js-report.json \
+            bundles/bdd/go-catalogue-report.json bundles/bdd/js-catalogue-report.json \
+            bundles/bdd/js-cluster-dryrun.json
           cat bundles/bdd/traceability.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish the evidence bundle
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bdd-evidence
@@ -237,12 +257,16 @@ jobs:
         run: |
           GODOG_CUCUMBER_OUT=bundles/bdd/go-report.json go test ./internal/bdd
           npm run bdd
+          BDD_MODE=catalogue GODOG_CUCUMBER_OUT=bundles/bdd/go-catalogue-report.json go test ./internal/bdd
+          npm run bdd:catalogue
 
       - name: Generate the traceability sheet for this target
         if: always()
         run: |
           go run ./cmd/bddreport --rows features/annex-rows.txt --out bundles/bdd \
-            bundles/bdd/go-report.json bundles/bdd/js-report.json bundles/bdd/js-cluster-report-*.json
+            bundles/bdd/go-report.json bundles/bdd/js-report.json \
+            bundles/bdd/go-catalogue-report.json bundles/bdd/js-catalogue-report.json \
+            bundles/bdd/js-cluster-report-*.json
           cat bundles/bdd/traceability.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish the evidence bundle
@@ -275,11 +299,14 @@ jobs:
 
       - name: Generate the cross-target sheet
         run: |
-          go run ./cmd/bddreport --rows features/annex-rows.txt --out bundles/bdd \
-            evidence/*/go-report.json evidence/*/js-report.json evidence/*/js-cluster-report-*.json
+          go run ./cmd/bddreport --require-complete --rows features/annex-rows.txt --out bundles/bdd \
+            evidence/*/go-report.json evidence/*/js-report.json \
+            evidence/*/go-catalogue-report.json evidence/*/js-catalogue-report.json \
+            evidence/*/js-cluster-report-*.json
           cat bundles/bdd/traceability.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish the cross-target sheet
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bdd-traceability

@@ -4,7 +4,7 @@
 import { Before, After, Given, When, Then, setDefaultTimeout } from '@cucumber/cucumber'
 import assert from 'node:assert/strict'
 import { execFile, exec } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
@@ -15,6 +15,12 @@ const shell = promisify(exec)
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
 const clusterState = `${repoRoot}scripts/bdd/cluster-state.sh`
 const RESULT_DEADLINE_MS = 8 * 60 * 1000
+
+// The cluster rows, read from the Annex source: a row's pool namespace and evidence directory
+// follow its Annex evidence path (evidence/bdd-tdr-001/ -> ztd-bdd-tdr-001).
+const CLUSTER_ROWS = new Map(JSON.parse(readFileSync(`${repoRoot}features/annex/annex-a.json`, 'utf8')).rows
+  .filter((r) => r.cluster).map((r) => [r.id, r.evidencePath.split('/')[1]]))
+const FIXTURE_LABEL = '[fixture release]'
 
 // A deploy waits for readiness inside ORCE; the step waits for its result.
 setDefaultTimeout(15 * 60 * 1000)
@@ -95,15 +101,18 @@ function assertSameCluster (world, result) {
 
 Before({ tags: '@cluster' }, async function (scenario) {
   this.target = loadTarget()
-  const tags = scenario.pickle.tags.map((t) => t.name)
-  const row = tags.find((t) => /^@TDR-BDD-0[1-4]$/.test(t))
-  assert.ok(row, 'a lifecycle scenario carries its TDR-BDD row tag')
-  this.row = row.slice(1)
-  const n = row.slice(-2)
-  this.namespace = `ztd-bdd-tdr-0${n}`
-  this.release = `ztd-bdd-${this.target.run}-${n}`.slice(0, 53).replace(/-+$/, '')
-  const example = scenario.pickle.name.includes(' - ') ? scenario.pickle.name.split(' - ').pop() : 'main'
-  this.evidence = `${repoRoot}bundles/bdd/evidence/bdd-tdr-00${n.slice(-1)}/${this.target.name}/${example.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`
+  const rows = scenario.pickle.tags.map((t) => t.name.slice(1)).filter((t) => CLUSTER_ROWS.has(t))
+  assert.equal(rows.length, 1, 'a cluster scenario carries exactly one cluster row tag of the Annex source')
+  this.row = rows[0]
+  const bundle = CLUSTER_ROWS.get(this.row)
+  // A scenario named as fixture evidence must deploy the fixture, so the label never lies.
+  if (scenario.pickle.name.includes(FIXTURE_LABEL)) {
+    assert.ok(this.target.chart.includes('lifecycle-fixture'), `${this.row} is labelled ${FIXTURE_LABEL} but deploys ${this.target.chart}`)
+  }
+  this.namespace = `ztd-${bundle}`
+  this.release = `ztd-bdd-${this.target.run}-${bundle.slice(-2)}`.slice(0, 53).replace(/-+$/, '')
+  this.example = scenario.pickle.name.includes(' - ') ? scenario.pickle.name.split(' - ').pop() : 'main'
+  this.evidence = `${repoRoot}bundles/bdd/evidence/${bundle}/${this.target.name}/${this.example.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`
   mkdirSync(this.evidence, { recursive: true })
   this.values = baselineValues()
   this.commands = []
@@ -142,7 +151,7 @@ When('the Helm\\/ORCE deployment workflow is executed', async function () {
   this.deployed = await deploy(this)
 })
 
-Then('all required resources are created and the release reaches Ready state without manual intervention', async function () {
+Then('all required resources are created and the release reaches Ready state without manual intervention.', async function () {
   const { status, result } = this.deployed
   assert.equal(status, 202, 'the command was not accepted')
   assert.equal(result.ok, true, `the deployment failed: ${JSON.stringify(result.errors)}`)
@@ -164,9 +173,10 @@ const INVALID = {
   }
 }
 
-Given('invalid or incomplete deployment parameters: {}', function (example) {
-  assert.ok(INVALID[example], `unknown invalid-parameter example: ${example}`)
-  this.invalid = INVALID[example](this)
+// The example is named in the Outline title, so the step keeps the Annex wording.
+Given('invalid or incomplete deployment parameters', function () {
+  assert.ok(INVALID[this.example], `unknown invalid-parameter example: ${this.example}`)
+  this.invalid = INVALID[this.example](this)
 })
 
 When('the deployment workflow is executed', async function () {
@@ -177,7 +187,7 @@ When('the deployment workflow is executed', async function () {
   this.refused = { ...sent, result: await finalResult(this, sent.requestId) }
 })
 
-Then('deployment fails cleanly, returns a machine-readable error via the automation context, and no partial trusted state is left behind', async function () {
+Then('deployment fails cleanly, returns a machine-readable error via the automation context, and no partial trusted state is left behind.', async function () {
   const { result, requestId } = this.refused
   assert.equal(result.ok, false, 'the invalid deployment was not refused')
   if (this.invalid.fields) {
@@ -215,7 +225,7 @@ When('the same release is deployed again', async function () {
   this.second = await deploy(this)
 })
 
-Then('the operation completes successfully and the resulting Kubernetes state remains consistent and ready', async function () {
+Then('the operation completes successfully and the resulting Kubernetes state remains consistent and ready.', async function () {
   const { result, requestId } = this.second
   assert.notEqual(requestId, this.first.requestId, 'the redeploy must be a distinct execution')
   assert.equal(result.ok, true, `the redeployment failed: ${JSON.stringify(result.errors)}`)
@@ -243,7 +253,7 @@ When('the uninstall workflow is executed', async function () {
   this.uninstalled = { ...sent, result: await finalResult(this, sent.requestId) }
 })
 
-Then('the release is removed without manual intervention and the expected project resources are no longer present', async function () {
+Then('the release is removed without manual intervention and the expected project resources are no longer present.', async function () {
   const { status, result } = this.uninstalled
   assert.equal(status, 202, 'the uninstall command was not accepted')
   assert.equal(result.ok, true, `the uninstall failed: ${JSON.stringify(result.errors)}`)
