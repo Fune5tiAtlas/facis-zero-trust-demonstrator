@@ -61,16 +61,18 @@ func TestInterop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sbom := `{"bomFormat":"CycloneDX","specVersion":"1.5","version":1,"metadata":{"component":{"type":"container","name":"interop"}},"components":[]}`
-	for name, content := range map[string][]byte{"mock.json": mock, "sbom.json": []byte(sbom)} {
-		if err := os.WriteFile(filepath.Join(dir, name), content, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
 	script, _ := filepath.Abs(filepath.Join("..", "..", "scripts", "supplychain", "sign-attest.sh"))
 	signEnv := []string{"COSIGN_PASSWORD=", "COSIGN_KEY=" + filepath.Join(dir, "cosign.key"), "COSIGN=" + cosign}
 
 	signed := push(t, registry, "interop/signed")
+	// The SBOM names the image as Syft does for an image scanned by digest.
+	name, dgst, _ := strings.Cut(signed, "@")
+	sbom := fmt.Sprintf(`{"bomFormat":"CycloneDX","specVersion":"1.6","version":1,"metadata":{"component":{"type":"container","name":%q,"version":%q}},"components":[]}`, name, dgst)
+	for file, content := range map[string][]byte{"mock.json": mock, "sbom.json": []byte(sbom)} {
+		if err := os.WriteFile(filepath.Join(dir, file), content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	run(signEnv, "bash", script, signed, "sbom.json", "mock.json")
 	unsigned := push(t, registry, "interop/unsigned")
 	copied := push(t, registry, "interop/copied")

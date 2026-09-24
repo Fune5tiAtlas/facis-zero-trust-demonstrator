@@ -59,6 +59,12 @@ Direct dependencies of the Go module. Transitive dependencies are listed in the 
 | `github.com/cucumber/godog` | v0.16.0 | MIT | runs the Go acceptance scenarios (`internal/bdd`) |
 | `github.com/cucumber/gherkin/go/v42` | v42.0.0 | MIT | parses the feature files for the Annex verbatim check (`cmd/bddpack`) |
 | `github.com/cucumber/messages/go/v34` | v34.2.0 | MIT | the Gherkin document model used with it |
+| `github.com/santhosh-tekuri/jsonschema/v6` | v6.0.3 | Apache-2.0 | validates SBOMs and mock attestations against their JSON Schemas at admission |
+
+The admission check validates SBOMs against the official CycloneDX 1.5, 1.6 and 1.7 JSON Schemas and
+the schemas they reference (CycloneDX specification tag 1.7.2, Apache-2.0), vendored in
+`internal/cosignverify/schemas/` and pinned by SHA-256. CycloneDX 1.7 is accepted because it is what
+the pinned Syft and Grype write by default.
 
 ## JavaScript development dependencies
 
@@ -105,7 +111,6 @@ other dependency.
 | Dependency | Version | Licence | Purpose |
 |---|---|---|---|
 | `github.com/jackc/pgx/v5` | v5.11.0 | MIT | PostgreSQL driver of the token store |
-| `github.com/santhosh-tekuri/jsonschema/v6` | v6.0.3 | Apache-2.0 | validates SBOMs and mock attestations against their JSON Schemas at admission |
 
 The admission provider talks to OCI registries through a small first-party client built on the Go
 standard library rather than a general-purpose registry library, to keep its dependency set minimal.

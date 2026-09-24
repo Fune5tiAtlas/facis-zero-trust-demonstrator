@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -129,8 +131,30 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	reg, host := newRegistry(t)
 	f := &fixture{t: t, reg: reg, host: host, key: newKey(t), repo: "team/app"}
-	f.digest = reg.manifest("v1", imageManifest(layer{MediaType: "application/vnd.oci.image.layer.v1.tar", Digest: reg.blob([]byte("rootfs")), Size: 6}))
+	f.platform(`{"architecture":"amd64","os":"linux"}`)
 	return f
+}
+
+// platform (re)pushes the image with this configuration; call it before signing.
+func (f *fixture) platform(config string) {
+	f.digest = f.reg.manifest("v1", map[string]any{"schemaVersion": 2, "mediaType": ociclient.MediaTypeOCIManifest,
+		"config": layer{MediaType: "application/vnd.oci.image.config.v1+json", Digest: f.reg.blob([]byte(config)), Size: len(config)},
+		"layers": []layer{{MediaType: "application/vnd.oci.image.layer.v1.tar", Digest: f.reg.blob([]byte("rootfs")), Size: 6}}})
+}
+
+// sbom is a valid CycloneDX SBOM of this image, as Syft writes it for an image scanned by digest.
+func (f *fixture) sbom() string {
+	return fmt.Sprintf(`{"bomFormat":"CycloneDX","specVersion":"1.6","version":1,"metadata":{"component":{"type":"container","name":%q,"version":%q}},"components":[{"type":"library","name":"musl","version":"1.2.5"}]}`,
+		f.host+"/"+f.repo, f.digest)
+}
+
+// mock is a valid mock-attestation predicate (the sw sample).
+func (f *fixture) mock() string {
+	b, err := os.ReadFile("../../docs/attestation/samples/sw.mock.json")
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return string(b)
 }
 
 func (f *fixture) image() string { return f.host + "/" + f.repo + "@" + f.digest }
@@ -163,8 +187,8 @@ func (f *fixture) addEnvelope(predicateType string, env map[string]any) {
 
 func (f *fixture) valid() *fixture {
 	f.addSignature(f.key, f.signaturePayload(f.digest, f.host+"/"+f.repo))
-	f.addAttestation(f.key, PredicateSBOM, f.statement(PredicateSBOM, f.digest, statementType, `{"bomFormat":"CycloneDX"}`))
-	f.addAttestation(f.key, PredicateMock, f.statement(PredicateMock, f.digest, statementType, `{"mock":true}`))
+	f.addAttestation(f.key, PredicateSBOM, f.statement(PredicateSBOM, f.digest, statementType, f.sbom()))
+	f.addAttestation(f.key, PredicateMock, f.statement(PredicateMock, f.digest, statementType, f.mock()))
 	return f
 }
 
@@ -193,7 +217,7 @@ func TestValidImage(t *testing.T) {
 	if !r.OK() {
 		t.Fatalf("valid image refused: %+v", r)
 	}
-	if string(r.Predicates[PredicateSBOM]) != `{"bomFormat":"CycloneDX"}` || string(r.Predicates[PredicateMock]) != `{"mock":true}` {
+	if string(r.Predicates[PredicateSBOM]) != f.sbom() || !json.Valid(r.Predicates[PredicateMock]) {
 		t.Errorf("predicates = %s", r.Predicates)
 	}
 }
@@ -225,12 +249,51 @@ func TestRefusals(t *testing.T) {
 		}, nil, CodeUnsigned},
 		{"SBOM attestation missing", func(f *fixture) {
 			f.addSignature(f.key, f.signaturePayload(f.digest, f.host+"/"+f.repo))
-			f.addAttestation(f.key, PredicateMock, f.statement(PredicateMock, f.digest, statementType, `{}`))
+			f.addAttestation(f.key, PredicateMock, f.statement(PredicateMock, f.digest, statementType, f.mock()))
 		}, nil, CodeSBOMMissing},
 		{"mock attestation missing", func(f *fixture) {
 			f.addSignature(f.key, f.signaturePayload(f.digest, f.host+"/"+f.repo))
-			f.addAttestation(f.key, PredicateSBOM, f.statement(PredicateSBOM, f.digest, statementType, `{}`))
+			f.addAttestation(f.key, PredicateSBOM, f.statement(PredicateSBOM, f.digest, statementType, f.sbom()))
 		}, nil, CodeNoAttestation},
+		{"SBOM with one invalid component", func(f *fixture) {
+			f.withSBOM(strings.Replace(f.sbom(), `"type":"library"`, `"type":"not-a-type"`, 1))
+		}, nil, CodeSBOMInvalid},
+		{"SBOM of an unaccepted CycloneDX version", func(f *fixture) {
+			f.withSBOM(strings.Replace(f.sbom(), `"specVersion":"1.6"`, `"specVersion":"1.4"`, 1))
+		}, nil, CodeSBOMInvalid},
+		{"SBOM naming another image", func(f *fixture) {
+			f.withSBOM(strings.Replace(f.sbom(), f.digest, other, 1))
+		}, nil, CodeSBOMInvalid},
+		{"SBOM of a non-container component", func(f *fixture) {
+			f.withSBOM(strings.Replace(f.sbom(), `"type":"container"`, `"type":"application"`, 1))
+		}, nil, CodeSBOMInvalid},
+		{"SBOM without components", func(f *fixture) {
+			f.withSBOM(strings.Replace(f.sbom(), `,"components":[{"type":"library","name":"musl","version":"1.2.5"}]`, "", 1))
+		}, nil, CodeSBOMInvalid},
+		{"mock predicate with an extra property", func(f *fixture) {
+			f.addSignature(f.key, f.signaturePayload(f.digest, f.host+"/"+f.repo))
+			f.addAttestation(f.key, PredicateSBOM, f.statement(PredicateSBOM, f.digest, statementType, f.sbom()))
+			mock := strings.Replace(f.mock(), "{", `{"image":"x",`, 1)
+			f.addAttestation(f.key, PredicateMock, f.statement(PredicateMock, f.digest, statementType, mock))
+		}, nil, CodeAttestationInvalid},
+		{"non-Linux image", func(f *fixture) {
+			f.platform(`{"architecture":"amd64","os":"windows"}`)
+			f.valid()
+		}, nil, CodeNotLinux},
+		{"image without an os", func(f *fixture) {
+			f.platform(`{"architecture":"amd64"}`)
+			f.valid()
+		}, nil, CodeNotLinux},
+		{"arm64 image", func(f *fixture) {
+			f.platform(`{"architecture":"arm64","os":"linux"}`)
+			f.valid()
+		}, nil, CodeArchUnsupported},
+		{"image index", func(f *fixture) {
+			f.digest = f.reg.manifest("idx", map[string]any{"schemaVersion": 2, "mediaType": ociclient.MediaTypeOCIIndex,
+				"manifests": []any{map[string]any{"mediaType": ociclient.MediaTypeOCIManifest, "digest": f.digest, "size": 1,
+					"platform": map[string]string{"os": "linux", "architecture": "amd64"}}}})
+			f.valid()
+		}, nil, CodeIndexUnsupported},
 		{"wrong predicate type only", func(f *fixture) {
 			f.addSignature(f.key, f.signaturePayload(f.digest, f.host+"/"+f.repo))
 			f.addAttestation(f.key, "https://slsa.dev/provenance/v1", f.statement("https://slsa.dev/provenance/v1", f.digest, statementType, `{}`))
@@ -259,9 +322,17 @@ func TestRefusals(t *testing.T) {
 			f.addSignature(f.key, f.signaturePayload(f.digest, f.host+"/"+f.repo))
 			f.addAttestation(f.key, PredicateSBOM, f.statement(PredicateSBOM, f.digest, "https://in-toto.io/Statement/v1", `{}`))
 		}, nil, CodeAttestationInvalid},
-		{"malformed predicate", func(f *fixture) {
+		{"SBOM predicate a string", func(f *fixture) { f.withSBOM(`"not an object"`) }, nil, CodeSBOMInvalid},
+		{"SBOM predicate null", func(f *fixture) { f.withSBOM(`null`) }, nil, CodeSBOMInvalid},
+		{"SBOM predicate an array", func(f *fixture) { f.withSBOM(`[]`) }, nil, CodeSBOMInvalid},
+		{"SBOM with a second, empty metadata", func(f *fixture) {
+			// encoding/json would keep the first metadata; the schema sees the last. One reading only.
+			f.withSBOM(strings.Replace(f.sbom(), `,"components":`, `,"metadata":{},"components":`, 1))
+		}, nil, CodeSBOMInvalid},
+		{"mock predicate a string", func(f *fixture) {
 			f.addSignature(f.key, f.signaturePayload(f.digest, f.host+"/"+f.repo))
-			f.addAttestation(f.key, PredicateSBOM, f.statement(PredicateSBOM, f.digest, statementType, `"not an object"`))
+			f.addAttestation(f.key, PredicateSBOM, f.statement(PredicateSBOM, f.digest, statementType, f.sbom()))
+			f.addAttestation(f.key, PredicateMock, f.statement(PredicateMock, f.digest, statementType, `"x"`))
 		}, nil, CodeAttestationInvalid},
 	}
 	for _, tc := range cases {
@@ -276,6 +347,60 @@ func TestRefusals(t *testing.T) {
 				t.Errorf("code = %q (%s), want %q", r.Code, r.Detail, tc.want)
 			}
 		})
+	}
+}
+
+// withSBOM signs the image and attests the given SBOM and a valid mock predicate.
+func (f *fixture) withSBOM(sbom string) {
+	f.addSignature(f.key, f.signaturePayload(f.digest, f.host+"/"+f.repo))
+	f.addAttestation(f.key, PredicateSBOM, f.statement(PredicateSBOM, f.digest, statementType, sbom))
+	f.addAttestation(f.key, PredicateMock, f.statement(PredicateMock, f.digest, statementType, f.mock()))
+}
+
+func TestPlatformDetailBounded(t *testing.T) {
+	for _, config := range []string{
+		`{"architecture":"amd64","os":"` + strings.Repeat("w", 1<<20) + `"}`,
+		`{"architecture":"` + strings.Repeat("a", 1<<20) + `","os":"linux"}`,
+	} {
+		f := newFixture(t)
+		f.platform(config)
+		f.valid()
+		if r := f.verifier().VerifyImage(context.Background(), f.image()); r.OK() || len(r.Detail) > 512 {
+			t.Errorf("code %s, detail length %d", r.Code, len(r.Detail))
+		}
+	}
+}
+
+func TestReattestedImagePasses(t *testing.T) {
+	// An earlier, invalid SBOM attestation next to a valid one: the valid one is enough.
+	f := newFixture(t)
+	f.addAttestation(f.key, PredicateSBOM, f.statement(PredicateSBOM, f.digest, statementType, `{"bomFormat":"CycloneDX","specVersion":"1.4"}`))
+	f.valid()
+	if r := f.verifier().VerifyImage(context.Background(), f.image()); !r.OK() {
+		t.Fatalf("re-attested image refused: %+v", r)
+	}
+}
+
+func TestSchemas(t *testing.T) {
+	if _, err := schemas(); err != nil {
+		t.Fatalf("vendored schemas: %v", err)
+	}
+	vendored, _ := schemaFS.ReadFile("schemas/mock-attestation.schema.json")
+	published, err := os.ReadFile("../../docs/attestation/mock-attestation.schema.json")
+	if err != nil || string(vendored) != string(published) {
+		t.Errorf("schemas/mock-attestation.schema.json differs from docs/attestation (%v)", err)
+	}
+	// Every published mock sample validates.
+	s, _ := schemas()
+	samples, _ := filepath.Glob("../../docs/attestation/samples/*.json")
+	for _, name := range samples {
+		b, _ := os.ReadFile(name)
+		if err := validateWith(s.mock, b); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if len(samples) == 0 {
+		t.Error("no mock samples found")
 	}
 }
 

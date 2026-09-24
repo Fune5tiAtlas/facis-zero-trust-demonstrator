@@ -11,7 +11,7 @@
         "ADM-NO-ATTESTATION": { "meaning": "The release mock attestation is absent (ZT-71)" },
         "ADM-ATTESTATION-INVALID": { "meaning": "An attestation is present but its signature, subject digest or predicate does not verify, for example one copied from another image" },
         "ADM-SBOM-MISSING": { "meaning": "The signed SBOM attestation is absent (ZT-11, ZT-54)" },
-        "ADM-SBOM-INVALID": { "meaning": "The SBOM is not CycloneDX 1.5 or 1.6 JSON, fails its schema, or does not name the image" },
+        "ADM-SBOM-INVALID": { "meaning": "The SBOM is not CycloneDX 1.5, 1.6 or 1.7 JSON, fails its schema, or does not name the image" },
         "ADM-NOT-LINUX": { "meaning": "The image configuration does not declare the linux operating system (ZT-13)" },
         "ADM-ARCH-UNSUPPORTED": { "meaning": "The image configuration declares an architecture other than amd64" },
         "ADM-INDEX-UNSUPPORTED": { "meaning": "The digest names an image index; only single-platform manifests are admitted" },

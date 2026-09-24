@@ -1,12 +1,15 @@
 // Package cosignverify verifies container images against the demonstrator's one signing profile:
 // cosign v2 classic layout (".sig" and ".att" tags), key-based ECDSA P-256, no transparency log,
 // attestations as DSSE envelopes of in-toto Statement v0.1. Anything outside that profile is refused.
+// The image itself must be a single-platform linux/amd64 manifest; the SBOM (CycloneDX 1.5, 1.6 or
+// 1.7 JSON) and the mock attestation must validate against their schemas.
 //
 // A result names the admission reason code of the first check that failed, from the contracts'
 // reason-code registry.
 package cosignverify
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -23,6 +26,7 @@ import (
 	"time"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/ociclient"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 // Reason codes (docs/contracts/reason-codes.json).
@@ -31,9 +35,13 @@ const (
 	CodeRegistryDenied     = "ADM-REGISTRY-DENIED"
 	CodeUnsigned           = "ADM-UNSIGNED"
 	CodeSBOMMissing        = "ADM-SBOM-MISSING"
+	CodeSBOMInvalid        = "ADM-SBOM-INVALID"
 	CodeNoAttestation      = "ADM-NO-ATTESTATION"
 	CodeAttestationInvalid = "ADM-ATTESTATION-INVALID"
 	CodeProviderDown       = "ADM-PROVIDER-DOWN"
+	CodeNotLinux           = "ADM-NOT-LINUX"
+	CodeArchUnsupported    = "ADM-ARCH-UNSUPPORTED"
+	CodeIndexUnsupported   = "ADM-INDEX-UNSUPPORTED"
 )
 
 // Predicate types of the two required attestations.
@@ -177,7 +185,8 @@ func (p *Policy) allows(r Ref) bool {
 }
 
 // VerifyImage runs the profile's checks in order and returns the first failure: digest reference,
-// allowed repository (both before any network call), signature, SBOM attestation, mock attestation.
+// allowed repository (both before any network call), signature, image platform, SBOM attestation,
+// mock attestation.
 func (v *Verifier) VerifyImage(ctx context.Context, image string) Result {
 	ref, ok := ParseRef(image)
 	if !ok {
@@ -251,12 +260,22 @@ func (v *Verifier) verify(ctx context.Context, ref Ref, policy *Policy) Result {
 	if r := v.verifySignature(ctx, ref, policy); !r.OK() {
 		return r
 	}
+	if r := v.verifyPlatform(ctx, ref); !r.OK() {
+		return r
+	}
+	s, err := schemas()
+	if err != nil {
+		return Result{Code: CodeProviderDown, Detail: "predicate schemas: " + err.Error()}
+	}
 	predicates := map[string]json.RawMessage{}
-	for _, want := range []struct{ predicate, missing string }{
-		{PredicateSBOM, CodeSBOMMissing},
-		{PredicateMock, CodeNoAttestation},
+	for _, want := range []struct {
+		predicate, missing, invalid string
+		validate                    func(json.RawMessage) error
+	}{
+		{PredicateSBOM, CodeSBOMMissing, CodeSBOMInvalid, func(p json.RawMessage) error { return validateSBOM(s, ref, p) }},
+		{PredicateMock, CodeNoAttestation, CodeAttestationInvalid, func(p json.RawMessage) error { return validateWith(s.mock, p) }},
 	} {
-		p, r := v.verifyAttestation(ctx, ref, policy, want.predicate, want.missing)
+		p, r := v.verifyAttestation(ctx, ref, policy, want.predicate, want.missing, want.invalid, want.validate)
 		if !r.OK() {
 			return r
 		}
@@ -374,15 +393,19 @@ func pae(payloadType string, payload []byte) []byte {
 }
 
 // verifyAttestation finds an attestation of the wanted predicate type that is signed by a trusted
-// key and bound to this digest. A layer that claims the type but fails is reported as invalid, so a
-// copied or tampered attestation is distinguishable from a missing one.
-func (v *Verifier) verifyAttestation(ctx context.Context, ref Ref, policy *Policy, want, missing string) (json.RawMessage, Result) {
+// key, bound to this digest and whose predicate validates. A layer that claims the type but is not
+// signed or bound is reported as ADM-ATTESTATION-INVALID, so a copied or tampered attestation is
+// distinguishable from a missing one; a signed and bound one whose predicate fails validation is
+// reported with the invalid code. Any one layer that passes is enough (a re-attested image carries
+// its earlier attestations too).
+func (v *Verifier) verifyAttestation(ctx context.Context, ref Ref, policy *Policy, want, missing, invalid string, validate func(json.RawMessage) error) (json.RawMessage, Result) {
 	layers, err := v.layers(ctx, ref, "att")
 	if err != nil {
 		return nil, down(err)
 	}
 	wantHex := strings.TrimPrefix(ref.Digest, "sha256:")
 	claimed := false
+	var predicateErr error
 	for _, l := range layers {
 		if ctx.Err() != nil {
 			return nil, down(ctx.Err())
@@ -440,13 +463,110 @@ func (v *Verifier) verifyAttestation(ctx context.Context, ref Ref, policy *Polic
 				bound = true
 			}
 		}
-		var obj map[string]json.RawMessage
-		if bound && json.Unmarshal(st.Predicate, &obj) == nil && obj != nil {
-			return st.Predicate, Result{}
+		if !bound {
+			continue
 		}
+		if err := validate(st.Predicate); err != nil {
+			predicateErr = err
+			continue
+		}
+		return st.Predicate, Result{}
+	}
+	if predicateErr != nil {
+		return nil, Result{Code: invalid, Detail: want + " predicate for " + ref.String() + ": " + truncate(predicateErr.Error(), 300)}
 	}
 	if claimed {
 		return nil, Result{Code: CodeAttestationInvalid, Detail: want + " attestation does not verify for " + ref.String()}
 	}
 	return nil, Result{Code: missing, Detail: "no " + want + " attestation for " + ref.String()}
+}
+
+// verifyPlatform admits only a single-platform linux/amd64 image manifest: an index is refused, so
+// the signature, the attestations and the platform all bind the one digest that runs.
+func (v *Verifier) verifyPlatform(ctx context.Context, ref Ref) Result {
+	m, err := v.client.ManifestByDigest(ctx, ref.Registry, ref.Repository, ref.Digest)
+	if err != nil {
+		return down(fmt.Errorf("image manifest: %w", err))
+	}
+	switch m.MediaType {
+	case ociclient.MediaTypeOCIManifest, ociclient.MediaTypeDockerManifest:
+	case ociclient.MediaTypeOCIIndex, ociclient.MediaTypeDockerList:
+		return Result{Code: CodeIndexUnsupported, Detail: ref.String() + " is an image index; reference the linux/amd64 manifest digest"}
+	default:
+		return Result{Code: CodeIndexUnsupported, Detail: fmt.Sprintf("%s: manifest media type %q is not a single-platform image manifest", ref, truncate(m.MediaType, 64))}
+	}
+	var im ociclient.ImageManifest
+	if err := json.Unmarshal(m.Body, &im); err != nil || !ociclient.ValidDigest(im.Config.Digest) {
+		return Result{Code: CodeIndexUnsupported, Detail: ref.String() + ": not a valid image manifest"}
+	}
+	raw, err := v.client.Blob(ctx, ref.Registry, ref.Repository, im.Config.Digest)
+	if err != nil {
+		return down(fmt.Errorf("image config: %w", err))
+	}
+	var config struct {
+		OS           string `json:"os"`
+		Architecture string `json:"architecture"`
+	}
+	if err := json.Unmarshal(raw, &config); err != nil {
+		return Result{Code: CodeNotLinux, Detail: ref.String() + ": image configuration is not valid JSON"}
+	}
+	if config.OS != "linux" {
+		return Result{Code: CodeNotLinux, Detail: fmt.Sprintf("%s: image configuration declares os %q", ref, truncate(config.OS, 64))}
+	}
+	if config.Architecture != "amd64" {
+		return Result{Code: CodeArchUnsupported, Detail: fmt.Sprintf("%s: image configuration declares architecture %q", ref, truncate(config.Architecture, 64))}
+	}
+	return Result{}
+}
+
+func validateWith(s *jsonschema.Schema, predicate json.RawMessage) error {
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(predicate))
+	if err != nil {
+		return err
+	}
+	return s.Validate(doc)
+}
+
+// validateSBOM checks the SBOM against the CycloneDX schema of its specVersion, then binds it to the
+// image: its metadata.component is the container "registry/repository" at this digest, as Syft writes
+// it for an image scanned by digest, and it lists components. The schema and the binding read the
+// same decoded document (exact key names, one value per key), so no second reading of the JSON can
+// see a different SBOM.
+func validateSBOM(s *compiledSchemas, ref Ref, predicate json.RawMessage) error {
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(predicate))
+	if err != nil {
+		return err
+	}
+	sbom, ok := doc.(map[string]any)
+	if !ok {
+		return errors.New("not a JSON object")
+	}
+	format, _ := sbom["bomFormat"].(string)
+	version, _ := sbom["specVersion"].(string)
+	schema, ok := s.sbom[version]
+	if format != "CycloneDX" || !ok {
+		return fmt.Errorf("not CycloneDX 1.5, 1.6 or 1.7 JSON (bomFormat %q, specVersion %q)", truncate(format, 32), truncate(version, 32))
+	}
+	if err := schema.Validate(doc); err != nil {
+		return err
+	}
+	metadata, _ := sbom["metadata"].(map[string]any)
+	component, _ := metadata["component"].(map[string]any)
+	typ, _ := component["type"].(string)
+	name, _ := component["name"].(string)
+	digest, _ := component["version"].(string)
+	if typ != "container" || name != ref.Registry+"/"+ref.Repository || digest != ref.Digest {
+		return fmt.Errorf("metadata.component (%s %q %q) does not name this image", truncate(typ, 32), truncate(name, 128), truncate(digest, 80))
+	}
+	if _, ok := sbom["components"].([]any); !ok {
+		return errors.New("no components array")
+	}
+	return nil
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
