@@ -69,6 +69,10 @@ Used by the acceptance harness only; never shipped in an image.
 | `@cucumber/cucumber` | 13.2.1 | MIT | runs the JavaScript acceptance scenarios |
 | `ajv` | 8.20.0 | MIT | validates the interface contracts (JSON Schema and OpenAPI documents) against their fixtures |
 | `ajv-formats` | 3.0.1 | MIT | the string formats (date-time, uri, …) Ajv checks |
+| `yaml` | 2.9.1 | ISC | reads the OpenAPI documents for validation (already present as a dependency of `@cucumber/cucumber`) |
+
+The contract check also uses the official OpenAPI 3.1 JSON Schema (`schema/2025-09-15`, Apache-2.0,
+from the OpenAPI Initiative), vendored in `docs/contracts/tooling/oas-3.1/` and pinned by SHA-256.
 
 ## Supply-chain, policy and test tooling
 

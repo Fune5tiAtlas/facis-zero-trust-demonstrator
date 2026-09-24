@@ -4,6 +4,10 @@ repo_url: https://github.com/eclipse-xfsc/facis-zero-trust-demonstrator
 edit_uri: edit/main/docs/
 copyright: Apache-2.0
 
+# The contract validator and its vendored schema are repository tooling, not documentation.
+exclude_docs: |
+  contracts/tooling/
+
 theme:
   name: readthedocs
 
