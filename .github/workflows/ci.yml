@@ -224,7 +224,9 @@ jobs:
       # The cluster rows cannot run here; a dry run lists them as not run. Only this job's sheet
       # merges it: the cluster jobs never do, so it cannot stand in for a real cluster run.
       - name: List the cluster scenarios
-        run: npm run bdd:cluster-dryrun
+        run: |
+          npm run bdd:cluster-dryrun
+          BDD_MODE=cluster-dryrun GODOG_CUCUMBER_OUT=bundles/bdd/go-cluster-dryrun.json go test ./internal/bdd
 
       - name: Merge the reports and generate the traceability sheet
         if: always()
@@ -232,7 +234,7 @@ jobs:
           go run ./cmd/bddreport --require-complete --rows features/annex-rows.txt --out bundles/bdd \
             bundles/bdd/go-report.json bundles/bdd/js-report.json \
             bundles/bdd/go-catalogue-report.json bundles/bdd/js-catalogue-report.json \
-            bundles/bdd/js-cluster-dryrun.json
+            bundles/bdd/js-cluster-dryrun.json bundles/bdd/go-cluster-dryrun.json
           cat bundles/bdd/traceability.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish the evidence bundle
@@ -339,6 +341,34 @@ jobs:
           BDD_ORCE_LOGS_CMD: ${{ vars[format('BDD_{0}_ORCE_LOGS_CMD', matrix.key)] }}
         run: npm run bdd:cluster
 
+      # The admission proof (ZT-72) with the namespaced tester identity, against the signed fixtures the
+      # admission-fixtures workflow published. Where the target has neither, the row is listed as not
+      # run (dry run), so it is never missing from the sheet and never reported as passed.
+      - name: Write the admission tester kubeconfig and fixture list
+        id: admission
+        env:
+          TESTER_KUBECONFIG: ${{ secrets[format('BDD_{0}_ADM_TESTER_KUBECONFIG', matrix.key)] }}
+          FIXTURES: ${{ vars[format('BDD_{0}_ADM_FIXTURES', matrix.key)] }}
+        run: |
+          if [ -z "$TESTER_KUBECONFIG" ] || [ -z "$FIXTURES" ]; then
+            echo "No admission tester or fixtures for this target - the admission proof does not run here."
+            exit 0
+          fi
+          umask 077
+          printf '%s' "$TESTER_KUBECONFIG" > "$RUNNER_TEMP/tester.kubeconfig"
+          printf '%s\n' "$FIXTURES" > "$RUNNER_TEMP/fixtures.txt"
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+
+      - name: Run the admission proof
+        if: always()
+        env:
+          KUBECONFIG: ${{ runner.temp }}/tester.kubeconfig
+          BDD_ADM_FIXTURES: ${{ runner.temp }}/fixtures.txt
+          BDD_TARGET: ${{ matrix.target }}
+          BDD_RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
+          MODE: ${{ steps.admission.outputs.configured == 'true' && 'cluster' || 'cluster-dryrun' }}
+        run: BDD_MODE="$MODE" GODOG_CUCUMBER_OUT=bundles/bdd/go-cluster-report-${{ matrix.target }}.json go test ./internal/bdd
+
       - name: Run the repository scenarios
         if: always()
         run: |
@@ -353,7 +383,7 @@ jobs:
           go run ./cmd/bddreport --rows features/annex-rows.txt --out bundles/bdd \
             bundles/bdd/go-report.json bundles/bdd/js-report.json \
             bundles/bdd/go-catalogue-report.json bundles/bdd/js-catalogue-report.json \
-            bundles/bdd/js-cluster-report-*.json
+            bundles/bdd/js-cluster-report-*.json bundles/bdd/go-cluster-report-*.json
           cat bundles/bdd/traceability.md >> "$GITHUB_STEP_SUMMARY"
           go run ./cmd/bddpack -evidence bundles/bdd/evidence -catalogue bundles/bdd/bdd-catalogue.md
 
@@ -390,7 +420,7 @@ jobs:
           go run ./cmd/bddreport --require-complete --rows features/annex-rows.txt --out bundles/bdd \
             evidence/*/go-report.json evidence/*/js-report.json \
             evidence/*/go-catalogue-report.json evidence/*/js-catalogue-report.json \
-            evidence/*/js-cluster-report-*.json
+            evidence/*/js-cluster-report-*.json evidence/*/go-cluster-report-*.json
           cat bundles/bdd/traceability.md >> "$GITHUB_STEP_SUMMARY"
           go run ./cmd/bddpack -evidence evidence -catalogue bundles/bdd/bdd-catalogue.md
 

@@ -1301,8 +1301,8 @@
       "then": "the signed compliant pod may start AND the unsigned/non-compliant pod is denied before startup.",
       "family": "admission",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-73",

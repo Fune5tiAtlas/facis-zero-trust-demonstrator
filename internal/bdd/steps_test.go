@@ -4,6 +4,8 @@
 //
 //	go test ./internal/bdd                          # strict: implemented, non-cluster scenarios
 //	BDD_MODE=catalogue go test ./internal/bdd       # the @pending rows, reported as not run
+//	BDD_MODE=cluster go test ./internal/bdd         # the @cluster rows, against a real cluster
+//	BDD_MODE=cluster-dryrun go test ./internal/bdd  # the @cluster rows listed, every step skipped
 //	go test ./internal/bdd -godog.tags=@regression  # narrow either mode further
 package bdd
 
@@ -46,6 +48,10 @@ var modes = map[string]struct {
 	"":          {"~@pending&&~@cluster", true},
 	"strict":    {"~@pending&&~@cluster", true},
 	"catalogue": {"@pending", false},
+	// The cluster rows need a real cluster and its identities (admission_cluster_test.go). The dry run
+	// lists them in a pull request's sheet as not run; only a cluster job can report them passed.
+	"cluster":        {"@cluster&&~@pending", true},
+	"cluster-dryrun": {"@cluster&&~@pending", false},
 }
 
 // withMode narrows a -godog.tags filter to the mode: godog reads "," as or and "&&" as and, so the
@@ -67,7 +73,7 @@ func TestMain(m *testing.M) {
 
 	mode, ok := modes[os.Getenv("BDD_MODE")]
 	if !ok {
-		fmt.Fprintf(os.Stderr, "BDD_MODE=%q: want strict (the default) or catalogue\n", os.Getenv("BDD_MODE"))
+		fmt.Fprintf(os.Stderr, "BDD_MODE=%q: want strict (the default), catalogue, cluster or cluster-dryrun\n", os.Getenv("BDD_MODE"))
 		os.Exit(1)
 	}
 	opts.Tags = withMode(opts.Tags, mode.tags)
@@ -153,6 +159,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the repository workflows$`, check.theRepositoryWorkflows)
 	ctx.Step(`^the workflow hygiene check runs$`, check.theWorkflowHygieneCheckRuns)
 	ctx.Step(`^it reports no unpinned action and no wildcard write scope$`, check.itReportsNoUnpinnedActionAndNoWildcardWriteScope)
+	registerAdmissionProof(ctx, os.Getenv("BDD_MODE") == "cluster-dryrun")
 	registerPending(ctx)
 }
 

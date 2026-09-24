@@ -32,7 +32,7 @@ Feature: Admission control
     When the policy publication workflow runs
     Then the policy package is built and published to Harbor and the required GitHub push action completes successfully.
 
-  @ZT-72 @BDD-ZT-072 @pending
+  @ZT-72 @BDD-ZT-072 @cluster
   Scenario: Secure Pod Startup
     Given Gatekeeper is configured with the approved admission policy
     When one correctly signed image and one unsigned/non-compliant image are submitted for pod creation

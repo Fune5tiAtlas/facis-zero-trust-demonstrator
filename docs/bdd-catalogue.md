@@ -13,7 +13,7 @@ reported is described in [BDD acceptance](bdd.md).
   This page is built from the repository, not from a run: each cluster run publishes its own
   copy of the catalogue with the basis filled in.
 
-94 rows: 5 implemented, 89 pending.
+94 rows: 6 implemented, 88 pending.
 
 | Row | Requirement | Gate | Status | Runner |
 |---|---|---|---|---|
@@ -88,7 +88,7 @@ reported is described in [BDD acceptance](bdd.md).
 | [ZT-69](#zt-69) | Established Connection | G4 | pending | godog |
 | [ZT-70](#zt-70) | Refused Connection | G4 | pending | godog |
 | [ZT-71](#zt-71) | Image Signing and mock Attestation | G2 | pending | godog |
-| [ZT-72](#zt-72) | Secure Pod Startup | G2 | pending | godog |
+| [ZT-72](#zt-72) | Secure Pod Startup | G2 | implemented | godog |
 | [ZT-73](#zt-73) | Authorized Upstreaming over the Zero Trust Connector | G3 | pending | godog |
 | [ZT-74](#zt-74) | Participant Backend Mock | G3 | pending | godog |
 | [ZT-75](#zt-75) | Protected Resource Mock | G3 | pending | godog |
@@ -1685,8 +1685,8 @@ Then those images are signed, signatures are uploaded to Harbor and a JSON mock-
 | Test type | Technical BDD / inspection |
 | Gate | G2 - Platform and documentation baseline (with BDD submission) |
 | Evidence | `evidence/bdd-zt-072/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/admission.feature` |
 
