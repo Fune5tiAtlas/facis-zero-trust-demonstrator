@@ -5,6 +5,9 @@
 #
 #   COSIGN_KEY=<key file or env://VAR> [COSIGN_PASSWORD=...] [COSIGN=cosign] \
 #     scripts/supplychain/sign-attest.sh <registry/repository@sha256:...> <sbom.cdx.json> <mock-attestation.json>
+#
+# COSIGN_ALLOW_HTTP_REGISTRY=true lets cosign reach a plain-http test registry by name (the kind
+# admission job); the release never sets it.
 set -euo pipefail
 
 [ $# -eq 3 ] || { echo "usage: $0 <image@sha256:digest> <sbom.json> <mock-attestation.json>" >&2; exit 2; }
@@ -16,6 +19,7 @@ esac
 : "${COSIGN_KEY:?set COSIGN_KEY}"
 cosign="${COSIGN:-cosign}"
 common=(--yes --key "$COSIGN_KEY" --tlog-upload=false --new-bundle-format=false)
+[ "${COSIGN_ALLOW_HTTP_REGISTRY:-}" = true ] && common+=(--allow-http-registry)
 
 "$cosign" sign "${common[@]}" "$image"
 "$cosign" attest "${common[@]}" --type https://cyclonedx.org/bom --predicate "$sbom" "$image"

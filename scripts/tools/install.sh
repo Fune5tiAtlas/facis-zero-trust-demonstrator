@@ -3,7 +3,7 @@
 # download against its pinned SHA-256; any failure (download, checksum, extraction) stops the script.
 # linux/amd64 only: it is what CI runs on. Images are pinned by digest in pins.env, not installed here.
 #
-#   scripts/tools/install.sh [dir] [tool...]      tools: cosign syft grype gator gatekeeper-chart
+#   scripts/tools/install.sh [dir] [tool...]      tools: cosign syft grype gator gatekeeper-chart kind kubectl
 #                                                  (default: all)
 set -euo pipefail
 
@@ -13,7 +13,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 dir="${1:-.tools/bin}"
 shift || true
 tools=("$@")
-[ ${#tools[@]} -gt 0 ] || tools=(cosign syft grype gator gatekeeper-chart)
+[ ${#tools[@]} -gt 0 ] || tools=(cosign syft grype gator gatekeeper-chart kind kubectl)
 mkdir -p "$dir"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -48,6 +48,14 @@ for tool in "${tools[@]}"; do
       # The chart archive, verified, for `helm install <dir>/gatekeeper-<version>.tgz`.
       fetch "https://open-policy-agent.github.io/gatekeeper/charts/gatekeeper-${GATEKEEPER_CHART_VERSION}.tgz" "$GATEKEEPER_CHART_SHA256" gatekeeper.tgz
       install -m 0644 "$work/gatekeeper.tgz" "$dir/gatekeeper-${GATEKEEPER_CHART_VERSION}.tgz"
+      ;;
+    kind)
+      fetch "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64" "$KIND_SHA256" kind
+      install -m 0755 "$work/kind" "$dir/kind"
+      ;;
+    kubectl)
+      fetch "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" "$KUBECTL_SHA256" kubectl
+      install -m 0755 "$work/kubectl" "$dir/kubectl"
       ;;
     *) echo "unknown tool: $tool" >&2; exit 2 ;;
   esac

@@ -120,6 +120,42 @@ jobs:
           FACIS_INTEROP_REGISTRY: localhost:5000
           COSIGN: ${{ runner.temp }}/bin/cosign
 
+  # The constraints that need nothing but the object (digest-only, allowed repositories, naming, the
+  # namespace scope), tested offline with the pinned gator.
+  gator:
+    name: Admission constraints (gator)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install the pinned gator
+        run: scripts/tools/install.sh "$RUNNER_TEMP/bin" gator
+
+      - name: Verify the constraint suite
+        run: '"$RUNNER_TEMP/bin/gator" verify -v deployment/admission'
+
+  # The whole admission catalogue in a real Gatekeeper: a kind cluster with Gatekeeper (pinned chart,
+  # cache off), the provider and a local registry of test images signed with the release script and
+  # an ephemeral key. Includes provider-down, Gatekeeper-down and trust-removal cases.
+  admission-kind:
+    name: Admission catalogue (kind)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: v4.3.0
+
+      - name: Install the pinned tools
+        run: scripts/tools/install.sh "$RUNNER_TEMP/bin" kind kubectl cosign syft gatekeeper-chart
+
+      - name: Run the admission catalogue
+        run: BIN="$RUNNER_TEMP/bin" scripts/admission/kind-e2e.sh
+
   contracts:
     name: Contracts
     runs-on: ubuntu-latest
