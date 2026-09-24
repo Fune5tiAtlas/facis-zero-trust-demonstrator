@@ -77,3 +77,13 @@ var schemas = sync.OnceValues(func() (*compiledSchemas, error) {
 	}
 	return out, nil
 })
+
+// ValidateMockPredicate checks a mock-attestation predicate against the schema the verifier enforces,
+// so a producer can refuse to attest what admission would refuse.
+func ValidateMockPredicate(predicate []byte) error {
+	s, err := schemas()
+	if err != nil {
+		return err
+	}
+	return validateWith(s.mock, predicate)
+}

@@ -20,6 +20,7 @@ and is declared as such in [Specification changes](specifications.md#readings-an
 | `.github/workflows/docs.yml` | push to `main` affecting `docs/`, manual | Builds the MkDocs site and publishes it to the `gh-pages` branch |
 | `.github/workflows/workflow-hygiene.yml` | every pull request, manual | Fails the pull request when an action is not pinned to a commit or a token scope is too wide |
 | `.github/workflows/ci.yml` | every pull request, push to `main`, manual | Go lint and tests, image build with the Linux assertion and a Trivy scan, chart lint and dry-run render |
+| `.github/workflows/release.yml` | manual | Release candidate: builds, pushes, signs and attests every image by digest, then verifies each one (see [Image signing](#image-signing)) |
 
 ## The service pipeline
 
@@ -72,6 +73,33 @@ version and the same rule of attaching an SBOM to every release that lacks one �
 actions and declared permissions this repository requires of its own workflows. They can go back to
 being references once the shared workflows accept a Go version or read `go.mod`; that is a change to
 propose in `eclipse-xfsc/dev-ops`.
+
+## Image signing
+
+The candidate job of `release.yml` builds every image under `deployment/docker/` for `linux/amd64`,
+labels it `eu.facis.ztd.signing-key=interim` and pushes it to `ghcr.io/<owner>/<repository>/<name>`.
+Then, for each image digest:
+
+1. `scripts/supplychain/sbom.sh` — the Syft SBOM of the image, scanned by digest, enriched by Grype with
+   the known vulnerabilities (CycloneDX JSON);
+2. `go run ./cmd/mockattest` — the mock attestation (ZT-71), checked against the schema admission
+   enforces;
+3. `scripts/supplychain/sign-attest.sh` — the cosign signature and both attestations, the same commands
+   the CI interop and kind tests use;
+4. verification of every digest against the committed public key
+   (`docs/contracts/keys/interim-cosign.pub`), with the admission provider's own code
+   (`cmd/imageverify`) and with `cosign verify` / `verify-attestation`.
+
+The private key is the `COSIGN_INTERIM_KEY` secret (with `COSIGN_INTERIM_PASSWORD`) of the protected
+`release` environment; without it, or without the public key, the job fails before anything is
+signed. The interim key is not the client trust chain; it is replaced by the client key and Harbor.
+The job creates no tag and no release.
+
+It checks the key before it builds anything: the secret must be set and must be the private half of
+the committed public key, so a missing environment, secret or key file stops the job before an image
+is pushed. GHCR creates new packages as private; the job verifies them with its own token, but a
+cluster pulls and verifies anonymously, so the candidate packages must be made public in the package
+settings (once per package) before a cluster can admit them.
 
 ## Lifecycle scenarios on the client targets
 
@@ -128,7 +156,7 @@ The repository's default workflow token is read-only — an administrator settin
 ruleset above. Every workflow then declares its own top-level `permissions:` block rather than
 relying on that default, and a job that needs more than read access grants it at the job level with
 a comment naming the reason: `docs.yml` writes to `gh-pages`, `sbom.yml` uploads the SBOM onto a
-release. Wildcard scopes (`write-all`) are never used.
+release, the release candidate job pushes images and signatures to GHCR (`packages: write`). Wildcard scopes (`write-all`) are never used.
 
 ### Action pinning
 
