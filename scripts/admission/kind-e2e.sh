@@ -42,7 +42,6 @@ failures=0
 pass() { echo "PASS  $*"; }
 fail() { echo "FAIL  $*"; failures=$((failures + 1)); }
 step() { echo; echo "== $*"; }
-sha() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
 
 step "Cluster and registry"
 kind create cluster --name "$cluster" --image "$KIND_NODE_IMAGE" --wait 180s --config - <<'EOF'
@@ -62,82 +61,25 @@ for node in $(kind get nodes --name "$cluster"); do
 done
 
 step "Test images"
-# Registry uploads over the distribution API, so every digest is exactly what was uploaded.
-put_blob() { # repository file
-  local location sep
-  location=$(curl -fsS -X POST -D - -o /dev/null "http://$host_reg/v2/$1/blobs/uploads/" | tr -d '\r' | awk 'tolower($1)=="location:"{print $2}')
-  case "$location" in http*) ;; *) location="http://$host_reg$location" ;; esac
-  sep='?'; case "$location" in *\?*) sep='&' ;; esac
-  curl -fsS -X PUT -H 'Content-Type: application/octet-stream' --data-binary @"$2" "$location${sep}digest=sha256:$(sha "$2")" >/dev/null
-}
-put_manifest() { # repository file media-type -> digest reference
-  curl -fsS -X PUT -H "Content-Type: $3" --data-binary @"$2" "http://$host_reg/v2/$1/manifests/sha256:$(sha "$2")" >/dev/null
-  echo "$reg/$1@sha256:$(sha "$2")"
-}
-
-# The runnable image: the pinned linux/amd64 base, copied by digest from Docker Hub (anonymous pull).
-base_repo="${TEST_BASE_IMAGE#docker.io/}"; base_repo="${base_repo%%:*}"
-base_digest="${TEST_BASE_IMAGE#*@}"
-docker_manifest=application/vnd.docker.distribution.manifest.v2+json
+# shellcheck source=scripts/admission/fixtures-lib.sh disable=SC1091
+. scripts/admission/fixtures-lib.sh
+fixtures_build ztd
+for k in $fixtures_names; do v="img_$k"; echo "  $k ${!v}"; done
 oci_manifest=application/vnd.oci.image.manifest.v1+json
-hub_token=$(curl -fsS "https://auth.docker.io/token?service=registry.docker.io&scope=repository:$base_repo:pull" | jq -r .token)
-hub() { curl -fsSL -H "Authorization: Bearer $hub_token" "$@"; }
-hub -H "Accept: $docker_manifest, $oci_manifest" -o "$work/base.manifest" "https://registry-1.docker.io/v2/$base_repo/manifests/$base_digest"
-[ "sha256:$(sha "$work/base.manifest")" = "$base_digest" ] || { echo "base manifest digest mismatch" >&2; exit 1; }
-base_type=$(jq -r .mediaType "$work/base.manifest")
-for d in $(jq -r '.config.digest, .layers[].digest' "$work/base.manifest"); do
-  hub -o "$work/${d#sha256:}" "https://registry-1.docker.io/v2/$base_repo/blobs/$d"
-  [ "$(sha "$work/${d#sha256:}")" = "${d#sha256:}" ] || { echo "blob $d digest mismatch" >&2; exit 1; }
-done
-push_base() { # repository -> digest reference
-  local d
-  for d in $(jq -r '.config.digest, .layers[].digest' "$work/base.manifest"); do put_blob "$1" "$work/${d#sha256:}"; done
-  put_manifest "$1" "$work/base.manifest" "$base_type"
-}
-# One variable per test image, img_<name>: its digest reference.
-img_app=$(push_base ztd/app)
-img_unsigned=$(push_base ztd/unsigned)
-img_wrongkey=$(push_base ztd/wrongkey)
-img_nosbom=$(push_base ztd/nosbom)
-img_nomock=$(push_base ztd/nomock)
-
-# A Windows image (never run; it must be refused before that) and an image index.
-printf '{"architecture":"amd64","os":"windows","rootfs":{"type":"layers","diff_ids":[]}}' > "$work/windows.config"
-layer=$(jq -r '.layers[0].digest' "$work/base.manifest")
-put_blob ztd/windows "$work/windows.config"
-put_blob ztd/windows "$work/${layer#sha256:}"
-jq -n --arg c "sha256:$(sha "$work/windows.config")" --argjson cs "$(wc -c < "$work/windows.config")" --argjson l "$(jq '.layers[0]' "$work/base.manifest")" \
-  '{schemaVersion: 2, mediaType: "application/vnd.oci.image.manifest.v1+json", config: {mediaType: "application/vnd.oci.image.config.v1+json", digest: $c, size: $cs}, layers: [$l]}' > "$work/windows.manifest"
-img_windows=$(put_manifest ztd/windows "$work/windows.manifest" "$oci_manifest")
-push_base ztd/index >/dev/null
-jq -n --arg d "$base_digest" --argjson s "$(wc -c < "$work/base.manifest")" --arg t "$base_type" \
-  '{schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json", manifests: [{mediaType: $t, digest: $d, size: $s, platform: {os: "linux", architecture: "amd64"}}]}' > "$work/index.manifest"
-img_index=$(put_manifest ztd/index "$work/index.manifest" application/vnd.oci.image.index.v1+json)
-for k in app unsigned wrongkey nosbom nomock windows index; do v="img_$k"; echo "  $k ${!v}"; done
+docker_manifest=application/vnd.docker.distribution.manifest.v2+json
 
 step "Sign and attest (release script, ephemeral keys, on the kind network)"
 cp docs/attestation/samples/sw.mock.json "$work/mock.json"
+# shellcheck disable=SC2016 # the signing container's preamble, expanded there
 {
   echo 'set -euo pipefail; cd /w'
   echo 'export COSIGN_PASSWORD= COSIGN_ALLOW_HTTP_REGISTRY=true COSIGN=/tools/cosign SYFT_REGISTRY_INSECURE_USE_HTTP=true'
-  echo 'flags=(--yes --tlog-upload=false --new-bundle-format=false --allow-http-registry)'
+  echo 'export TRUSTED_KEY=cosign.key OTHER_KEY=other/cosign.key'
+  echo 'flags=(--allow-http-registry)'
   echo '/tools/cosign generate-key-pair >/dev/null; mkdir -p other; (cd other && /tools/cosign generate-key-pair >/dev/null)'
-  # An SBOM naming the image, as Syft writes it for an image scanned by digest.
-  # shellcheck disable=SC2016 # written for the signing container, expanded there
-  echo 'sbom() { printf '"'"'{"bomFormat":"CycloneDX","specVersion":"1.6","version":1,"metadata":{"component":{"type":"container","name":"%s","version":"%s"}},"components":[]}'"'"' "${1%@*}" "${1#*@}" > "$2"; }'
-  echo "/tools/syft 'registry:${img_app}' -q -o cyclonedx-json=app.cdx.json"
-  echo "COSIGN_KEY=cosign.key bash /src/scripts/supplychain/sign-attest.sh '${img_app}' app.cdx.json mock.json"
-  for k in wrongkey windows index; do
-    v="img_$k"; echo "sbom '${!v}' $k.cdx.json"
-  done
-  echo "COSIGN_KEY=other/cosign.key bash /src/scripts/supplychain/sign-attest.sh '${img_wrongkey}' wrongkey.cdx.json mock.json"
-  echo "COSIGN_KEY=cosign.key bash /src/scripts/supplychain/sign-attest.sh '${img_windows}' windows.cdx.json mock.json"
-  echo "COSIGN_KEY=cosign.key bash /src/scripts/supplychain/sign-attest.sh '${img_index}' index.cdx.json mock.json"
-  echo "sbom '${img_nomock}' nomock.cdx.json"
-  echo "/tools/cosign sign \"\${flags[@]}\" --key cosign.key '${img_nosbom}'"
-  echo "/tools/cosign attest \"\${flags[@]}\" --key cosign.key --type https://facis.eu/ztd/mock-attestation/v1 --predicate mock.json '${img_nosbom}'"
-  echo "/tools/cosign sign \"\${flags[@]}\" --key cosign.key '${img_nomock}'"
-  echo "/tools/cosign attest \"\${flags[@]}\" --key cosign.key --type https://cyclonedx.org/bom --predicate nomock.cdx.json '${img_nomock}'"
+  echo 'sign_attest() { bash /src/scripts/supplychain/sign-attest.sh "$@"; }'
+  echo 'app_sbom() { /tools/syft "registry:$1" -q -o "cyclonedx-json=$2"; }'
+  fixtures_sign_script
 } > "$work/sign.sh"
 docker run --rm --network kind -v "$work:/w" -v "$bin:/tools:ro" -v "$root:/src:ro" "$toolbox" bash /w/sign.sh
 
