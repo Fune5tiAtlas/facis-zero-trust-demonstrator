@@ -13,6 +13,8 @@
     "bdd:cluster": "cucumber-js features/js --import features/js/steps --tags @cluster --format summary --format json:bundles/bdd/js-cluster-report-${BDD_TARGET:-local}.json"
   },
   "devDependencies": {
-    "@cucumber/cucumber": "13.2.1"
+    "@cucumber/cucumber": "13.2.1",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1"
   }
 }

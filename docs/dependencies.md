@@ -67,3 +67,42 @@ Used by the acceptance harness only; never shipped in an image.
 | Dependency | Version | Licence | Purpose |
 |---|---|---|---|
 | `@cucumber/cucumber` | 13.2.1 | MIT | runs the JavaScript acceptance scenarios |
+| `ajv` | 8.20.0 | MIT | validates the interface contracts (JSON Schema and OpenAPI documents) against their fixtures |
+| `ajv-formats` | 3.0.1 | MIT | the string formats (date-time, uri, …) Ajv checks |
+
+## Supply-chain, policy and test tooling
+
+Used by CI and the release workflow; never shipped inside a demonstrator image. Everything is pinned in
+`scripts/tools/pins.env`:
+
+- the executables (cosign, Syft, Grype, gator) and the Gatekeeper chart archive by SHA-256 — installed
+  by `scripts/tools/install.sh`, which refuses a download whose checksum does not match;
+- the container images (Gatekeeper, PostgreSQL, OpenBao, the test registry) by digest — pulled by
+  digest where they are used.
+
+The JavaScript packages above are pinned by exact version with integrity hashes in `package-lock.json`.
+
+| Tool | Version | Licence | Purpose |
+|---|---|---|---|
+| cosign (Sigstore) | v2.6.2 | Apache-2.0 | signs images by digest and attaches attestations (classic `.sig`/`.att` layout, key-based) |
+| Syft (Anchore) | 1.52.0 | Apache-2.0 | CycloneDX SBOM of each image and of the repository |
+| Grype (Anchore) | 0.119.0 | Apache-2.0 | adds the known-vulnerability references to the SBOM before it is signed |
+| gator (OPA Gatekeeper) | v3.23.1 | Apache-2.0 | offline tests of the admission constraints |
+| OPA Gatekeeper (Helm chart) | 3.23.1 | Apache-2.0 | admission control with the first-party external-data provider |
+| PostgreSQL | 16.10 (test service) | PostgreSQL License | token-store integration tests |
+| OpenBao | 2.7.0 (test service) | MPL-2.0 | token-store integration tests only; its use in the demonstrator is the declared licence exception |
+| Docker Distribution registry | 2.8.3 (test service) | Apache-2.0 | a local registry for signing and verification tests in CI |
+
+## Go dependencies being added
+
+Added to the Go module together with the code that uses them; each goes through the licence gate like any
+other dependency.
+
+| Dependency | Version | Licence | Purpose |
+|---|---|---|---|
+| `github.com/jackc/pgx/v5` | v5.11.0 | MIT | PostgreSQL driver of the token store |
+| `github.com/santhosh-tekuri/jsonschema/v6` | v6.0.3 | Apache-2.0 | validates SBOMs and mock attestations against their JSON Schemas at admission |
+
+The admission provider talks to OCI registries through a small first-party client built on the Go
+standard library rather than a general-purpose registry library, to keep its dependency set minimal.
+
