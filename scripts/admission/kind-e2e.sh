@@ -24,8 +24,6 @@ toolbox=golang:1.27@sha256:3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6
 ns=ztd-adm-001
 work="$(mktemp -d)"
 export KUBECONFIG="$work/kubeconfig"
-# Helm plugins (the webhook-scope post-renderer) live in this run's own directory.
-export HELM_DATA_HOME="$work/helm" HELM_PLUGINS="$work/helm/plugins"
 
 cleanup() {
   if [ -n "${KEEP:-}" ]; then
@@ -83,70 +81,49 @@ cp docs/attestation/samples/sw.mock.json "$work/mock.json"
 } > "$work/sign.sh"
 docker run --rm --network kind -v "$work:/w" -v "$bin:/tools:ro" -v "$root:/src:ro" "$toolbox" bash /w/sign.sh
 
-step "Gatekeeper"
-# Every image the chart deploys, pinned by digest from pins.env.
-gatekeeper_crds="${GATEKEEPER_CRDS_IMAGE%%:*}"
-gatekeeper_values=(-f deployment/admission/gatekeeper-values.yaml --set replicas=1
-  --set image.release="${GATEKEEPER_IMAGE#*:}"
-  --set preInstall.crdRepository.image.repository="$gatekeeper_crds"
-  --set preInstall.crdRepository.image.tag="${GATEKEEPER_CRDS_IMAGE#*:}"
-  --set postInstall.labelNamespace.image.tag="${GATEKEEPER_CRDS_IMAGE#*:}"
-  --set postUpgrade.labelNamespace.image.tag="${GATEKEEPER_CRDS_IMAGE#*:}"
-  --set postInstall.probeWebhook.enabled=false --post-renderer ztd-webhook-scope)
-helm plugin install deployment/admission/webhook-scope >/dev/null
-unpinned=$(helm template gatekeeper "$bin/gatekeeper-$GATEKEEPER_CHART_VERSION.tgz" -n gatekeeper-system "${gatekeeper_values[@]}" \
-  | grep -E '^\s*image:' | grep -v '@sha256:' || true)
-[ -z "$unpinned" ] || { echo "Gatekeeper images not pinned by digest:" >&2; echo "$unpinned" >&2; exit 1; }
-helm install gatekeeper "$bin/gatekeeper-$GATEKEEPER_CHART_VERSION.tgz" -n gatekeeper-system --create-namespace \
-  "${gatekeeper_values[@]}" --wait --timeout 6m >/dev/null
-selector=$(kubectl get validatingwebhookconfiguration gatekeeper-validating-webhook-configuration \
-  -o jsonpath='{.webhooks[?(@.name=="validation.gatekeeper.sh")].namespaceSelector.matchExpressions[?(@.key=="facis.ztd/admission-proof")]}')
-if grep -q '"operator":"In"' <<<"$selector" && grep -q '"values":\["true"\]' <<<"$selector"; then
-  pass "validation webhook scoped to facis.ztd/admission-proof=true"
-else fail "validation webhook scope: '$selector'"; fi
-ttl=$(kubectl -n gatekeeper-system get deploy gatekeeper-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}' | tr ',' '\n' | grep -o 'response-cache-ttl=[^"]*' || true)
-if [ "$ttl" = "response-cache-ttl=0s" ]; then pass "Gatekeeper external-data response cache off ($ttl)"; else fail "Gatekeeper response cache: '$ttl'"; fi
-
-step "Provider"
+step "Provider image"
 # Built for the node, so the job also runs on an arm64 workstation; gatekeeper-system is exempt.
 docker build -q --platform "linux/$node_arch" -f deployment/docker/admission-provider/Dockerfile -t "$host_reg/ztd/admission-provider:e2e" . >/dev/null
 docker push -q "$host_reg/ztd/admission-provider:e2e" >/dev/null
 provider_digest=$(curl -fsSI -H "Accept: $oci_manifest, $docker_manifest, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json" \
   "http://$host_reg/v2/ztd/admission-provider/manifests/e2e" | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2}')
+
+step "Install (scripts/admission/install.sh, as on a real cluster)"
+BIN="$bin" PROVIDER_IMAGE="$reg/ztd/admission-provider@$provider_digest" TRUST_REPOSITORY="$reg/ztd" TRUST_KEY="$work/cosign.pub" \
+  GATEKEEPER_REPLICAS=2 PROVIDER_REPLICAS=1 PLAIN_HTTP_REGISTRY="$reg" scripts/admission/install.sh
+# The same values, for the trust-removal upgrade below.
 provider_values=(--set replicas=1 --set image.repository="$reg/ztd/admission-provider" --set image.digest="$provider_digest"
   --set insecurePlainHTTPRegistry="$reg" --set-json "trust.repositories=[\"$reg/ztd\"]")
-helm install admission deployment/helm/admission -n gatekeeper-system "${provider_values[@]}" \
-  --set-file trust.publicKeys="$work/cosign.pub" --wait --timeout 4m >/dev/null
-
-step "Policy"
-kubectl apply -f deployment/admission/templates/ >/dev/null
-for kind in k8sztdimagedigest k8sztdallowedrepositories k8sztdnaming k8sztdverifiedimages; do
-  until kubectl get crd "$kind.constraints.gatekeeper.sh" >/dev/null 2>&1; do sleep 2; done
-  kubectl wait --for=condition=established --timeout=120s "crd/$kind.constraints.gatekeeper.sh" >/dev/null
-done
-kubectl apply -f deployment/admission/exemptions.yaml >/dev/null
-sed "s|ghcr.io/eclipse-xfsc/facis-zero-trust-demonstrator|$reg/ztd|" deployment/admission/constraints/allowed-repositories.yaml | kubectl apply -f - >/dev/null
-for c in image-digest naming verified-images; do kubectl apply -f "deployment/admission/constraints/$c.yaml" >/dev/null; done
-for c in k8sztdimagedigest/ztd-image-digest k8sztdallowedrepositories/ztd-allowed-repositories k8sztdnaming/ztd-naming k8sztdverifiedimages/ztd-verified-images; do
-  for _ in $(seq 60); do
-    [ "$(kubectl get "$c" -o jsonpath='{.status.byPod[?(@.operations[0]=="webhook")].enforced}' 2>/dev/null)" = true ] && break
-    sleep 2
-  done
-done
-kubectl create namespace "$ns" >/dev/null
-kubectl label namespace "$ns" facis.ztd/admission-proof=true >/dev/null
+unscoped=$(kubectl get validatingwebhookconfiguration gatekeeper-validating-webhook-configuration -o json | jq -r '
+  .webhooks[] | select(any(.namespaceSelector.matchExpressions[]?; .key == "facis.ztd/admission-proof" and .operator == "In" and .values == ["true"]) | not) | .name')
+if [ -z "$unscoped" ]; then pass "both webhooks scoped to facis.ztd/admission-proof=true"; else fail "webhooks not scoped: $unscoped"; fi
+ttl=$(kubectl -n gatekeeper-system get deploy gatekeeper-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}' | tr ',' '\n' | grep -o 'response-cache-ttl=[^"]*' || true)
+if [ "$ttl" = "response-cache-ttl=0s" ]; then pass "Gatekeeper external-data response cache off ($ttl)"; else fail "Gatekeeper response cache: '$ttl'"; fi
 # Scope follows the label, not the name: a labelled namespace with any name is enforced, an unlabelled
 # ztd-adm-* namespace is not.
 kubectl create namespace proof-labelled >/dev/null
 kubectl label namespace proof-labelled facis.ztd/admission-proof=true >/dev/null
-kubectl create namespace ztd-adm-002 >/dev/null
+kubectl create namespace ztd-adm-unlabelled >/dev/null
+# The ignore-label webhook guards the admission namespaces only.
+if out=$(kubectl label namespace "$ns" admission.gatekeeper.sh/ignore=true --dry-run=server 2>&1); then
+  fail "ignore label on an admission namespace: accepted"
+else pass "ignore label on an admission namespace: denied"; fi
+if kubectl label namespace ztd-adm-unlabelled admission.gatekeeper.sh/ignore=true --dry-run=server >/dev/null 2>&1; then
+  pass "ignore label on an unrelated namespace: accepted"
+else fail "ignore label on an unrelated namespace: denied"; fi
 
 step "Admission catalogue"
+# The admission namespaces enforce the restricted Pod Security Standard; every test workload meets it,
+# so a denial is always the admission policy's.
+pod_security=$'  securityContext:\n    runAsNonRoot: true\n    runAsUser: 65534\n    seccompProfile: {type: RuntimeDefault}\n'
+container_security=$'      securityContext:\n        allowPrivilegeEscalation: false\n        capabilities: {drop: [ALL]}\n'
+template_pod_security=$'      securityContext:\n        runAsNonRoot: true\n        runAsUser: 65534\n        seccompProfile: {type: RuntimeDefault}\n'
+template_container_security=$'          securityContext:\n            allowPrivilegeEscalation: false\n            capabilities: {drop: [ALL]}\n'
 pod() { # name image [namespace] [extra spec lines]
-  printf 'apiVersion: v1\nkind: Pod\nmetadata:\n  name: %s\n  namespace: %s\nspec:\n  containers:\n    - name: app\n      image: "%s"\n      command: [sleep, "3600"]\n%s\n' "$1" "${3:-$ns}" "$2" "${4:-}"
+  printf 'apiVersion: v1\nkind: Pod\nmetadata:\n  name: %s\n  namespace: %s\nspec:\n%s  containers:\n    - name: app\n      image: "%s"\n      command: [sleep, "3600"]\n%s%s\n' "$1" "${3:-$ns}" "$pod_security" "$2" "$container_security" "${4:-}"
 }
 deployment() { # name image
-  printf 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: %s\n  namespace: %s\nspec:\n  selector:\n    matchLabels: {app: %s}\n  template:\n    metadata:\n      labels: {app: %s}\n    spec:\n      containers:\n        - name: app\n          image: "%s"\n' "$1" "$ns" "$1" "$1" "$2"
+  printf 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: %s\n  namespace: %s\nspec:\n  selector:\n    matchLabels: {app: %s}\n  template:\n    metadata:\n      labels: {app: %s}\n    spec:\n%s      containers:\n        - name: app\n          image: "%s"\n          command: [sleep, "3600"]\n%s' "$1" "$ns" "$1" "$1" "$template_pod_security" "$2" "$template_container_security"
 }
 # Server-side dry run: the request goes through admission, nothing is stored.
 expect_denied() { # case code manifest
@@ -189,15 +166,17 @@ expect_denied "registry not allowed" ADM-REGISTRY-DENIED "$(pod ztd-foreign "doc
 expect_denied "name outside the convention" ADM-NAME-INVALID "$(pod busybox "$signed")"
 expect_denied "unsigned init container" ADM-UNSIGNED "$(pod ztd-init "$signed" "$ns" "  initContainers:
     - name: init
-      image: \"${img_unsigned}\"")"
+      image: \"${img_unsigned}\"
+      command: [\"true\"]
+${container_security%$'\n'}")"
 expect_denied "deployment with an unsigned template" ADM-UNSIGNED "$(deployment ztd-unsigned-deploy "${img_unsigned}")"
 expect_allowed "deployment with a signed template" "$(deployment ztd-signed-deploy "$signed")"
 expect_denied "labelled namespace of another name" ADM-UNSIGNED "$(pod ztd-unsigned "${img_unsigned}" proof-labelled)"
-expect_allowed "unlabelled ztd-adm-* namespace" "$(pod ztd-unsigned "${img_unsigned}" ztd-adm-002)"
-if out=$(kubectl -n "$ns" debug ztd-signed --profile=general --image="${img_unsigned}" --container=dbg-unsigned 2>&1); then
+expect_allowed "unlabelled ztd-adm-* namespace" "$(pod ztd-unsigned "${img_unsigned}" ztd-adm-unlabelled)"
+if out=$(kubectl -n "$ns" debug ztd-signed --profile=restricted --image="${img_unsigned}" --container=dbg-unsigned 2>&1); then
   fail "unsigned ephemeral container: added"
 elif grep -q ADM-UNSIGNED <<<"$out"; then pass "unsigned ephemeral container: denied ADM-UNSIGNED"; else fail "unsigned ephemeral container: $out"; fi
-if kubectl -n "$ns" debug ztd-signed --profile=general --image="$signed" --container=dbg-signed >/dev/null 2>&1; then
+if kubectl -n "$ns" debug ztd-signed --profile=restricted --image="$signed" --container=dbg-signed >/dev/null 2>&1; then
   pass "signed ephemeral container: added"
 else fail "signed ephemeral container: denied"; fi
 
@@ -241,7 +220,7 @@ kubectl -n gatekeeper-system scale deploy/gatekeeper-controller-manager --replic
 kubectl -n gatekeeper-system wait --for=delete pod -l control-plane=controller-manager --timeout=120s >/dev/null 2>&1 || true
 expect_denied "admission namespace with Gatekeeper down" "failed calling webhook" "$(pod ztd-signed-4 "$signed")"
 expect_denied "labelled namespace of another name with Gatekeeper down" "failed calling webhook" "$(pod ztd-signed-5 "$signed" proof-labelled)"
-expect_allowed "unlabelled ztd-adm-* namespace with Gatekeeper down" "$(pod ztd-other "${img_unsigned}" ztd-adm-002)"
+expect_allowed "unlabelled ztd-adm-* namespace with Gatekeeper down" "$(pod ztd-other "${img_unsigned}" ztd-adm-unlabelled)"
 kubectl -n gatekeeper-system scale deploy/gatekeeper-controller-manager --replicas=1 >/dev/null
 kubectl -n gatekeeper-system rollout status deploy/gatekeeper-controller-manager --timeout=180s >/dev/null
 

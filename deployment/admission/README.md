@@ -23,8 +23,9 @@ Two layers, both positive:
   (including `pods/ephemeralcontainers`), with `failurePolicy: Fail`. A Gatekeeper or provider outage
   therefore denies admission there and nowhere else: system, ORCE and lifecycle-pool workloads keep
   scheduling. The chart's values can only exclude namespaces, so the positive label selector is added
-  by the Helm post-renderer plugin in [webhook-scope/](webhook-scope), which fails if the chart's
-  webhook is not shaped as expected.
+  to both of the chart's webhooks (the policy webhook and the one guarding the
+  `admission.gatekeeper.sh/ignore` namespace label) by the Helm post-renderer plugin in
+  [webhook-scope/](webhook-scope), which fails unless it scoped exactly those two.
 - **Constraints:** each matches the same label.
 
 [exemptions.yaml](exemptions.yaml) lists what is exempt and why (`kube-system`, `gatekeeper-system`);

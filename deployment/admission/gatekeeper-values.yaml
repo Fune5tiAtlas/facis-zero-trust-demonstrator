@@ -27,9 +27,8 @@ validatingWebhookCustomRules:
     resources: [jobs]
     scope: Namespaced
 
-# The namespace-label check webhook cannot be scoped by these values; it only guards the
-# admission.gatekeeper.sh/ignore label, so it must not block namespace updates cluster-wide when
-# Gatekeeper is down.
+# The webhook guarding the admission.gatekeeper.sh/ignore namespace label is scoped to the same label
+# by the post-renderer; it also must not block namespace updates when Gatekeeper is down.
 validatingWebhookCheckIgnoreFailurePolicy: Ignore
 
 # No mutation in this wave.

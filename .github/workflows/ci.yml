@@ -135,6 +135,9 @@ jobs:
       - name: Verify the constraint suite
         run: '"$RUNNER_TEMP/bin/gator" verify -v deployment/admission'
 
+      - name: Test the enforcement check
+        run: scripts/admission/enforced_test.sh
+
   # The whole admission catalogue in a real Gatekeeper: a kind cluster with Gatekeeper (pinned chart,
   # cache off), the provider and a local registry of test images signed with the release script and
   # an ephemeral key. Includes provider-down, Gatekeeper-down and trust-removal cases.
