@@ -4,8 +4,14 @@ name: Release
 # signed and attested by digest with the interim key (Grype-enriched SBOM and the mock attestation),
 # and verified by digest with the admission provider's own code and with cosign against the committed
 # public key. It creates no tag and no release; the promote stage comes later.
+#
+# Started by hand, or by pushing a branch named candidate/<anything> - which also works in a fork whose
+# default branch does not carry this workflow. The release environment only accepts those branches and
+# the main and PR branches.
 on:
   workflow_dispatch:
+  push:
+    branches: ['candidate/**']
 
 permissions:
   contents: read
