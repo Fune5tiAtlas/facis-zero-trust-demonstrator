@@ -1,7 +1,7 @@
 # ORCE — interim minimal install
 
 Plain manifests for running the first-party ORCE image (`deployment/docker/orce`) in a cluster,
-used on IONOS until the ORCE Helm chart replaces them (FZTD-187). They carry no secret and no
+used on IONOS until the ORCE Helm chart replaces them. They carry no secret and no
 cluster-specific value; the steps and their checks are in
 [docs/environments/ionos.md](../../docs/environments/ionos.md#3-orce).
 
@@ -20,4 +20,4 @@ cluster-specific value; the steps and their checks are in
 ORCE deploys with its own ServiceAccount; the BDD pool chart binds it as the deployer of the pool
 namespaces ([bdd-pool](../helm/bdd-pool/README.md)). There is no ingress and no TLS endpoint yet:
 ORCE is reached with `kubectl port-forward` by an administrator. Exposing it over TLS 1.3 to the
-pipeline is part of FZTD-187.
+pipeline comes with the ORCE chart.

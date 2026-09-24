@@ -64,7 +64,7 @@ digest (`IMAGE=<registry>/facis-ztd-orce@sha256:…`), never by tag.
 ## 3. ORCE
 
 Installed from the interim manifests in `deployment/orce-minimal/` (see its README) until the ORCE
-chart exists (FZTD-187).
+chart exists.
 
 ```bash
 kubectl apply -f deployment/orce-minimal/base.yaml
@@ -98,7 +98,7 @@ kubectl -n ztd-orce get networkpolicy orce-ingress
 The rollout completes, the image is the digest you pushed, and the log lines are JSON objects with
 `time`, `level`, `type`, `name`, `id` and `msg` ([ORCE logging](../flows.md#orce-logging)); an
 image built before JSON logging was added prints prefixed lines instead, and must be replaced. There is
-no ingress: ORCE is reached with `kubectl port-forward` until FZTD-187 exposes it over TLS 1.3.
+no ingress: ORCE is reached with `kubectl port-forward` until the ORCE chart exposes it over TLS 1.3.
 
 ## 4. The BDD pool
 

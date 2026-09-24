@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "mock-attestation.schema.json",
-  "title": "FZTD-46 mock attestation sample (JSON)",
+  "title": "Mock attestation sample (JSON)",
   "description": "One mock sample per CMC evidence type: the JSON shape that type of evidence takes, with the collateral that accompanies it. The 'evidence' and 'collateral' objects follow CMC's attestationreport types exactly (attestationreport.go, json.go); 'mock' and 'profile' belong to the sample wrapper, since CMC's own objects have no field to mark a mock.",
   "$ref": "#/$defs/MockSample",
   "$defs": {

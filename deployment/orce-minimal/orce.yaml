@@ -1,6 +1,6 @@
 # ORCE itself: one replica, non-root, no ingress; reachable only from its own namespace.
 # __IMAGE__ is the ORCE image by digest; the credentials come from the orce-credentials Secret.
-# Interim until the ORCE chart (FZTD-187); see README.md.
+# Interim until the ORCE chart; see README.md.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

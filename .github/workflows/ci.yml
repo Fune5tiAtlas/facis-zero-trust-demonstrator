@@ -193,7 +193,7 @@ jobs:
   # automatically on main, on every release and on demand - never on pull requests - one run at a
   # time per target, with the read-only observer identity; ORCE does the deploying.
   #
-  # Off until a target has ORCE and the BDD pool installed (FZTD-187): it runs only once the
+  # Off until a target has ORCE and the BDD pool installed: it runs only once the
   # repository variable BDD_CLUSTER_ENABLED is "true" and the target's secrets and variable are set
   # (see docs/bdd.md).
   bdd-cluster:
