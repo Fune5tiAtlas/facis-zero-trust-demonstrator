@@ -159,6 +159,60 @@ npm run bdd:cluster
 back to its baseline (`kubectl -n ztd-bdd-tdr-001 get all` shows nothing). Stop the port-forward and
 delete `observer.kubeconfig` and `ca.crt` afterwards; the token expires on its own.
 
+## 6. Admission proof (non-target)
+
+An early admission proof on this cluster: Gatekeeper and the image-verification provider, with the
+constraints in [deployment/admission](../../deployment/admission), enforcing only in the namespaces
+labelled `facis.ztd/admission-proof=true` (`ztd-adm-001`, `ztd-adm-002`). The images it verifies are
+signed with the **interim key** ([docs/contracts/keys/interim-cosign.pub](../contracts/keys/interim-cosign.pub)),
+not the client trust chain; this cluster is not a target environment. Everything it records says so.
+
+```bash
+# Gatekeeper, the provider (by digest, from the release candidate job), the policy and the pool.
+BIN=<dir with the pinned Gatekeeper chart, scripts/tools/install.sh gatekeeper-chart> \
+PROVIDER_IMAGE=ghcr.io/<owner>/facis-zero-trust-demonstrator/admission-provider@sha256:<digest> \
+TRUST_REPOSITORY=ghcr.io/<owner>/facis-zero-trust-demonstrator \
+TRUST_KEY=docs/contracts/keys/interim-cosign.pub \
+scripts/admission/install.sh
+```
+
+**Verify:** the script ends with the two admission namespaces; it has already checked that both
+webhooks select only the admission label, that Gatekeeper's response cache is off, and that every
+constraint is enforced by every webhook replica.
+
+The acceptance run uses the namespaced tester identity (a kubeconfig built as in stage 5, with
+`kubectl -n ztd-adm-001 create token ztd-adm-tester`) and the fixture list the `admission-fixtures`
+workflow publishes:
+
+```bash
+KUBECONFIG=$PWD/tester.kubeconfig BDD_ADM_FIXTURES=fixtures.txt BDD_TARGET=ionos \
+BDD_MODE=cluster GODOG_CUCUMBER_OUT=bundles/bdd/go-cluster-report-ionos.json go test ./internal/bdd
+```
+
+**Verify:** ZT-72 passes: the signed pod runs, and the unsigned, untrusted-key, mutable-tag,
+missing-SBOM and missing-mock-attestation pods are refused with their reason codes before any pod
+exists; `bundles/bdd/evidence/bdd-zt-072/` holds the record.
+
+The fault cases are run by the administrator, with the tester for every admission attempt:
+
+```bash
+ADMIN_KUBECONFIG=<administrator> TESTER_KUBECONFIG=$PWD/tester.kubeconfig FIXTURES=fixtures.txt \
+EVIDENCE=<dir> BIN=... PROVIDER_IMAGE=... TRUST_REPOSITORY=... TRUST_KEY=... \
+scripts/admission/fault-injection.sh
+```
+
+It proves, and restores after each step: a non-Linux and an image-index fixture refused (ZT-13
+mechanism only; that row stays pending); the provider down and Gatekeeper down each deny in the
+admission namespaces while `ztd-orce`, `kube-system` and the lifecycle pool admit; a trusted key
+removed while the provider cache is warm denies the next admission once every replica has loaded
+the change; break-glass (the webhook removed, then restored by `install.sh`); and the admission
+latency from Gatekeeper's own request histogram (p99 below 1.5 s).
+
+**Break-glass:** `kubectl delete validatingwebhookconfiguration gatekeeper-validating-webhook-configuration`,
+then `helm uninstall gatekeeper -n gatekeeper-system`. **Teardown:** `kubectl delete -f
+deployment/admission/constraints/ -f deployment/admission/templates/`, then `helm uninstall
+admission-pool admission gatekeeper -n gatekeeper-system`.
+
 ## Planned: runner, registry access and visualization
 
 Not installed on this cluster yet. Each gets its stage and its check when it is.
