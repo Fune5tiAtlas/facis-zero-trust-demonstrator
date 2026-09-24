@@ -29,6 +29,32 @@ that are usually asserted rather than shown:
 Scope is deliberately a demonstrator: mock attestation stands in for real TEE hardware, and the
 demonstration services are purpose-built. What is *not* mocked is the security machinery itself.
 
+### Use cases
+
+```mermaid
+flowchart LR
+  viewer([Demonstration viewer])
+  operator([Operator])
+  subgraph ZTD[FACIS Zero Trust Demonstrator]
+    run[Run a journey from the demonstrator UI]
+    ok[Successful call: zone A backend reaches zone B resource]
+    revoked[Revoked credential is refused]
+    scope[Wrong scope is denied with a reason]
+    tampered[Tampered measurement aborts the channel]
+    deploy[Deploy, redeploy or uninstall a release through ORCE]
+    accept[Run the acceptance scenarios and read the evidence]
+  end
+  viewer --> run
+  run --> ok
+  run --> revoked
+  run --> scope
+  run --> tampered
+  operator --> deploy
+  operator --> accept
+```
+
+The journeys and what each one proves are described in [Using the demonstrator](docs/usage.md).
+
 ## Repository layout
 
 | Path | Contents |
