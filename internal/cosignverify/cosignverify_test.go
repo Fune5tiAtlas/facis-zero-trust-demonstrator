@@ -32,6 +32,7 @@ type registry struct {
 	blobs     map[string][]byte
 	requests  atomic.Int64
 	down      atomic.Bool
+	delay     atomic.Int64 // per request, nanoseconds
 }
 
 func newRegistry(t *testing.T) (*registry, string) {
@@ -39,6 +40,7 @@ func newRegistry(t *testing.T) (*registry, string) {
 	reg := &registry{manifests: map[string][]byte{}, blobs: map[string][]byte{}}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reg.requests.Add(1)
+		time.Sleep(time.Duration(reg.delay.Load()))
 		if reg.down.Load() {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
@@ -485,6 +487,88 @@ func TestSignaturesPerEnvelopeCapped(t *testing.T) {
 		"payload": base64.StdEncoding.EncodeToString(stmt), "signatures": sigs})
 	if r := f.verifier().VerifyImage(context.Background(), f.image()); r.Code != CodeAttestationInvalid {
 		t.Errorf("valid signature past the cap: %+v, want %s", r, CodeAttestationInvalid)
+	}
+}
+
+func TestSlowVerificationCompletesDetached(t *testing.T) {
+	// A cold verification slower than the request deadline: the request fails closed, but the
+	// verification finishes and a retry is answered from the cache.
+	f := newFixture(t).valid()
+	v := f.verifier()
+	f.reg.delay.Store(int64(20 * time.Millisecond))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	r := v.VerifyImage(ctx, f.image())
+	cancel()
+	if r.Code != CodeProviderDown {
+		t.Fatalf("first request: %+v, want %s", r, CodeProviderDown)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		r = v.VerifyImage(ctx, f.image())
+		cancel()
+		if r.OK() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("never admitted: %+v", r)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestConcurrentRequestsShareOneVerification(t *testing.T) {
+	// The registry requests of one verification, measured on a separate fixture.
+	one := newFixture(t).valid()
+	if !one.verifier().VerifyImage(context.Background(), one.image()).OK() {
+		t.Fatal("baseline verification failed")
+	}
+	perVerification := one.reg.requests.Load()
+
+	f := newFixture(t).valid()
+	v := f.verifier()
+	f.reg.delay.Store(int64(10 * time.Millisecond))
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if r := v.VerifyImage(context.Background(), f.image()); !r.OK() {
+				t.Errorf("concurrent request: %+v", r)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := f.reg.requests.Load(); n != perVerification {
+		t.Errorf("%d registry requests for 10 concurrent requests, want %d (one verification)", n, perVerification)
+	}
+}
+
+func TestVerdictCachedBetweenLookupAndStart(t *testing.T) {
+	// The interleaving where a flight stores its verdict and finishes after a request missed the
+	// cache but before it chose a flight: the request must take the cached verdict, not start again.
+	f := newFixture(t).valid()
+	v := f.verifier()
+	ref, _ := ParseRef(f.image())
+	policy := v.policy.Load()
+	key := ref.String() + " " + policy.Revision
+	v.store(key, policy, Result{})
+	fl, r, cached := v.start(key, ref, policy)
+	if !cached || fl != nil || !r.OK() || f.reg.requests.Load() != 0 {
+		t.Errorf("start after a verdict was cached: flight %v, cached %v, result %+v, %d registry requests", fl, cached, r, f.reg.requests.Load())
+	}
+}
+
+func TestInflightBounded(t *testing.T) {
+	f := newFixture(t).valid()
+	v := f.verifier()
+	v.mu.Lock()
+	for i := range maxInflight {
+		v.inflight[fmt.Sprintf("busy %d", i)] = &flight{done: make(chan struct{})}
+	}
+	v.mu.Unlock()
+	if r := v.VerifyImage(context.Background(), f.image()); r.Code != CodeProviderDown || f.reg.requests.Load() != 0 {
+		t.Errorf("at the in-flight bound: %+v, %d registry requests", r, f.reg.requests.Load())
 	}
 }
 

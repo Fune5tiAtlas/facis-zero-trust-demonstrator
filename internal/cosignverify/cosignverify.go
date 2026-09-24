@@ -119,11 +119,24 @@ type Verifier struct {
 	now    func() time.Time
 
 	PositiveTTL, NegativeTTL time.Duration
-	Stats                    Stats
+	// VerifyTimeout bounds one verification, which runs detached from the request that started it.
+	VerifyTimeout time.Duration
+	Stats         Stats
 
-	mu    sync.Mutex
-	cache map[string]cached
+	mu       sync.Mutex
+	cache    map[string]cached
+	inflight map[string]*flight
 }
+
+// flight is one verification in progress; every request for the same image and policy waits on it.
+type flight struct {
+	done   chan struct{}
+	result Result
+}
+
+// maxInflight bounds the verifications running at once across distinct images (beyond the registry
+// concurrency, which bounds the ones talking to the registry).
+const maxInflight = 256
 
 type cached struct {
 	result  Result
@@ -136,12 +149,14 @@ func New(client *ociclient.Client, policy *Policy, concurrency int) *Verifier {
 		concurrency = 1
 	}
 	v := &Verifier{
-		client:      client,
-		sem:         make(chan struct{}, concurrency),
-		now:         time.Now,
-		PositiveTTL: 5 * time.Minute,
-		NegativeTTL: 30 * time.Second,
-		cache:       map[string]cached{},
+		client:        client,
+		sem:           make(chan struct{}, concurrency),
+		now:           time.Now,
+		PositiveTTL:   5 * time.Minute,
+		NegativeTTL:   30 * time.Second,
+		VerifyTimeout: 30 * time.Second,
+		cache:         map[string]cached{},
+		inflight:      map[string]*flight{},
 	}
 	v.SetPolicy(policy)
 	return v
@@ -187,6 +202,12 @@ func (p *Policy) allows(r Ref) bool {
 // VerifyImage runs the profile's checks in order and returns the first failure: digest reference,
 // allowed repository (both before any network call), signature, image platform, SBOM attestation,
 // mock attestation.
+//
+// A verification that has to reach the registry runs detached from ctx, bounded by VerifyTimeout,
+// and is shared by every concurrent request for the same image under the same policy. A request whose
+// ctx ends first is answered ADM-PROVIDER-DOWN (fail closed), but the verification completes and its
+// verdict is cached, so a retry is answered from the cache: a cold verification slower than the
+// admission deadline cannot deny an image forever.
 func (v *Verifier) VerifyImage(ctx context.Context, image string) Result {
 	ref, ok := ParseRef(image)
 	if !ok {
@@ -200,15 +221,55 @@ func (v *Verifier) VerifyImage(ctx context.Context, image string) Result {
 	if r, ok := v.lookup(key); ok {
 		return r
 	}
-	select {
-	case v.sem <- struct{}{}:
-		defer func() { <-v.sem }()
-	case <-ctx.Done():
-		return Result{Code: CodeProviderDown, Detail: "verification capacity exhausted"}
+	f, cached, ok := v.start(key, ref, policy)
+	if ok {
+		return cached
 	}
-	r := v.verify(ctx, ref, policy)
-	v.store(key, policy, r)
-	return r
+	if f == nil {
+		return Result{Code: CodeProviderDown, Detail: "too many verifications in progress"}
+	}
+	select {
+	case <-f.done:
+		return f.result
+	case <-ctx.Done():
+		return Result{Code: CodeProviderDown, Detail: "verification still in progress; retry"}
+	}
+}
+
+// start returns the cached verdict for key if one appeared since the lookup (a flight can finish in
+// between), else joins the verification in progress, else starts one; the flight is nil when too
+// many are running. Cache and flights are read under one lock, so a finished flight is never missed.
+func (v *Verifier) start(key string, ref Ref, policy *Policy) (*flight, Result, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if c, ok := v.cache[key]; ok && !v.now().After(c.expires) {
+		return nil, c.result, true
+	}
+	if f, ok := v.inflight[key]; ok {
+		return f, Result{}, false
+	}
+	if len(v.inflight) >= maxInflight {
+		return nil, Result{}, false
+	}
+	f := &flight{done: make(chan struct{})}
+	v.inflight[key] = f
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), v.VerifyTimeout)
+		defer cancel()
+		select {
+		case v.sem <- struct{}{}:
+			f.result = v.verify(ctx, ref, policy)
+			<-v.sem
+		case <-ctx.Done():
+			f.result = Result{Code: CodeProviderDown, Detail: "verification capacity exhausted"}
+		}
+		v.store(key, policy, f.result)
+		v.mu.Lock()
+		delete(v.inflight, key)
+		v.mu.Unlock()
+		close(f.done)
+	}()
+	return f, Result{}, false
 }
 
 func (v *Verifier) lookup(key string) (Result, bool) {
