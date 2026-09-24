@@ -1,10 +1,13 @@
-package cosignverify
+package main
 
 import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,15 +15,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/cosignverify"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/ociclient"
 )
 
 // TestInterop signs and attests real images with the pinned cosign through the release script, in a
-// plain-http registry:2, and verifies them with this package. It runs when FACIS_INTEROP_REGISTRY
-// (host:port) and COSIGN (the pinned binary) are set, as in the CI interop job.
+// plain-http registry:2, and has the provider verify them through ProviderRequests. It runs when
+// FACIS_INTEROP_REGISTRY (host:port) and COSIGN (the pinned binary) are set, as in the CI interop job.
 func TestInterop(t *testing.T) {
 	registry, cosign := os.Getenv("FACIS_INTEROP_REGISTRY"), os.Getenv("COSIGN")
 	if registry == "" || cosign == "" {
@@ -46,7 +52,7 @@ func TestInterop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	keys, err := ParsePublicKeys(pub)
+	keys, err := cosignverify.ParsePublicKeys(pub)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,25 +79,43 @@ func TestInterop(t *testing.T) {
 
 	// The CLI cross-check the release uses.
 	run(nil, cosign, "verify", "--key", "cosign.pub", "--insecure-ignore-tlog=true", signed)
-	run(nil, cosign, "verify-attestation", "--key", "cosign.pub", "--insecure-ignore-tlog=true", "--type", PredicateMock, signed)
+	run(nil, cosign, "verify-attestation", "--key", "cosign.pub", "--insecure-ignore-tlog=true", "--type", cosignverify.PredicateMock, signed)
 
 	client := ociclient.New(ociclient.Options{PlainHTTP: []string{registry}})
-	v := New(client, &Policy{Repositories: []string{registry + "/interop"}, Keys: keys, Revision: "interop"}, 4)
-	r := v.VerifyImage(ctx, signed)
-	if !r.OK() {
-		t.Fatalf("signed image refused: %+v", r)
+	v := cosignverify.New(client, &cosignverify.Policy{Repositories: []string{registry + "/interop"}, Keys: keys, Revision: "interop"}, 4)
+	if r := v.VerifyImage(ctx, signed); !json.Valid(r.Predicates[cosignverify.PredicateMock]) || !bytes.Contains(r.Predicates[cosignverify.PredicateSBOM], []byte("CycloneDX")) {
+		t.Errorf("predicates = %+v", r)
 	}
-	if !json.Valid(r.Predicates[PredicateMock]) || !bytes.Contains(r.Predicates[PredicateSBOM], []byte("CycloneDX")) {
-		t.Errorf("predicates = %s", r.Predicates)
-	}
-	for image, want := range map[string]string{unsigned: CodeUnsigned, copied: CodeAttestationInvalid} {
-		if r := v.VerifyImage(ctx, image); r.Code != want {
-			t.Errorf("%s: %+v, want %s", image, r, want)
+	h := &handler{verifier: v, trust: &trust{}, timeout: time.Second, metrics: newMetrics(&v.Stats)}
+	tag := registry + "/interop/signed:latest"
+	_, resp := post(t, h, request(signed, unsigned, copied, tag, "evil.example/interop/x@"+strings.SplitN(signed, "@", 2)[1]))
+	want := []string{"", cosignverify.CodeUnsigned, cosignverify.CodeAttestationInvalid, cosignverify.CodeNotDigest, cosignverify.CodeRegistryDenied}
+	for i, it := range resp.Response.Items {
+		if code, _, _ := strings.Cut(it.Error, ":"); code != want[i] || (want[i] == "" && it.Value != verifiedValue) {
+			t.Errorf("%s: %+v, want code %q", it.Key, it, want[i])
 		}
 	}
-	stranger := New(client, &Policy{Repositories: []string{registry + "/interop"}, Keys: []*ecdsa.PublicKey{&newKey(t).PublicKey}, Revision: "x"}, 1)
-	if r := stranger.VerifyImage(ctx, signed); r.Code != CodeUnsigned {
-		t.Errorf("wrong trusted key: %+v, want %s", r, CodeUnsigned)
+
+	// Warm-cache latency of a full ProviderRequest, the in-process counterpart of the cluster p99.
+	var durations []time.Duration
+	for range 200 {
+		start := time.Now()
+		if _, resp := post(t, h, request(signed)); resp.Response.Items[0].Value != verifiedValue {
+			t.Fatalf("warm request: %+v", resp.Response)
+		}
+		durations = append(durations, time.Since(start))
+	}
+	slices.Sort(durations)
+	p99 := durations[len(durations)*99/100]
+	t.Logf("in-process p99 over %d warm requests: %s", len(durations), p99)
+	if p99 > 100*time.Millisecond {
+		t.Errorf("in-process p99 %s", p99)
+	}
+
+	strangerKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	stranger := cosignverify.New(client, &cosignverify.Policy{Repositories: []string{registry + "/interop"}, Keys: []*ecdsa.PublicKey{&strangerKey.PublicKey}, Revision: "x"}, 1)
+	if r := stranger.VerifyImage(ctx, signed); r.Code != cosignverify.CodeUnsigned {
+		t.Errorf("wrong trusted key: %+v, want %s", r, cosignverify.CodeUnsigned)
 	}
 }
 
@@ -135,10 +159,10 @@ func upload(t *testing.T, registry, repo string, blob []byte) {
 // what an attacker reusing a genuine attestation would do.
 func copyAttestations(t *testing.T, registry, from, to string) {
 	t.Helper()
-	src, _ := ParseRef(from)
-	dst, _ := ParseRef(to)
+	src, _ := cosignverify.ParseRef(from)
+	dst, _ := cosignverify.ParseRef(to)
 	client := ociclient.New(ociclient.Options{PlainHTTP: []string{registry}})
-	m, err := client.ManifestByTag(context.Background(), registry, src.Repository, tagFor(src.Digest, "att"))
+	m, err := client.ManifestByTag(context.Background(), registry, src.Repository, cosignTag(src.Digest))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +175,7 @@ func copyAttestations(t *testing.T, registry, from, to string) {
 		}
 		upload(t, registry, dst.Repository, b)
 	}
-	req, _ := http.NewRequest(http.MethodPut, fmt.Sprintf("http://%s/v2/%s/manifests/%s", registry, dst.Repository, tagFor(dst.Digest, "att")), bytes.NewReader(m.Body))
+	req, _ := http.NewRequest(http.MethodPut, fmt.Sprintf("http://%s/v2/%s/manifests/%s", registry, dst.Repository, cosignTag(dst.Digest)), bytes.NewReader(m.Body))
 	req.Header.Set("Content-Type", m.MediaType)
 	do(t, req, http.StatusCreated)
 }
@@ -168,4 +192,12 @@ func do(t *testing.T, req *http.Request, want int) *http.Response {
 		t.Fatalf("%s %s: status %d, want %d: %s", req.Method, req.URL, resp.StatusCode, want, body)
 	}
 	return resp
+}
+
+// cosignTag is the classic cosign attestation tag of a digest.
+func cosignTag(digest string) string { return strings.Replace(digest, ":", "-", 1) + ".att" }
+
+func digest(b []byte) string {
+	sum := sha256.Sum256(b)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
