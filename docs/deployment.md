@@ -13,20 +13,30 @@ specific cluster, with the check that proves each stage, see [Environments](envi
 
 ## Installing a zone
 
-The demonstrator installs as a single umbrella Helm chart per zone. The chart separates the
-management and data planes into distinct namespaces and orders installation so that workload
-identity exists before any workload starts.
+The demonstrator installs as a single umbrella Helm chart per zone. The chart lays the zone down
+first: the management and data planes as distinct namespaces, default-deny network policies in
+both directions, the allow-matrix lanes between the planes, and the hook-weight bands that order
+the jobs of the components after it. The platform components install after it, into the layout it
+made. That workload identity exists before any workload becomes ready is a property of the
+identity path, not of an install order, as the
+[hook-weight scheme](umbrella-chart.md#the-hook-weight-scheme) explains.
 
 ```bash
-helm install ztd deployment/helm/ztd -n ztd-mgmt --create-namespace -f <values file>
+helm upgrade --install ztd deployment/helm/ztd -n ztd-system --create-namespace \
+  -f deployment/helm/ztd/zones/<zone>.yaml --wait
 ```
 
-Chart values are documented with each chart under `deployment/helm/`.
+The release namespace holds the release and its hook jobs and is not a plane namespace. The zone
+file is written from what the cluster baseline recorded; the chart has no defaults for it. The
+design, the hook-weight scheme and the evidence are in [Umbrella chart](umbrella-chart.md), and
+chart values are documented with each chart under `deployment/helm/`.
 
 ## Teardown
 
+Components uninstall in the reverse order of their installation; the layout goes last:
+
 ```bash
-helm uninstall ztd -n ztd-mgmt
+helm uninstall ztd -n ztd-system
 ```
 
 Teardown must leave no orphaned namespaces, CRDs or secrets; this is verified by an acceptance

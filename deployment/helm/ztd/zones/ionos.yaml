@@ -1,0 +1,38 @@
+# IONOS Cloud cluster (CI/CD and visualization, ADR-0005). Recorded 2026-09-23 from the live
+# cluster with the kubeconfig the client provided and re-read 2026-09-26; the cluster baseline task
+# confirms or corrects every value here. Facts, not choices: change them only when the cluster
+# changes. Recorded, not installed: this cluster holds no demonstration workload and runs no mesh,
+# and whether it takes the umbrella at all is decided with its visualization stage. Until then this
+# file is only validated against the cluster's API (helm --dry-run=server, nothing persisted).
+zone:
+  name: ionos
+  kubernetesVersion: v1.35.6      # kubectl version, server, 2026-09-23; unchanged 2026-09-26
+  storageClass: ionos-cloud-essential   # the default of four ionos.cloud.com classes
+  loadBalancer:
+    type: cloud                   # IONOS provisions Services of type LoadBalancer; not yet exercised here
+
+# The CNI is Calico v3.30.7 (IONOS managed), not Cilium: the Cilium-only pieces stay off and the
+# mesh baseline of ADR-0001 (Istio CNI chained behind Cilium) does not apply to this cluster as is.
+cni:
+  cilium:
+    enabled: false
+
+# This cluster holds no demonstration workload, so no mesh label is applied until the mesh task
+# decides whether the CI/visualization cluster joins a mesh at all.
+mesh:
+  mode: none
+
+networkPolicy:
+  # CoreDNS here is labelled k8s-app=coredns, not kube-dns; with the chart default the DNS bypass
+  # would select nothing and every plane namespace would lose name resolution.
+  dns:
+    namespace: kube-system
+    podSelector:
+      k8s-app: coredns
+  # The API endpoints behind the kubernetes service (managed control plane, port 15700) are recorded
+  # at stand-up and kept out of the repository; they go into a local overlay when a management
+  # component that talks to the API is installed here.
+  kubeApi:
+    enabled: false
+    cidrs: []
+    ports: [15700]

@@ -1,0 +1,23 @@
+{{- /*
+Istio ambient over Cilium: kubelet health probes reach ambient pods SNAT-ed to 169.254.7.127, an
+address Cilium does not exempt from policy, so the default-deny above would fail every probe.
+Istio's platform prerequisites prescribe this cluster-wide exception (istio/istio#49277).
+*/ -}}
+{{- if and .Values.cni.cilium.enabled (eq .Values.mesh.mode "ambient") }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-allow-ambient-hostprobes
+  labels:
+    {{- include "ztd.labels" . | nindent 4 }}
+spec:
+  description: "Allows SNAT-ed kubelet health check probes into ambient pods (Istio platform prerequisites, istio/istio#49277)"
+  enableDefaultDeny:
+    egress: false
+    ingress: false
+  endpointSelector: {}
+  ingress:
+    - fromCIDR:
+        - "169.254.7.127/32"
+{{- end }}

@@ -20,6 +20,7 @@ You need:
   from both clusters;
 - the DNS zone delegation for the trust framework in place, or the trust-list steps will not
   resolve;
+- Helm v4.3.0, the version the pipeline pins, and kubectl;
 - this repository checked out, and the values file for the zone you are installing.
 
 Check the version first — everything below assumes 1.29 or later:
@@ -40,24 +41,48 @@ helm upgrade --install cilium cilium/cilium -n kube-system \
 
 **Verify:** every Cilium pod is `Running`, and `cilium status` reports the cluster healthy.
 
-## 2. Workload identity
+## 2. The zone layout
 
-SPIRE is installed with its controller-manager and the SPIFFE CSI driver, so that SVIDs reach
-workloads through a mounted volume rather than through a secret.
+The umbrella chart lays the zone down before any component is installed: the management and
+data-plane namespaces, default-deny network policies in both directions, the allow-matrix lanes
+from the data plane into the management plane, and the hook-weight bands the jobs of the
+components plug into. It installs into its own release namespace, which is not a plane namespace,
+from the zone's values file:
+
+```bash
+helm upgrade --install ztd deployment/helm/ztd -n ztd-system --create-namespace \
+  -f deployment/helm/ztd/zones/<zone>.yaml --wait
+```
+
+**Verify:** `ztd-mgmt` and `ztd-data` exist with their `ztd.facis.io/plane` label and the mesh
+label for the zone's mode, each holds a `default-deny` NetworkPolicy, and the release's
+post-install verification job completed; the release fails on its own if the layout is not what
+the chart declared. The design, the bands and the evidence script are in
+[Umbrella chart](../umbrella-chart.md).
+
+## 3. Workload identity
+
+SPIRE is installed into the management plane laid down in step 2, with its controller-manager and
+the SPIFFE CSI driver, so that SVIDs reach workloads through a mounted volume rather than through a
+secret. Registrations are regular resources that the controller-manager reconciles into entries,
+never hook jobs; the jobs that check the server, the trust bundle and the entries sit in the
+`identity` band of the hook-weight scheme.
 
 **Verify:** the SPIRE server has an entry for each registered workload selector, and a test pod
 receives an SVID whose SPIFFE ID matches its service account.
 
-## 3. Mesh
+## 4. Mesh
 
-Istio is installed in ambient mode. Exactly one component enforces L7 policy on any given traffic
-path — where a waypoint proxy does it, Cilium is held to L3/L4 for that path, and the assignment is
-recorded in the mesh configuration.
+Istio is installed in the mode the zone's values file names (`mesh.mode`: ambient under
+ADR-0001, sidecar if a superseding decision flips it); the plane namespaces already carry the matching
+label. Exactly one component enforces L7 policy on any given traffic path — where a waypoint proxy
+does it, Cilium is held to L3/L4 for that path, and the assignment is recorded in the mesh
+configuration.
 
 **Verify:** the ztunnel daemonset is ready on every node, and a request between two meshed workloads
 carries an identity the waypoint can name.
 
-## 4. Admission control
+## 5. Admission control
 
 OPA Gatekeeper is installed together with the signature-verification external-data provider. From
 this point an image whose Cosign signature does not verify against the client key material cannot
@@ -67,19 +92,18 @@ start.
 reason code rather than a generic admission error. A cluster where that image starts is not
 configured.
 
-## 5. The demonstrator
+## 6. The demonstrator workloads
 
-The zone installs as a single umbrella chart, which orders the components so that workload identity
-exists before any workload that needs it:
-
-```bash
-helm install ztd deployment/helm/ztd -n ztd-mgmt --create-namespace -f <values file for the zone>
-```
+The demonstrator services install into the data plane as regular resources; the jobs they bring
+sit in the `workloads` band of the hook-weight scheme. A workload cannot become READY before its
+identity exists: its container does not start until the SPIFFE CSI driver has mounted the socket
+directory, and it holds no SVID until the agent answers on that socket with a matching
+registration.
 
 **Verify:** the management and data-plane namespaces both reconcile, no pod is in `CrashLoopBackOff`,
 and the demonstrator UI answers.
 
-## 6. The trust boundary between the zones
+## 7. The trust boundary between the zones
 
 With both zones up, the attested channel between them is exercised. Both ends present evidence of
 the software they are running, and that evidence is bound to the TLS connection it was presented on.
@@ -89,8 +113,10 @@ journey, and confirm the second one aborts the handshake before any application 
 
 ## Teardown
 
+Components uninstall in the reverse order of their installation; the layout goes last:
+
 ```bash
-helm uninstall ztd -n ztd-mgmt
+helm uninstall ztd -n ztd-system
 ```
 
 **Verify:** no namespace, CRD or secret belonging to the demonstrator survives. This is asserted by
