@@ -57,7 +57,7 @@ func TestInterop(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mock, err := os.ReadFile(filepath.Join("..", "..", "docs", "attestation", "samples", "sw.mock.json"))
+	mock, err := os.ReadFile(filepath.Join("..", "..", "docs", "contracts", "samples", "sw.mock.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
