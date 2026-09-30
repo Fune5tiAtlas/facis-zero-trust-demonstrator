@@ -32,6 +32,23 @@ and verified at admission, and the report exchanged inside the attested channel.
 underlies both IF-04 and IF-07, and which of the two carries it as its own contract is settled when
 the interfaces are frozen at v1.
 
+## IF-08 — deployment lifecycle command
+
+The scenario driver hook that deploys and uninstalls a release through the ORCE workflow. It is
+what the lifecycle acceptance scenarios (TDR-BDD-01..04) drive, and it is the same workflow an
+operator uses.
+
+- **Command:** `POST /lifecycle` on ORCE, HTTP Basic (`httpNodeAuth`), TLS 1.3, management plane
+  only — [OpenAPI definition](lifecycle.openapi.yaml). The answer comes at once: `202` with
+  `data.accepted`, or `400` with `errors.fields` naming each invalid parameter.
+- **Result:** asynchronous, kept in the ORCE flow context under `lifecycle.jobs[requestId]` —
+  [JSON Schema](lifecycle-result.schema.json). Read it with the ORCE admin API,
+  `GET /context/flow/ztd-lifecycle-tab/lifecycle`, using a read-only bearer token.
+- **Reason codes** (`errors.action`): `valuesSchemaRejected`, `dryRunRejected`, `deployFailed`,
+  `uninstallFailed`, `releaseNotFound`, `clusterUnreachable`, `duplicateRequest`, `systemError`.
+  A parameter the cluster refuses (for example a namespace outside the BDD pool) comes back in
+  `errors.fields`.
+
 ## Conventions
 
 - REST APIs are described with OpenAPI 3; asynchronous interfaces with JSON Schema.
