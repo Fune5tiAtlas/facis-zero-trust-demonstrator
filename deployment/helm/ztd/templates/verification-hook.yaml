@@ -1,0 +1,122 @@
+{{- /*
+The chart's own use of the hook-weight scheme, band "verification": after install or upgrade a
+Job reads the layout back through the API and fails the release when a plane namespace, its
+plane label, its mesh label or its default-deny policy is missing. It runs in the release
+namespace, outside the default-deny, with read-only access to namespaces and network policies.
+*/ -}}
+{{- if .Values.verification.enabled }}
+{{- $name := printf "%s-verify-layout" .Release.Name }}
+{{- $meshKey := include "ztd.meshLabelKey" . }}
+{{- $meshValue := include "ztd.meshLabelValue" . }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ztd.labels" . | nindent 4 }}
+  annotations:
+    {{- include "ztd.hook.annotations" (dict "phase" "post-install,post-upgrade" "band" "verification" "offset" 0) | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ztd.labels" . | nindent 4 }}
+  annotations:
+    {{- include "ztd.hook.annotations" (dict "phase" "post-install,post-upgrade" "band" "verification" "offset" 0) | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ztd.labels" . | nindent 4 }}
+  annotations:
+    {{- include "ztd.hook.annotations" (dict "phase" "post-install,post-upgrade" "band" "verification" "offset" 1) | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ztd.labels" . | nindent 4 }}
+  annotations:
+    {{- include "ztd.hook.annotations" (dict "phase" "post-install,post-upgrade" "band" "verification" "offset" 5) | nindent 4 }}
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600  # a failed job stays for an hour so its log can be read; a successful one is removed by the hook policy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ztd-verify-layout
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ $name }}
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: verify
+          image: {{ .Values.verification.image | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          command: ["/bin/sh", "-eu", "-c"]
+          args:
+            - |
+              API=https://kubernetes.default.svc
+              SA=/var/run/secrets/kubernetes.io/serviceaccount
+              # The API server pretty-prints for curl's user agent unless told otherwise.
+              get() { curl -sS --cacert "$SA/ca.crt" -H "Authorization: Bearer $(cat "$SA/token")" -o /tmp/body -w '%{http_code}' "$API$1?pretty=false"; }
+              fail=0
+              {{- range (include "ztd.planeNamespaces" . | fromJsonArray) }}
+              ns={{ .name }}; plane={{ .plane }}; nsfail=0
+              code=$(get "/api/v1/namespaces/$ns")
+              if [ "$code" != 200 ]; then
+                echo "FAIL namespace $ns: HTTP $code"; nsfail=1
+              else
+                grep -qE "\"ztd.facis.io/plane\": ?\"$plane\"" /tmp/body || { echo "FAIL $ns: plane label is not $plane"; nsfail=1; }
+                {{- if $meshKey }}
+                grep -qE '"{{ $meshKey }}": ?"{{ $meshValue }}"' /tmp/body || { echo "FAIL $ns: mesh label {{ $meshKey }}={{ $meshValue }} missing"; nsfail=1; }
+                {{- end }}
+                code=$(get "/apis/networking.k8s.io/v1/namespaces/$ns/networkpolicies/default-deny")
+                [ "$code" = 200 ] || { echo "FAIL $ns: default-deny policy: HTTP $code"; nsfail=1; }
+              fi
+              [ "$nsfail" = 0 ] && echo "ok $ns plane=$plane{{ if $meshKey }} {{ $meshKey }}={{ $meshValue }}{{ end }} default-deny"
+              fail=$((fail + nsfail))
+              {{- end }}
+              [ "$fail" = 0 ] || { echo "layout verification failed ($fail namespace(s))"; exit 1; }
+              echo "layout verified"
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

@@ -165,6 +165,19 @@ built. What is fixed now:
   replaced by a freshly attested one rather than refreshed. The gateway port speaks only the
   attested protocol; a plain TLS or plaintext client is refused (`CHAN-DOWNGRADE`).
 
+## Attestation evidence
+
+The mock attestation document — what a Trusted Execution Environment would emit, produced in
+software because the demonstrator has no TEE hardware — is described by
+[`contracts/mock-attestation.schema.json`](contracts/mock-attestation.schema.json), with one sample
+per vendor profile in [`contracts/samples/`](contracts/samples/).
+
+It is a single format serving both sides of the evidence path: the artefact attached to a release
+and verified at admission, and the report exchanged inside the attested channel. It therefore
+underlies both IF-04 and IF-07. IF-04 is already frozen at v1 with the IF-01 event schema as its
+contract, so this format is not part of it; whether IF-07 carries it as its own contract is settled
+when IF-07 is frozen.
+
 ## IF-08 — deployment lifecycle command
 
 The scenario driver hook that deploys and uninstalls a release through the ORCE workflow. It is

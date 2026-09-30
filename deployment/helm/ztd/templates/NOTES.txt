@@ -1,0 +1,17 @@
+ztd umbrella chart {{ .Chart.Version }}: release {{ .Release.Name }} in {{ .Release.Namespace }}, zone {{ .Values.zone.name }}.
+
+Plane namespaces:
+{{- $meshKey := include "ztd.meshLabelKey" . }}{{ $meshValue := include "ztd.meshLabelValue" . }}
+{{- range (include "ztd.planeNamespaces" . | fromJsonArray) }}
+  - {{ .name }}  plane={{ .plane }}{{ if $meshKey }}  {{ $meshKey }}={{ $meshValue }}{{ end }}
+{{- end }}
+
+Network layer: default-deny in both directions in every plane namespace, the DNS bypass, and
+{{ len .Values.allowMatrix }} allow-matrix lanes from the data plane into the management plane.
+{{- if .Values.verification.enabled }}
+The post-install verification job read the layout back; the release would have failed otherwise.
+{{- end }}
+
+Next: the platform components (identity, mesh, admission, ...) install after this release and
+plug into the hook-weight scheme described in docs/umbrella-chart.md.
+Evidence: scripts/verify-umbrella/verify.sh

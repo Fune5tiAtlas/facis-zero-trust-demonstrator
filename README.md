@@ -66,7 +66,9 @@ The journeys and what each one proves are described in [Using the demonstrator](
 | `deployment/docker/` | Container build contexts |
 | `docs/` | Project documentation, published to GitHub Pages via MkDocs |
 | `docs/adr/` | Architecture Decision Records |
+| `docs/contracts/` | Interface contracts — OpenAPI and JSON Schema definitions, with their samples |
 | `scripts/` | Developer and operations scripts |
+| `tools/` | Checks that run in CI but are not part of the delivered module |
 | `.github/workflows/` | CI, referencing the shared workflows in `eclipse-xfsc/dev-ops` |
 
 This is a monorepo: sub-projects are folders in this single repository, and it is the single source

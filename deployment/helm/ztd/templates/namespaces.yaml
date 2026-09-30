@@ -1,0 +1,16 @@
+{{- /* One namespace per plane entry, labelled with its plane and the mesh mode. */ -}}
+{{- $meshKey := include "ztd.meshLabelKey" . }}
+{{- $meshValue := include "ztd.meshLabelValue" . }}
+{{- range (include "ztd.planeNamespaces" . | fromJsonArray) }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .name }}
+  labels:
+    {{- include "ztd.labels" $ | nindent 4 }}
+    ztd.facis.io/plane: {{ .plane }}
+    {{- if $meshKey }}
+    {{ $meshKey }}: {{ $meshValue | quote }}
+    {{- end }}
+{{- end }}

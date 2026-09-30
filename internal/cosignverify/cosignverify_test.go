@@ -152,7 +152,7 @@ func (f *fixture) sbom() string {
 
 // mock is a valid mock-attestation predicate (the sw sample).
 func (f *fixture) mock() string {
-	b, err := os.ReadFile("../../docs/attestation/samples/sw.mock.json")
+	b, err := os.ReadFile("../../docs/contracts/samples/sw.mock.json")
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -388,13 +388,13 @@ func TestSchemas(t *testing.T) {
 		t.Fatalf("vendored schemas: %v", err)
 	}
 	vendored, _ := schemaFS.ReadFile("schemas/mock-attestation.schema.json")
-	published, err := os.ReadFile("../../docs/attestation/mock-attestation.schema.json")
+	published, err := os.ReadFile("../../docs/contracts/mock-attestation.schema.json")
 	if err != nil || string(vendored) != string(published) {
-		t.Errorf("schemas/mock-attestation.schema.json differs from docs/attestation (%v)", err)
+		t.Errorf("schemas/mock-attestation.schema.json differs from docs/contracts (%v)", err)
 	}
 	// Every published mock sample validates.
 	s, _ := schemas()
-	samples, _ := filepath.Glob("../../docs/attestation/samples/*.json")
+	samples, _ := filepath.Glob("../../docs/contracts/samples/*.json")
 	for _, name := range samples {
 		b, _ := os.ReadFile(name)
 		if err := validateWith(s.mock, b); err != nil {

@@ -14,7 +14,7 @@ import (
 
 // The predicate schemas, vendored and pinned by SHA256SUMS: CycloneDX 1.5, 1.6 and 1.7 with the
 // schemas they reference (CycloneDX/specification tag 1.7.2), and the mock-attestation schema (a
-// copy of docs/attestation/mock-attestation.schema.json, kept identical by a test).
+// copy of docs/contracts/mock-attestation.schema.json, kept identical by a test).
 //
 //go:embed schemas/*.json schemas/SHA256SUMS
 var schemaFS embed.FS

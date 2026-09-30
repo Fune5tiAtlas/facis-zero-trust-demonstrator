@@ -32,6 +32,8 @@ cleanup() {
   fi
   kind delete cluster --name "$cluster" >/dev/null 2>&1 || true
   docker rm -f "$reg_name" >/dev/null 2>&1 || true
+  # The signing container writes $work as root; hand it back so the runner user can remove it.
+  docker run --rm -v "$work:/w" "$toolbox" chown -R "$(id -u):$(id -g)" /w >/dev/null 2>&1 || true
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -67,7 +69,7 @@ oci_manifest=application/vnd.oci.image.manifest.v1+json
 docker_manifest=application/vnd.docker.distribution.manifest.v2+json
 
 step "Sign and attest (release script, ephemeral keys, on the kind network)"
-cp docs/attestation/samples/sw.mock.json "$work/mock.json"
+cp docs/contracts/samples/sw.mock.json "$work/mock.json"
 # shellcheck disable=SC2016 # the signing container's preamble, expanded there
 {
   echo 'set -euo pipefail; cd /w'

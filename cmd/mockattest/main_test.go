@@ -8,7 +8,7 @@ import (
 
 func TestEveryProfile(t *testing.T) {
 	for _, p := range []string{"sw", "tpm", "snp", "sgx", "tdx", "azure-tpm", "azure-snp", "azure-tdx"} {
-		if _, err := predicate("../../docs/attestation/samples", p); err != nil {
+		if _, err := predicate("../../docs/contracts/samples", p); err != nil {
 			t.Errorf("%s: %v", p, err)
 		}
 	}

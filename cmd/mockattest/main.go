@@ -1,5 +1,5 @@
 // Command mockattest writes the mock-attestation predicate of one TEE profile (ZT-71): the published
-// sample for that profile (docs/attestation/samples), after checking it against the schema admission
+// sample for that profile (docs/contracts/samples), after checking it against the schema admission
 // enforces. cosign wraps it in an in-toto Statement bound to the image digest.
 //
 //	go run ./cmd/mockattest -profile sw > mock.json
@@ -19,7 +19,7 @@ var profilePattern = regexp.MustCompile(`^[a-z][a-z-]*$`)
 
 func main() {
 	profile := flag.String("profile", "sw", "TEE profile: sw, tpm, snp, sgx, tdx, azure-tpm, azure-snp or azure-tdx")
-	samples := flag.String("samples", "docs/attestation/samples", "directory of the published mock samples")
+	samples := flag.String("samples", "docs/contracts/samples", "directory of the published mock samples")
 	flag.Parse()
 	b, err := predicate(*samples, *profile)
 	if err != nil {

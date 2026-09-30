@@ -1,0 +1,15 @@
+apiVersion: v2
+name: ztd
+description: >-
+  Umbrella chart for one zone of the FACIS Zero Trust Demonstrator: plane namespaces, the baseline
+  deny network policies, the ZT-55 allow matrix at the network layer, and the hook-weight scheme
+  that the platform components plug into.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - facis
+  - zero-trust
+  - umbrella
+sources:
+  - https://github.com/eclipse-xfsc/facis-zero-trust-demonstrator

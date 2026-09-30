@@ -1,0 +1,12 @@
+# Zone file for the CI render and for the local kind cluster (scripts/dev/kind-cilium-up.sh), filled
+# the same way a real zone file is filled from the cluster baseline: with what the cluster is, not
+# with what the chart would like it to be. Mesh mode ambient, the ADR-0001 baseline. The CI chart
+# job renders every chart with its ci/values.yaml.
+zone:
+  name: kind
+  kubernetesVersion: v1.35.5
+  storageClass: standard
+  loadBalancer:
+    type: none
+mesh:
+  mode: ambient

@@ -1,0 +1,123 @@
+# Values of the ztd umbrella chart. Every key is documented here and in README.md.
+
+# --------------------------------------------------------------------------------------------
+# Zone record. Deliberately without defaults: the zone values file records what the cluster
+# baseline observed on the real cluster, and the chart refuses to render without it
+# (values.schema.json), so a zone can never be installed on assumed values.
+# --------------------------------------------------------------------------------------------
+zone:
+  name: ""               # zone-a | zone-b | ionos | kind
+  kubernetesVersion: ""  # server version recorded at stand-up, e.g. v1.31.4; scripts/verify-umbrella asserts it
+  storageClass: ""       # storage class the zone provides to persistent components
+  loadBalancer:
+    type: ""             # how the zone exposes services: cloud | metallb | none
+
+# --------------------------------------------------------------------------------------------
+# Planes. Management components (SPIRE server, ArgoCD, OpenBao, Harbor, TSPA, estserver, admin
+# APIs) live in management-plane namespaces; demonstrator workloads live in data-plane
+# namespaces. The chart creates every namespace listed here and labels it with its plane and the
+# mesh mode. The release namespace itself (README, "Release namespace") is not a plane namespace.
+# --------------------------------------------------------------------------------------------
+planes:
+  management:
+    namespace: ztd-mgmt
+  data:
+    namespace: ztd-data
+  # Further plane namespaces that component tasks add, for example a dedicated SPIRE namespace.
+  extra: []
+  # - name: spire-system
+  #   plane: management
+
+# --------------------------------------------------------------------------------------------
+# Mesh mode. ADR-0001 baselines ambient and foresees a superseding decision for sidecar. Only the
+# namespace label changes between the modes, so the chart is the same either way:
+#   ambient -> istio.io/dataplane-mode=ambient     sidecar -> istio-injection=enabled
+#   none    -> no mesh label (a cluster without Istio, such as a plain kind cluster)
+# Istio itself is installed by the mesh task after this chart; until then the label is inert.
+# --------------------------------------------------------------------------------------------
+mesh:
+  mode: ambient
+  revision: ""  # sidecar mode may pin an Istio revision (istio.io/rev) instead of the default injector
+
+# --------------------------------------------------------------------------------------------
+# CNI-specific pieces. Under Istio ambient with Cilium, a default-deny NetworkPolicy blocks the
+# kubelet health probes, which Istio SNATs to 169.254.7.127; the documented remedy is a
+# cluster-wide Cilium policy admitting that address. Rendered only with cilium enabled AND mode
+# ambient. See https://istio.io/latest/docs/ambient/install/platform-prerequisites/ (istio/istio#49277).
+# --------------------------------------------------------------------------------------------
+cni:
+  cilium:
+    enabled: true
+
+# --------------------------------------------------------------------------------------------
+# Network-layer baseline: default DENY in both directions in every plane namespace. The only
+# openings are the ones below and the allow matrix. The mesh layer (AuthorizationPolicy on named
+# identities) sits on top and belongs to the mesh task; NetworkPolicy opens the L3/L4 lane only.
+# --------------------------------------------------------------------------------------------
+networkPolicy:
+  defaultDeny: true
+  # Declared bypass, workloads -> DNS (docs/architecture.md, section 6): port 53 to the resolver only.
+  dns:
+    enabled: true
+    namespace: kube-system
+    podSelector:
+      k8s-app: kube-dns
+  # Pods inside one plane namespace may reach each other at the network layer; whether they may
+  # actually talk is decided on identity by the mesh layer, not on IP.
+  intraPlane: true
+  # Egress from management-plane namespaces to the Kubernetes API, for controllers such as the
+  # SPIRE controller-manager. Off here: the API endpoint is a per-zone fact that the baseline
+  # records, so it is set in the zone values file.
+  kubeApi:
+    enabled: false
+    cidrs: []     # e.g. ["10.0.0.1/32"]
+    ports: [6443]
+
+# --------------------------------------------------------------------------------------------
+# The ZT-55 allow matrix, data plane -> management plane (docs/architecture.md, section 6), as
+# data. Each entry opens one lane at the network layer: an egress rule in the source namespace
+# and an ingress rule in the destination namespace. `enforcedBy` records the layer the
+# architecture names as the enforcing one; it is documentation, the lane is opened either way.
+# The selectors are the label contract with the component tasks: a component that lands under
+# another name updates the matrix here, not the templates. Ports are narrowed when the component
+# lands; an entry without ports opens every port of the selected pods.
+# The identity provider's token endpoint is not a lane: no data-plane workload calls it, because
+# the participant backend obtains its authorization from the connector (docs/keycloak.md).
+# --------------------------------------------------------------------------------------------
+allowMatrix:
+  - name: pdp-adapter-to-tsa
+    from: { plane: data, podSelector: { app.kubernetes.io/name: pdp-adapter } }
+    to: { plane: management, podSelector: { app.kubernetes.io/name: tsa-policy-engine } }
+    enforcedBy: mesh
+  - name: atls-gateway-to-cmcd
+    from: { plane: data, podSelector: { app.kubernetes.io/name: atls-gateway } }
+    to: { plane: management, podSelector: { app.kubernetes.io/name: cmcd } }
+    enforcedBy: mesh
+  - name: atls-gateway-to-tcr
+    from: { plane: data, podSelector: { app.kubernetes.io/name: atls-gateway } }
+    to: { plane: management, podSelector: { app.kubernetes.io/name: tcr } }
+    enforcedBy: mesh
+  - name: workloads-to-otel-collector
+    from: { plane: data, podSelector: {} }
+    to:
+      plane: management
+      podSelector: { app.kubernetes.io/name: otel-collector }
+      ports:
+        - { port: 4317, protocol: TCP }
+        - { port: 4318, protocol: TCP }
+    enforcedBy: mesh  # export only, egress-restricted by the mesh (ZT-26)
+  - name: backend-to-verification-service
+    from: { plane: data, podSelector: { app.kubernetes.io/name: backend } }
+    to: { plane: management, podSelector: { app.kubernetes.io/name: verification-service } }
+    enforcedBy: mesh
+
+# --------------------------------------------------------------------------------------------
+# Verification hook: the chart's own use of the hook-weight scheme (band "verification"). After
+# install or upgrade a Job reads the layout back through the API and fails the release if a plane
+# namespace, its plane label, its mesh label or its default-deny policy is missing, so
+# `helm install --wait --wait-for-jobs` is a proof and not a hope. It runs in the release
+# namespace, outside the default-deny, and needs only read access to namespaces and policies.
+# --------------------------------------------------------------------------------------------
+verification:
+  enabled: true
+  image: docker.io/curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b
