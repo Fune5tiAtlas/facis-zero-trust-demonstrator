@@ -13,6 +13,7 @@ nav:
   - Architecture: architecture.md
   - Using the demonstrator: usage.md
   - Deployment: deployment.md
+  - Umbrella chart: umbrella-chart.md
   - Environments:
       - Overview: environments/index.md
       - T-Systems OSC: environments/osc.md

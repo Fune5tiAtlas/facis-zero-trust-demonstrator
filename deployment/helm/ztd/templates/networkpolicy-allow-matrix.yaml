@@ -1,0 +1,68 @@
+{{- /*
+The ZT-55 allow matrix as network policy: for each lane, an egress rule in the source namespace
+and an ingress rule in the destination namespace. The mesh layer decides on identity on top.
+*/ -}}
+{{- range .Values.allowMatrix }}
+{{- $fromNs := include "ztd.endpointNamespace" (dict "root" $ "endpoint" .from) }}
+{{- $toNs := include "ztd.endpointNamespace" (dict "root" $ "endpoint" .to) }}
+{{- $fromSelector := .from.podSelector | default dict }}
+{{- $toSelector := .to.podSelector | default dict }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-{{ .name }}-egress
+  namespace: {{ $fromNs }}
+  labels:
+    {{- include "ztd.labels" $ | nindent 4 }}
+  annotations:
+    ztd.facis.io/allow-matrix: {{ .name }}
+    ztd.facis.io/enforced-by: {{ .enforcedBy | default "mesh" | quote }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $fromSelector | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $toNs }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $toSelector | nindent 14 }}
+      {{- with .to.ports }}
+      ports:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-{{ .name }}-ingress
+  namespace: {{ $toNs }}
+  labels:
+    {{- include "ztd.labels" $ | nindent 4 }}
+  annotations:
+    ztd.facis.io/allow-matrix: {{ .name }}
+    ztd.facis.io/enforced-by: {{ .enforcedBy | default "mesh" | quote }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $toSelector | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $fromNs }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $fromSelector | nindent 14 }}
+      {{- with .to.ports }}
+      ports:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

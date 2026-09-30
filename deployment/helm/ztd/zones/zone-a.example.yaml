@@ -1,0 +1,14 @@
+# Example only. Copy to zone-a.yaml and replace every value with what the cluster baseline recorded.
+zone:
+  name: zone-a
+  kubernetesVersion: v1.31.0   # `kubectl version -o json | jq -r .serverVersion.gitVersion`
+  storageClass: csi-default    # `kubectl get storageclass`
+  loadBalancer:
+    type: cloud                # cloud | metallb | none
+mesh:
+  mode: ambient                # follows the mesh decision of ADR-0001: ambient | sidecar
+networkPolicy:
+  kubeApi:
+    enabled: true              # management components that talk to the API need this lane
+    cidrs: ["10.0.0.1/32"]     # the API endpoint of this cluster, recorded by the baseline
+    ports: [443]

@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ztd umbrella chart values",
+  "type": "object",
+  "required": ["zone", "planes", "mesh", "cni", "networkPolicy", "allowMatrix", "verification"],
+  "properties": {
+    "zone": {
+      "type": "object",
+      "description": "Recorded per zone from the cluster baseline; no defaults on purpose.",
+      "required": ["name", "kubernetesVersion", "storageClass", "loadBalancer"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "pattern": "^[a-z0-9-]+$" },
+        "kubernetesVersion": { "type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+" },
+        "storageClass": { "type": "string", "minLength": 1 },
+        "loadBalancer": {
+          "type": "object",
+          "required": ["type"],
+          "properties": { "type": { "type": "string", "enum": ["cloud", "metallb", "none"] } }
+        }
+      }
+    },
+    "planes": {
+      "type": "object",
+      "required": ["management", "data"],
+      "properties": {
+        "management": { "$ref": "#/$defs/plane" },
+        "data": { "$ref": "#/$defs/plane" },
+        "extra": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "plane"],
+            "properties": {
+              "name": { "$ref": "#/$defs/namespaceName" },
+              "plane": { "type": "string", "enum": ["management", "data"] }
+            }
+          }
+        }
+      }
+    },
+    "mesh": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["ambient", "sidecar", "none"] },
+        "revision": { "type": "string" }
+      }
+    },
+    "cni": {
+      "type": "object",
+      "properties": { "cilium": { "type": "object", "properties": { "enabled": { "type": "boolean" } } } }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "defaultDeny": { "type": "boolean" },
+        "intraPlane": { "type": "boolean" },
+        "dns": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "namespace": { "$ref": "#/$defs/namespaceName" },
+            "podSelector": { "type": "object" }
+          }
+        },
+        "kubeApi": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "cidrs": { "type": "array", "items": { "type": "string" } },
+            "ports": { "type": "array", "items": { "type": "integer" } }
+          }
+        }
+      }
+    },
+    "allowMatrix": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "from", "to"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+          "from": { "$ref": "#/$defs/endpoint" },
+          "to": { "$ref": "#/$defs/endpoint" },
+          "enforcedBy": { "type": "string", "enum": ["mesh", "networkPolicy", "both"] }
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "required": ["enabled", "image"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": { "type": "string", "pattern": "@sha256:[0-9a-f]{64}$" }
+      }
+    }
+  },
+  "$defs": {
+    "namespaceName": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 },
+    "plane": {
+      "type": "object",
+      "required": ["namespace"],
+      "properties": { "namespace": { "$ref": "#/$defs/namespaceName" } }
+    },
+    "endpoint": {
+      "type": "object",
+      "properties": {
+        "plane": { "type": "string", "enum": ["management", "data"] },
+        "namespace": { "$ref": "#/$defs/namespaceName" },
+        "podSelector": { "type": "object" },
+        "ports": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["port"],
+            "properties": {
+              "port": { "type": "integer" },
+              "protocol": { "type": "string", "enum": ["TCP", "UDP", "SCTP"] }
+            }
+          }
+        }
+      },
+      "anyOf": [{ "required": ["plane"] }, { "required": ["namespace"] }]
+    }
+  }
+}
