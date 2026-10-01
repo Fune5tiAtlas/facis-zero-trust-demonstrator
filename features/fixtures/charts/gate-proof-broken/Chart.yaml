@@ -1,0 +1,4 @@
+apiVersion: v2
+name: gate-proof-broken
+description: Throwaway proof that a failing chart blocks the candidate. Never merged.
+type: application
