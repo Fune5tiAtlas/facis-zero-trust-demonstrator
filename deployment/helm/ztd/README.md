@@ -45,7 +45,7 @@ Cilium, its CiliumNetworkPolicy to the API server.
 | `networkPolicy.defaultDeny` | `true` | Default deny, ingress and egress, in every plane namespace |
 | `networkPolicy.dns.*` | kube-dns in `kube-system` | The declared DNS bypass, port 53 only |
 | `networkPolicy.intraPlane` | `true` | Pods within one plane namespace may reach each other at L3/L4 |
-| `networkPolicy.kubeApi.*` | off | Management-plane egress to the API server; `cidrs` are a per-zone fact |
+| `networkPolicy.kubeApi.*` | off | Management-plane egress to the API server on `ports`: with Cilium a CiliumNetworkPolicy to the `kube-apiserver` entity on `ports` and 443 (`cidrs` optional), otherwise a NetworkPolicy to `cidrs` (required) |
 | `allowMatrix` | the lanes of architecture §6 | Data-plane → management-plane lanes, as data (see below) |
 | `verification.enabled` | `true` | Post-install job that reads the layout back and fails the release if it is wrong |
 | `verification.image` | `curlimages/curl` by digest | Image of the verification job |
