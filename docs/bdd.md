@@ -218,11 +218,12 @@ A missing input stops the run and is named.
 
 ### The release under test
 
-Until the umbrella chart is ready, the pack deploys `features/fixtures/charts/lifecycle-fixture`, a
-namespaced chart with no CRDs, and every evidence directory records that it is fixture evidence. A
-fixture pass is **not** acceptance of the umbrella release. Before the umbrella chart may replace
-the fixture, its cluster-scoped deploy rights and the ownership and removal of the CRDs it ships
-(which `helm uninstall` leaves behind) must be designed; it then needs its own run.
+The pack deploys `features/fixtures/charts/lifecycle-fixture`, a namespaced chart with no CRDs,
+and every evidence directory records that it is fixture evidence. A fixture pass is **not**
+acceptance of the umbrella release. The umbrella chart (`deployment/helm/ztd`) is cluster-scoped: it
+creates the plane namespaces and a cluster role, which the pool-confined deployer cannot do. Before
+it may replace the fixture, those cluster-scoped deploy rights must be designed
+([Umbrella chart](umbrella-chart.md#release-namespace-and-teardown)); it then needs its own run.
 
 ### Evidence
 

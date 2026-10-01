@@ -1,6 +1,7 @@
 # lifecycle-fixture
 
-The release the cluster acceptance scenarios deploy until the umbrella chart is ready
+The release the cluster acceptance scenarios deploy until the umbrella chart's cluster-scoped deploy
+rights are designed
 (TDR-BDD-01..04, and TDR-BDD-06 as the target of its controlled error). It is test data, never
 released; every evidence directory produced with it records `"fixture": true`, and the scenarios
 that use it are named `[fixture release]`. A fixture pass is not acceptance of the umbrella release.

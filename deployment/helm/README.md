@@ -10,7 +10,7 @@ documents its values in its own README.
 | Admission pool | `deployment/helm/admission-pool` | new; admission-proof namespaces and tester identity | [admission-pool/README.md](admission-pool/README.md) |
 | Lifecycle fixture (test data, never released) | `features/fixtures/charts/lifecycle-fixture` | in use by the acceptance scenarios | [README](../../features/fixtures/charts/lifecycle-fixture/README.md) |
 | ORCE | — | planned; until then ORCE is installed from `deployment/orce-minimal/` | — |
-| Umbrella chart for a zone | — | planned: management and data planes in separate namespaces, baseline deny network policies, workload identity before any workload | — |
+| Umbrella chart for a zone | `deployment/helm/ztd` | in use on kind; design in [docs/umbrella-chart.md](../../docs/umbrella-chart.md) | [ztd/README.md](ztd/README.md) |
 
 ## Quality gate
 

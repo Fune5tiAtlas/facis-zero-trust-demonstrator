@@ -16,8 +16,10 @@ Status as of 23 September 2026 (the M2 BDD submission).
 go through Helm, driven by ORCE (`scripts/lifecycle.sh`, Helm v4.3.0 pinned). Charts are linted and
 rendered on every pull request (`deployment/helm/README.md` lists the charts).
 
-**Not yet:** the umbrella chart for a zone and the ORCE chart; ORCE is installed from
-interim manifests until then. A dry-run gate before release promotion (TDR-BDD-11) is pending.
+**Not yet:** the ORCE chart; ORCE is installed from interim manifests until then. A dry-run gate
+before release promotion (TDR-BDD-11) is pending. Since 30 September 2026 the umbrella chart for a
+zone (`deployment/helm/ztd`) is in place, but it is not yet the release the lifecycle scenarios
+deploy (see [bdd.md](../bdd.md#the-release-under-test)).
 
 ## ADR 002 — Orchestration layer
 
