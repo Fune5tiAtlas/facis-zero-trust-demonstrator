@@ -8,7 +8,7 @@ Feature: Release quality
     When the Kubernetes resources are inspected
     Then the required namespace, ingress, service and deployment objects exist and are ready.
 
-  @TDR-BDD-11 @BDD-TDR-011 @pending
+  @TDR-BDD-11 @BDD-TDR-011 @cluster
   Scenario: Helm lint and dry-run
     Given a release candidate
     When its Helm chart enters the CI quality gate

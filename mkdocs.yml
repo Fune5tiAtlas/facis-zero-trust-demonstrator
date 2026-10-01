@@ -33,6 +33,7 @@ nav:
       - Harness and pack: bdd.md
       - Catalogue: bdd-catalogue.md
   - CI/CD: ci-cd.md
+  - Secrets: secrets.md
   - Troubleshooting: troubleshooting.md
   - OSS dependencies: dependencies.md
   - Licenses: licenses.md
