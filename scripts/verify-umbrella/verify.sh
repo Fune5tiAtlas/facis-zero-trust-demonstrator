@@ -44,7 +44,8 @@ probe() { # probe <namespace> <pod> <url>
   if [ $rc -eq 0 ]; then echo "$out"; else echo "denied($rc)"; fi
 }
 expect_allow() { local r; r=$(probe "$1" "$2" "$3"); [ "$r" = 200 ]; check $? "$4" "→ $r"; }
-expect_deny() { local r; r=$(probe "$1" "$2" "$3"); case $r in denied*) true;; *) false;; esac; check $? "$4" "→ $r"; }
+# Only curl's timeout (exit 28) is a denial: a missing pod or a failed exec is an error, never evidence of isolation.
+expect_deny() { local r; r=$(probe "$1" "$2" "$3"); [ "$r" = "denied(28)" ]; check $? "$4" "→ $r"; }
 
 : > "$OUT"
 say "# Umbrella chart evidence ($(date -u +%Y-%m-%dT%H:%M:%SZ))" ''
@@ -131,16 +132,34 @@ out=$(h upgrade --install "$RELEASE" "$CHART" -n "$RNS" -f "$VALUES" "${NOBAO[@]
 check $rc "back to ambient mode returns 0"
 [ "$(k get ns "$DATA" -o jsonpath='{.metadata.labels.istio\.io/dataplane-mode}')" = ambient ]; check $? "ambient label restored"
 
-say '' '## 7. Guards that refuse a wrong configuration: the lint and render steps of the CI chart gate' ''
+say '' "## 7. The management plane's API lane under Cilium" ''
+say 'Cilium does not select an API server that runs on a node by its address, so with Cilium the lane is a CiliumNetworkPolicy to the kube-apiserver entity and needs no CIDR. Any HTTP code means the call reached the API server; denied(28), a timeout, means the policy dropped it; any other failure is an error.' ''
+apiprobe() { # apiprobe <namespace> <pod>
+  local out rc
+  out=$(k -n "$1" exec "$2" -- curl -sk -m 5 -o /dev/null -w '%{http_code}' https://kubernetes.default.svc/version 2>/dev/null); rc=$?
+  if [ $rc -eq 0 ]; then echo "$out"; else echo "denied($rc)"; fi
+}
+r=$(apiprobe "$MGMT" mgmt-probe); [ "$r" = "denied(28)" ]; check $? "lane off: management pod → API server DENIED" "→ $r"
+out=$(h upgrade --install "$RELEASE" "$CHART" -n "$RNS" -f "$VALUES" "${NOBAO[@]}" --set networkPolicy.kubeApi.enabled=true --wait --timeout 5m 2>&1); rc=$?
+check $rc "upgrade with the API lane on and no CIDR returns 0"
+k -n "$MGMT" get ciliumnetworkpolicy allow-kube-api-egress >/dev/null 2>&1; check $? "the lane is a CiliumNetworkPolicy to the kube-apiserver entity"
+k -n "$MGMT" get networkpolicy allow-kube-api-egress >/dev/null 2>&1; [ $? -ne 0 ]; check $? "no address lane is rendered without a CIDR"
+r=$(apiprobe "$MGMT" mgmt-probe); [[ "$r" =~ ^[0-9]{3}$ ]]; check $? "lane on: management pod → API server ALLOWED" "→ $r"
+r=$(apiprobe "$DATA" data-plain); [ "$r" = "denied(28)" ]; check $? "lane on: data-plane pod → API server still DENIED (the lane is management-plane only)" "→ $r"
+out=$(h upgrade --install "$RELEASE" "$CHART" -n "$RNS" -f "$VALUES" "${NOBAO[@]}" --wait --timeout 5m 2>&1); rc=$?
+check $rc "lane off again returns 0"
+r=$(apiprobe "$MGMT" mgmt-probe); [ "$r" = "denied(28)" ]; check $? "lane off again: management pod → API server DENIED" "→ $r"
+
+say '' '## 8. Guards that refuse a wrong configuration: the lint and render steps of the CI chart gate' ''
 say 'The CI job runs `helm lint` and then `helm template`. Schema violations fail both steps; a `fail` call in a template fails the render step only, because lint mode renders `fail` as a no-op by design.' ''
 h lint "$CHART" >/dev/null 2>&1; [ $? -ne 0 ]; check $? "no zone file: lint refused by the schema"
 h template "$RELEASE" "$CHART" >/dev/null 2>/tmp/ztd-g1; [ $? -ne 0 ]; check $? "no zone file: render refused by the schema" "$(grep -m1 -oE "at '/zone/[a-zA-Z]+'.*" /tmp/ztd-g1)"
 h lint "$CHART" -f "$VALUES" --set mesh.mode=both >/dev/null 2>&1; [ $? -ne 0 ]; check $? "unknown mesh mode: lint refused by the schema"
 h template "$RELEASE" "$CHART" -f "$VALUES" --set mesh.mode=both >/dev/null 2>/tmp/ztd-g3; [ $? -ne 0 ]; check $? "unknown mesh mode: render refused" "$(grep -m1 -oE "at '/mesh/mode'.*" /tmp/ztd-g3)"
-h lint "$CHART" -f "$VALUES" --set networkPolicy.kubeApi.enabled=true >/dev/null 2>&1; check $? "kubeApi lane without cidrs: lint passes, as lint mode ignores the template guard; the render step below is the one that catches it"
-h template "$RELEASE" "$CHART" -f "$VALUES" --set networkPolicy.kubeApi.enabled=true >/dev/null 2>/tmp/ztd-g2; [ $? -ne 0 ]; check $? "kubeApi lane without cidrs: render refused" "$(grep -m1 -oE 'networkPolicy.kubeApi.enabled needs.*' /tmp/ztd-g2)"
+h lint "$CHART" -f "$VALUES" --set networkPolicy.kubeApi.enabled=true --set cni.cilium.enabled=false >/dev/null 2>&1; check $? "kubeApi lane without cidrs and without Cilium: lint passes, as lint mode ignores the template guard; the render step below is the one that catches it"
+h template "$RELEASE" "$CHART" -f "$VALUES" --set networkPolicy.kubeApi.enabled=true --set cni.cilium.enabled=false >/dev/null 2>/tmp/ztd-g2; [ $? -ne 0 ]; check $? "kubeApi lane without cidrs and without Cilium: render refused" "$(grep -m1 -oE 'networkPolicy.kubeApi.enabled needs.*' /tmp/ztd-g2)"
 
-say '' '## 8. Teardown leaves no plane namespace behind' ''
+say '' '## 9. Teardown leaves no plane namespace behind' ''
 for ns in "$MGMT" "$DATA"; do k delete pod --all -n "$ns" --wait=false >/dev/null 2>&1; k delete svc --all -n "$ns" --wait=false >/dev/null 2>&1; done
 out=$(h uninstall "$RELEASE" -n "$RNS" --wait --timeout 5m 2>&1); rc=$?
 check $rc "helm uninstall returns 0" "$out"

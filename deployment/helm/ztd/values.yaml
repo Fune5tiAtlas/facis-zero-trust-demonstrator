@@ -67,7 +67,10 @@ networkPolicy:
   intraPlane: true
   # Egress from management-plane namespaces to the Kubernetes API, for controllers such as the
   # SPIRE controller-manager. Off here: the API endpoint is a per-zone fact that the baseline
-  # records, so it is set in the zone values file.
+  # records, so it is set in the zone values file. With Cilium the lane is a CiliumNetworkPolicy to
+  # the kube-apiserver entity on these ports and the Service port 443, and `cidrs` are optional
+  # (Cilium does not match an API server on a node by address); without Cilium it is a NetworkPolicy
+  # to `cidrs`, which are required.
   kubeApi:
     enabled: false
     cidrs: []     # e.g. ["10.0.0.1/32"]

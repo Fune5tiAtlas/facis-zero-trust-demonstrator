@@ -63,10 +63,9 @@ The Job's Role may create Secrets in the management namespace — Kubernetes RBA
 to one name — and may read and patch only `ztd-openbao-bootstrap`.
 
 **Network.** The Job reaches the Kubernetes API from the management plane. Under Cilium the chart opens
-that lane itself, as a `CiliumNetworkPolicy` to the `kube-apiserver` entity for the Job's pods only:
-Cilium does not select the API server by address, so a NetworkPolicy `ipBlock` does not open it. With
-another CNI the zone's `networkPolicy.kubeApi` lane must be open (on kind,
-`scripts/secrets/kind-api-lane.sh` prints it from the live cluster).
+that lane itself, as a `CiliumNetworkPolicy` to the `kube-apiserver` entity for the Job's pods only, so
+OpenBao bootstraps whether or not the zone's `networkPolicy.kubeApi` lane is on. With another CNI that
+lane must be open (on kind, `scripts/secrets/kind-api-lane.sh` prints it from the live cluster).
 
 ### Verification
 
