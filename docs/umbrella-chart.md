@@ -158,9 +158,11 @@ CIDRs by `helm template` alone, because that guard is a `fail` call in a templat
 mode renders `fail` as a no-op by design (Helm v4.3.0 logs the message at INFO and reports the chart
 as passing). The "Chart lint and render" job runs lint and then template with `ci/values.yaml`, so
 each of those cases is a red job: the schema cases at the lint step, the CIDR case at the render
-step. The chart is verified with Helm v4.3.0, the version the pipeline pins. The pipeline's criterion
-that a chart failing lint or dry-run cannot be released rests on this proof until the packaging and
-release work adds a chart publishing job, which is where that criterion closes.
+step. The chart is verified with Helm v4.3.0, the version the pipeline pins. The release workflow's
+chart gate (TDR-BDD-11) adds a server-side dry-run against a disposable cluster that serves the
+Cilium and Gatekeeper CRDs, and no candidate is built unless it passes; a later chart publishing or
+promotion job must need the same gate. OpenBao, installed by this chart when a zone turns it on, is
+described in [Secrets](secrets.md).
 
 What waits for the client clusters is the first acceptance criterion — the layout on all three
 clusters — and the per-zone values the baseline records, including the API endpoint for the
