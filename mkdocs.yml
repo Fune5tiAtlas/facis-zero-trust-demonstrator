@@ -22,6 +22,7 @@ nav:
       - Overview: environments/index.md
       - T-Systems OSC: environments/osc.md
       - IONOS Cloud: environments/ionos.md
+      - Capability sheets: environments/capabilities/index.md
   - Packaging and containers: packaging.md
   - Orchestrated flows: flows.md
   - Keycloak integration: keycloak.md
