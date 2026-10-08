@@ -49,6 +49,34 @@ created with the namespace's service account, rolled out, answered `200` over HT
 outside the cluster through the ingress, and was deleted. A container requesting less than the
 LimitRange minimum is refused at pod creation, not at apply.
 
+## Local two-zone setup
+
+For cross-zone integration until the OSC zone clusters exist. **Integration only:** nothing run on
+it is acceptance evidence.
+
+```bash
+scripts/dev/zones-up.sh     # about 10 minutes; safe to re-run
+scripts/dev/zones-down.sh   # removes both zones and the files below
+```
+
+It builds two kind clusters, `ztd-zone-a` and `ztd-zone-b`, each with
+`scripts/dev/kind-cilium-up.sh` (Cilium with `cni.exclusive=false`,
+Kubernetes 1.35), on kind's Docker network. A workload in one zone reaches the other zone at the
+peer's worker-node address and a `NodePort`. The script ends by checking exactly that: a pod in
+zone A opens a TCP connection to a service in zone B, and the run fails if it cannot. Your default
+kubeconfig is not touched; each zone has its own.
+
+It writes to `.dev/zones/` (not in Git):
+
+| File | Holds |
+|---|---|
+| `kubeconfig-zone-a`, `kubeconfig-zone-b` | Cluster-admin on the local zone |
+| `zone-a.yaml`, `zone-b.yaml` | The zone values file for the umbrella chart: `kubernetesVersion` read from the cluster, the rest the fixed defaults of a kind zone |
+| `zone-a.peer.env`, `zone-b.peer.env` | `PEER_ZONE` and `PEER_ADDRESS`: where the other zone is reached |
+
+Needs `kind`, `kubectl`, `helm`, `cilium`, `python3` and Docker. The four nodes used 3.5 GB of memory
+in a run with 8 GB given to Docker.
+
 ## Routes, TLS and DNS
 
 Services are reached through the shared ingress controller. Two things are not in place yet:
