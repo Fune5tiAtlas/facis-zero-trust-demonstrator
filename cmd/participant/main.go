@@ -26,18 +26,25 @@ func main() {
 	shutdownSignal, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	shutdownDone := make(chan error, 1)
 	go func() {
 		<-shutdownSignal.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := server.Shutdown(ctx); err != nil {
-			logger.Error("participant shutdown failed", "error", err)
-		}
+		shutdownDone <- server.Shutdown(ctx)
+		close(shutdownDone)
 	}()
 
 	logger.Info("participant starting", "address", config.Address, "mode", config.AdapterMode)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		logger.Error("participant server failed", "error", err)
+	serveErr := server.ListenAndServe()
+	if errors.Is(serveErr, http.ErrServerClosed) {
+		if shutdownErr := <-shutdownDone; shutdownErr != nil {
+			logger.Error("participant shutdown failed", "error", shutdownErr)
+		}
+		return
+	}
+	if serveErr != nil {
+		logger.Error("participant server failed", "error", serveErr)
 		os.Exit(1)
 	}
 }

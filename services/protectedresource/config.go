@@ -47,8 +47,8 @@ func LoadConfig() (Config, error) {
 	if cfg.SlowDelay, err = durationFromEnv("PROTECTED_RESOURCE_SLOW_DELAY", cfg.SlowDelay); err != nil {
 		return Config{}, err
 	}
-	if cfg.SlowDelay > cfg.RequestTimeout {
-		return Config{}, fmt.Errorf("PROTECTED_RESOURCE_SLOW_DELAY must not exceed PROTECTED_RESOURCE_REQUEST_TIMEOUT")
+	if cfg.SlowDelay >= cfg.RequestTimeout {
+		return Config{}, fmt.Errorf("PROTECTED_RESOURCE_SLOW_DELAY must be shorter than PROTECTED_RESOURCE_REQUEST_TIMEOUT")
 	}
 	if cfg.Mode != "sample" {
 		return Config{}, fmt.Errorf("PROTECTED_RESOURCE_MODE %q is unavailable; only sample mode is supported", cfg.Mode)
