@@ -1,0 +1,36 @@
+{
+  "fixture": true,
+  "operation": "issue",
+  "case": "allow",
+  "input": {
+    "profile": "participant-reader"
+  },
+  "output": {
+    "credential": {
+      "@context": [
+        "https://www.w3.org/ns/credentials/v2"
+      ],
+      "id": "urn:uuid:00000000-0000-4000-8000-00000000002a",
+      "type": [
+        "VerifiableCredential",
+        "ParticipantCredential"
+      ],
+      "issuer": "https://issuer.zone-b.example",
+      "validFrom": "2026-10-01T00:00:00Z",
+      "validUntil": "2027-01-31T00:00:00Z",
+      "credentialSubject": {
+        "id": "https://backend.zone-a.example/participant-reader",
+        "role": "participant",
+        "entitlement": "read"
+      },
+      "credentialStatus": {
+        "id": "https://issuer.zone-b.example/status/1#42",
+        "type": "BitstringStatusListEntry",
+        "statusPurpose": "revocation",
+        "statusListIndex": "42",
+        "statusListCredential": "https://issuer.zone-b.example/status/1"
+      }
+    }
+  },
+  "expect": "The wallet holds the credential; the next call presents it."
+}

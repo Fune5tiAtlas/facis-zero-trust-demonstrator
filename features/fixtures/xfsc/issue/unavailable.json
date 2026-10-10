@@ -1,0 +1,12 @@
+{
+  "fixture": true,
+  "operation": "issue",
+  "case": "unavailable",
+  "input": {
+    "profile": "participant-reader"
+  },
+  "output": {
+    "error": "issuer unreachable"
+  },
+  "expect": "The issuance step ends in its defined error state; no credential, no retry loop. IF-01 has no issuer source yet (open)."
+}

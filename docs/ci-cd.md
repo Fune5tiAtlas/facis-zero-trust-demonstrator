@@ -20,7 +20,7 @@ and is declared as such in [Specification changes](specifications.md#readings-an
 | `.github/workflows/docs.yml` | push to `main` affecting `docs/`, manual | Builds the MkDocs site and publishes it to the `gh-pages` branch |
 | `.github/workflows/workflow-hygiene.yml` | every pull request, manual | Fails the pull request when an action is not pinned to a commit or a token scope is too wide |
 | `.github/workflows/ci.yml` | every pull request, push to `main`, manual | Go lint and tests, image build with the Linux assertion and a Trivy scan, chart lint and dry-run render |
-| `.github/workflows/release.yml` | manual, push to a `candidate/**` branch | Release candidate: builds, pushes, signs and attests every image by digest, then verifies each one (see [Image signing](#image-signing)) |
+| `.github/workflows/release.yml` | manual, push to a `candidate/**` branch | Release candidate: the chart gate (see [Chart gate](#chart-gate)), then builds, pushes, signs and attests every image by digest and verifies each one (see [Image signing](#image-signing)); beside it the secrets baseline (see [Secrets](secrets.md#the-baseline-proof-tdr-bdd-08)) |
 | `.github/workflows/measurement-determinism.yml` | pull request and push to `main` touching the check, manual | Measures one fixture on a hosted runner, in a container, and on a deliberately divergent checkout, and requires the normalised measurement to be the same on all three |
 
 ## The service pipeline
@@ -33,7 +33,7 @@ and nobody hand-rolls their own:
 | `Go tests` | Calls the shared `go-test.yml`, which runs the tests of every Go module it finds | yes |
 | `Go lint` | `golangci-lint run ./...`, with a pinned golangci-lint built by the Go version `go.mod` names | yes |
 | `Image build and scan` | Builds each context under `deployment/docker/` for `linux/amd64`, asserts the built image's OS, then scans it with Trivy for HIGH and CRITICAL vulnerabilities | yes |
-| `Chart lint and render` | `helm lint` and a `helm template` dry-run render of every chart under `deployment/helm/` | yes |
+| `Chart lint and render` | `scripts/ci/check-charts.sh`: `helm lint` and a `helm template` render of every chart under `deployment/helm/` and `features/fixtures/charts/`, dependencies built from `Chart.lock` | yes |
 
 ZT-13 requires Linux images. The pipeline reads the OS back off the built image with
 `docker image inspect` and fails if it is anything but `linux/amd64`, rather than trusting the
@@ -76,6 +76,27 @@ one: it uses the pinned Syft, the same tool as the image SBOMs, checks the resul
 [Release SBOM](#release-sbom)). They can go back to
 being references once the shared workflows accept a Go version or read `go.mod`; that is a change to
 propose in `eclipse-xfsc/dev-ops`.
+
+## Chart gate
+
+No release candidate is built unless every chart passes (TDR-BDD-11). The `chart-gate` job of
+`release.yml` creates a disposable kind cluster, installs the CRDs the charts render against (Cilium's
+network policies and Gatekeeper's external-data `Provider`, pinned in `scripts/tools/pins.env`), and
+runs the row in cluster mode: `scripts/ci/check-charts.sh --server-dry-run` lints, renders and
+dry-runs every chart against that API server, and two deliberately broken charts under
+`features/fixtures/broken-charts/` must be refused by the check each targets — one by `helm lint`,
+one only by the server dry-run (it ships a resource whose API the cluster does not serve). The step
+also checks that the `candidate` job needs the gate. The `candidate` job has `needs: [chart-gate]`;
+any later job that publishes charts or promotes a release must need it too.
+
+A server dry-run renders the chart, discovers the API and its schemas and checks existing resources.
+It does not run admission webhooks or hooks, and proves nothing about the release at runtime: that is
+what the lifecycle scenarios and the secrets baseline install for real. Without `--server-dry-run`,
+as in the pull-request job, the script records the server dry-run as not run, never as passed.
+
+The gate and the secrets baseline (TDR-BDD-08) run on a disposable cluster in `release.yml`, which
+decides both rows with a sheet of its own; the pull-request sheet and the client-target sheets list
+them as not run.
 
 ## Image signing
 
@@ -237,9 +258,10 @@ exception before it is merged. The process and the OpenBao worked example are in
 
 ## Documentation publication
 
-`docs.yml` builds the MkDocs site and pushes it to the `gh-pages` branch. GitHub Pages must be
-enabled on the repository with its source set to that branch — a one-time repository setting a
-maintainer applies.
+`docs.yml` builds the MkDocs site and pushes it to the `gh-pages` branch, both at the branch root
+and under `docs/`. GitHub Pages must be enabled on the repository with its source set to that
+branch — a one-time repository setting a maintainer applies. The folder may be `/` (preferred) or
+`/docs`; the site is identical in both.
 
 ## Adding a workflow
 

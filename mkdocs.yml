@@ -22,10 +22,13 @@ nav:
       - Overview: environments/index.md
       - T-Systems OSC: environments/osc.md
       - IONOS Cloud: environments/ionos.md
+      - Application workloads: environments/application-workloads.md
       - Capability sheets: environments/capabilities/index.md
   - Packaging and containers: packaging.md
   - Orchestrated flows: flows.md
+  - Scenario decisions: scenarios.md
   - Keycloak integration: keycloak.md
+  - Identity model: identity-model.md
   - Connector OAuth2 provider: oauth2-provider.md
   - API documentation: api-docs.md
   - Interface contracts: contracts/index.md
@@ -34,6 +37,7 @@ nav:
       - Harness and pack: bdd.md
       - Catalogue: bdd-catalogue.md
   - CI/CD: ci-cd.md
+  - Secrets: secrets.md
   - Troubleshooting: troubleshooting.md
   - OSS dependencies: dependencies.md
   - Licenses: licenses.md

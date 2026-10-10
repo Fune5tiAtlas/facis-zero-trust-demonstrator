@@ -259,24 +259,10 @@ jobs:
 
       # The fixture chart under features/ is linted like a release chart: the TDR's lint and
       # dry-run rule applies to every chart the pipeline installs. A chart whose values have no
-      # defaults ships its valid baseline in ci/values.yaml.
+      # defaults ships its valid baseline in ci/values.yaml. The same script is the release gate,
+      # where it adds a server dry-run against a disposable cluster (release.yml, TDR-BDD-11).
       - name: Lint and render every chart
-        run: |
-          shopt -s nullglob
-          charts=(deployment/helm/*/Chart.yaml features/fixtures/charts/*/Chart.yaml)
-          if [ ${#charts[@]} -eq 0 ]; then
-            echo 'No chart yet - nothing to lint.'
-            exit 0
-          fi
-          for chart in "${charts[@]}"; do
-            directory=$(dirname "$chart")
-            values=()
-            if [ -f "$directory/ci/values.yaml" ]; then
-              values=(-f "$directory/ci/values.yaml")
-            fi
-            helm lint "$directory" "${values[@]}"
-            helm template "$directory" "${values[@]}" >/dev/null
-          done
+        run: scripts/ci/check-charts.sh
 
   # The deployment-lifecycle scenarios (TDR-BDD-01..04) against each client target. They run
   # automatically on main, on every release and on demand - never on pull requests - one run at a
@@ -367,7 +353,13 @@ jobs:
           BDD_TARGET: ${{ matrix.target }}
           BDD_RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
           MODE: ${{ steps.admission.outputs.configured == 'true' && 'cluster' || 'cluster-dryrun' }}
-        run: BDD_MODE="$MODE" GODOG_CUCUMBER_OUT=bundles/bdd/go-cluster-report-${{ matrix.target }}.json go test ./internal/bdd
+        run: BDD_MODE="$MODE" GODOG_CUCUMBER_OUT=bundles/bdd/go-cluster-report-${{ matrix.target }}.json go test ./internal/bdd -godog.tags=@ZT-72
+
+      # The chart gate (TDR-BDD-11) and the secrets baseline (TDR-BDD-08) run on a disposable cluster in
+      # release.yml, which decides them; here they are listed as not run, never as passed.
+      - name: List the release-workflow rows
+        if: always()
+        run: BDD_MODE=cluster-dryrun GODOG_CUCUMBER_OUT=bundles/bdd/go-cluster-report-${{ matrix.target }}-release-rows.json go test ./internal/bdd -godog.tags=@TDR-BDD-08,@TDR-BDD-11
 
       - name: Run the repository scenarios
         if: always()

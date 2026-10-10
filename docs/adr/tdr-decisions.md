@@ -16,8 +16,10 @@ Status as of 23 September 2026 (the M2 BDD submission).
 go through Helm, driven by ORCE (`scripts/lifecycle.sh`, Helm v4.3.0 pinned). Charts are linted and
 rendered on every pull request (`deployment/helm/README.md` lists the charts).
 
-**Not yet:** the ORCE chart; ORCE is installed from interim manifests until then. A dry-run gate
-before release promotion (TDR-BDD-11) is pending. Since 30 September 2026 the umbrella chart for a
+Every chart passes lint, render and a server-side dry-run against a disposable cluster before a
+release candidate is built (TDR-BDD-11, the chart gate in `release.yml`).
+
+**Not yet:** the ORCE chart; ORCE is installed from interim manifests until then. Since 30 September 2026 the umbrella chart for a
 zone (`deployment/helm/ztd`) is in place, but it is not yet the release the lifecycle scenarios
 deploy (see [bdd.md](../bdd.md#the-release-under-test)).
 
@@ -71,7 +73,8 @@ pending.
 
 **Not yet:** TLS 1.3 on the endpoints. ORCE has no ingress yet and is reached by port-forward;
 TLS 1.3 termination comes with its exposure, together with the ORCE chart. The rows that check the baseline at run
-time — TLS 1.3 (TDR-BDD-07) and secrets and log masking (TDR-BDD-08) — are pending.
+time: TLS 1.3 (TDR-BDD-07) is pending; secrets and log masking (TDR-BDD-08) is proven on every
+release candidate by a canary scan and a pipeline-log audit ([Secrets](../secrets.md)).
 
 ## ADR 006 — Logging and observability
 
