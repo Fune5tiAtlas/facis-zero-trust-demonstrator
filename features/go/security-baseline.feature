@@ -14,7 +14,7 @@ Feature: Security baseline
     When TLS 1.3 and an older TLS version are attempted
     Then TLS 1.3 succeeds where authorized and the older protocol version is rejected.
 
-  @TDR-BDD-08 @BDD-TDR-008 @pending
+  @TDR-BDD-08 @BDD-TDR-008 @cluster
   Scenario: Secrets and log masking
     Given the deployed release and CI/CD logs
     When secret storage and log output are inspected
