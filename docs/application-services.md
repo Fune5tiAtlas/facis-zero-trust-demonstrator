@@ -1,10 +1,10 @@
 # Participant and Protected Resource services
 
-This handoff adds two Go sample services for application deployment and HTTP integration. It does not implement the Connector/guard authorization path, Keycloak login, workload identity, attestation or real API replacement. A sample `denied` result is deliberately selected test data, not a security decision. The responses remain marked `source: sample` and `mode: sample`; health reports `liveMode: unavailable`.
+Two Go sample services for application deployment and HTTP integration. It does not implement the Connector/guard authorization path, Keycloak login, workload identity, attestation or real API replacement. A sample `denied` result is deliberately selected test data, not a security decision. The responses remain marked `source: sample` and `mode: sample`; health reports `liveMode: unavailable`.
 
 ## Source and build
 
-Use the repository root as the build context and retain its `go.mod` and `go.sum`. The reviewed baseline is `pr/22`, commit `852cc91d7fc2c6dab97c06f5d9d969298ca42812`; its module requires Go 1.27.0. These service additions use the standard library and add no module dependencies.
+Use the repository root as the build context and retain its `go.mod` and `go.sum`. The services use the standard library only and add no module dependencies.
 
 | Service | Entry point | Package | Default TCP port | Endpoints |
 | --- | --- | --- | --- | --- |
@@ -20,9 +20,9 @@ go test ./services/participant/... ./services/protectedresource/... -timeout 30s
 go vet ./services/participant/... ./services/protectedresource/...
 ```
 
-For a downloaded source ZIP, use `go build -buildvcs=false` if VCS stamping fails. The two-target build checks compilation without leaving two runnable executables. To produce executables, run separate builds with `-o`, or use `go run` as below.
+The two-target build checks compilation without leaving two runnable executables. To produce executables, run separate builds with `-o`, or use `go run` as below.
 
-Container build recipes are included at `deployment/docker/participant/Dockerfile` and `deployment/docker/protected-resource/Dockerfile`, each with repository-root context. They compile Linux/amd64 static binaries using a digest-pinned Go builder, run from `scratch` as UID/GID 65532, and include CA certificates. ATLAS owns the GitHub Actions build, registry publication and deployment path. Follow [Packaging](packaging.md) for release builds/signing; a local source test is not a release build or publication.
+Container build recipes are included at `deployment/docker/participant/Dockerfile` and `deployment/docker/protected-resource/Dockerfile`, each with repository-root context. They compile Linux/amd64 static binaries using a digest-pinned Go builder, run from `scratch` as UID/GID 65532, and include CA certificates. The release workflow builds, signs and publishes them with every other image under `deployment/docker/`; follow [Packaging](packaging.md) for release builds/signing; a local source test is not a release build or publication.
 
 The pipeline build commands, from the repository root, are:
 
@@ -47,7 +47,7 @@ The processes read environment variables; they do not load `.env` files automati
 | `PARTICIPANT_RESOURCE_URL` | Empty | Required for `http-sample`; base URL without `/demo`, credentials, query or fragment. The adapter appends `/demo`. |
 | `PARTICIPANT_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 
-`configs/participant.env.example` enables the two-process local HTTP route. `configs/participant.osc.env.example` shows the separate-service deployment shape. Its hostname is illustrative: ATLAS must substitute the Kubernetes Service name and exposed Service port it actually creates. `127.0.0.1` cannot address a different pod.
+`configs/participant.env.example` enables the two-process local HTTP route. `configs/participant.osc.env.example` shows the separate-service deployment shape. It matches the Service the [application-service chart](../deployment/helm/application-service/README.md) creates. `127.0.0.1` cannot address a different pod.
 
 ### Protected Resource
 
@@ -55,7 +55,7 @@ The processes read environment variables; they do not load `.env` files automati
 | --- | --- | --- |
 | `PROTECTED_RESOURCE_ADDRESS` | `:8086` | HTTP listener; use `:8086` in a container and loopback for a host-only test. |
 | `PROTECTED_RESOURCE_REQUEST_TIMEOUT` | `5s` | Positive duration bounding each resource request. |
-| `PROTECTED_RESOURCE_SLOW_DELAY` | `2s` | Positive simulated delay; must not exceed the Resource request timeout. |
+| `PROTECTED_RESOURCE_SLOW_DELAY` | `2s` | Positive simulated delay; must be shorter than the Resource request timeout. |
 | `PROTECTED_RESOURCE_MODE` | `sample` | Only `sample` is supported. |
 | `PROTECTED_RESOURCE_ADAPTER_MODE` | `sample` | `sample` or `sample-alternative`; both are deterministic sample data. |
 | `PROTECTED_RESOURCE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
@@ -149,6 +149,6 @@ It checks both health endpoints, all five standard scenarios directly and throug
 
 ## Deployment and returned evidence
 
-Deploy the two services in the shared OSC `zero-trust` namespace per [Application workloads](environments/application-workloads.md), as separate releases outside the platform umbrella. Images target `linux/amd64`, are built/published by ATLAS and selected by digest. Network policy must allow the approved caller to Participant, Participant to Resource and required DNS; Resource needs no outbound application route. Observe namespace quotas and minimum requests. No cluster-scoped resources are needed by these applications.
+Deploy the two services in the shared OSC `zero-trust` namespace per [Application workloads](environments/application-workloads.md), as separate releases outside the platform umbrella. Images target `linux/amd64`, are published by the release workflow and selected by digest; the [application-service chart](../deployment/helm/application-service/README.md) installs each one. Network policy must allow the approved caller to Participant, Participant to Resource and required DNS; Resource needs no outbound application route. Observe namespace quotas and minimum requests. No cluster-scoped resources are needed by these applications.
 
-Return the source revision, image digests, effective non-secret environment settings, both health results, scenario results and correlated JSON logs from both processes. An externally reachable Participant route for ORCE requires the actual hostname, DNS and trusted TLS setup from the deployment owner. The UI/ORCE bridge is outside this source PR. Shared-OSC deployment and sample HTTP results establish application integration only, not final two-zone security acceptance.
+Return the source revision, image digests, effective non-secret environment settings, both health results, scenario results and correlated JSON logs from both processes. The current deployment and its results are recorded in [Application service verification](application-services-verification.md). The UI/ORCE bridge is outside these services. Shared-OSC deployment and sample HTTP results establish application integration only, not final two-zone security acceptance.
