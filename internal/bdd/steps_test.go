@@ -159,7 +159,10 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the repository workflows$`, check.theRepositoryWorkflows)
 	ctx.Step(`^the workflow hygiene check runs$`, check.theWorkflowHygieneCheckRuns)
 	ctx.Step(`^it reports no unpinned action and no wildcard write scope$`, check.itReportsNoUnpinnedActionAndNoWildcardWriteScope)
-	registerAdmissionProof(ctx, os.Getenv("BDD_MODE") == "cluster-dryrun")
+	dryRun := os.Getenv("BDD_MODE") == "cluster-dryrun"
+	registerAdmissionProof(ctx, dryRun)
+	registerChartGate(ctx, dryRun)
+	registerSecretsBaseline(ctx, dryRun)
 	registerPending(ctx)
 }
 

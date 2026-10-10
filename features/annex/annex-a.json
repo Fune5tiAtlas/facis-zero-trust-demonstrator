@@ -1613,8 +1613,8 @@
       "then": "required credentials are held in Kubernetes Secrets and no plaintext secret value is present in logs.",
       "family": "security-baseline",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "TDR-BDD-09",
@@ -1667,8 +1667,8 @@
       "then": "helm lint and helm dry-run both pass before the release can be promoted.",
       "family": "release-quality",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "M7-01",

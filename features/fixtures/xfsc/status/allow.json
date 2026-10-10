@@ -1,0 +1,29 @@
+{
+  "fixture": true,
+  "operation": "status",
+  "case": "allow",
+  "input": {
+    "index": 42
+  },
+  "output": {
+    "statusListCredential": {
+      "@context": [
+        "https://www.w3.org/ns/credentials/v2"
+      ],
+      "id": "https://issuer.zone-b.example/status/1",
+      "type": [
+        "VerifiableCredential",
+        "BitstringStatusListCredential"
+      ],
+      "issuer": "https://issuer.zone-b.example",
+      "validFrom": "2026-10-01T00:00:00Z",
+      "credentialSubject": {
+        "id": "https://issuer.zone-b.example/status/1#list",
+        "type": "BitstringStatusList",
+        "statusPurpose": "revocation",
+        "encodedList": "uH4sIAAAAAAAC_-3BMQEAAADCoPVPbQwfoAAAAAAAAAAAAAAAAAAAAIC3AYbSVKsAQAAA"
+      }
+    }
+  },
+  "expect": "Bit 42 is 0: not revoked."
+}

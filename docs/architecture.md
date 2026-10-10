@@ -24,7 +24,6 @@ permitted paths:
 | aTLS gateway → cmcd / TCR resolve | ALLOW (named pair) | mesh policy |
 | workloads → OTel collector (export only) | ALLOW (declared bypass, ZT-26) | mesh policy, egress-restricted |
 | workloads → DNS | ALLOW (declared bypass) | NetworkPolicy port 53 |
-| backend → Keycloak token endpoint / verification service | ALLOW (named pairs) | mesh policy |
 | anything else data → management (SPIRE server, ArgoCD, OpenBao, TSPA, Harbor, estserver, admin APIs) | **DENY** | both layers; ZT-55 matrix test |
 
 ### Staleness matrix

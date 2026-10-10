@@ -1,5 +1,7 @@
 # Keycloak integration
 
+The realm, client, roles, claims and lifetimes are fixed in the [Identity model](identity-model.md).
+
 Keycloak is the demonstrator's identity provider and is used as a **stock product** — the custom
 OAuth2 surface lives in the Go connector instead, precisely so that Keycloak is never forked. See
 [ADR-0003](adr/0003-oauth2-authorisation-surface-in-the-go-connector.md).

@@ -1,0 +1,12 @@
+{
+  "fixture": true,
+  "operation": "issue",
+  "case": "deny",
+  "input": {
+    "profile": "participant-unpresented"
+  },
+  "output": {
+    "credential": null
+  },
+  "expect": "No credential is issued; the guard keeps answering POL-PRESENTATION-REQUIRED."
+}
