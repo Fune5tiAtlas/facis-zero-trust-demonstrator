@@ -1,0 +1,13 @@
+{
+  "fixture": true,
+  "operation": "present",
+  "case": "unavailable",
+  "input": {
+    "challenge": "fx-challenge-0123456789ab",
+    "audience": "https://zone-b.example/resource"
+  },
+  "output": {
+    "error": "wallet unreachable"
+  },
+  "expect": "No presentation; the guard keeps answering POL-PRESENTATION-REQUIRED."
+}

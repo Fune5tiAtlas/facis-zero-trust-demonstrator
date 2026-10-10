@@ -10,6 +10,9 @@ visualization environment. The reasoning for three rather than two is recorded i
 | T-Systems Open Sovereign Cloud | 2 | Zone A and zone B — the two demonstration zones and their trust boundary | [OSC setup](osc.md) — clusters not yet provided |
 | IONOS Cloud | 1 | CI/CD and the visualization environment | [IONOS setup](ionos.md) — provided; ORCE and the BDD pool installed |
 
+Application services that run before the zones exist, and how they are installed without cluster
+rights, are described in [Application workloads](application-workloads.md).
+
 Each guide is written to be followed start to finish by someone who has not seen the cluster before.
 Where a step cannot be executed yet it says so, rather than reading as though it had been done.
 

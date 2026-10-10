@@ -22,9 +22,12 @@ nav:
       - Overview: environments/index.md
       - T-Systems OSC: environments/osc.md
       - IONOS Cloud: environments/ionos.md
+      - Application workloads: environments/application-workloads.md
   - Packaging and containers: packaging.md
   - Orchestrated flows: flows.md
+  - Scenario decisions: scenarios.md
   - Keycloak integration: keycloak.md
+  - Identity model: identity-model.md
   - Connector OAuth2 provider: oauth2-provider.md
   - API documentation: api-docs.md
   - Interface contracts: contracts/index.md
