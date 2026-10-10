@@ -1,30 +1,40 @@
-# Application service source verification
+# Application service verification
 
-Date: 9 October 2026. Baseline: the downloaded `pr/22` archive whose embedded commit is `852cc91d7fc2c6dab97c06f5d9d969298ca42812`, plus the Participant and Protected Resource additions in this handoff. There is no service delivery commit yet.
+What was checked for the [Participant and Protected Resource services](application-services.md), and
+where they currently run. These are sample application checks: they show that the services build,
+deploy, start and answer. They are not evidence for authorization, credential revocation, scope
+enforcement, attestation or any zero-trust acceptance row.
 
-Environment: Windows/amd64, Go 1.27.2, Node.js v24.19.0. The service code uses the repository module unchanged. Local processes bound to loopback on temporary ports; Participant used `http-sample`, Resource used `sample`, both deadlines were 5 seconds and the Resource slow delay was 2 seconds.
+## Source checks
 
 | Check | Result |
 | --- | --- |
-| `gofmt` on both service packages and entry points | PASS; formatting normalized |
-| `go build -buildvcs=false ./cmd/participant ./cmd/protected-resource` | PASS |
-| `go test ./services/participant/... ./services/protectedresource/... -v -timeout 30s` | PASS, both packages |
-| `go vet ./services/participant/... ./services/protectedresource/...` | PASS |
-| Separate Windows executable builds for both entry points | PASS |
-| Separate `GOOS=linux GOARCH=amd64 CGO_ENABLED=0` builds for both entry points | PASS; cross-compilation only |
-| `node scripts/smoke-application-services.mjs` against both running local processes | PASS, 12 checks |
-| Container builds, image scan, signing and registry publication | NOT RUN; Dockerfiles received 10 October |
-| Shared OSC deployment, ingress and ORCE runtime integration | NOT RUN |
-| Repository-wide CI / Linux execution / final two-zone acceptance | NOT RUN |
+| `go build ./cmd/participant ./cmd/protected-resource` | Pass |
+| `go test ./services/participant/... ./services/protectedresource/...` | Pass |
+| `go vet` and `golangci-lint` v2.13.2 on the module | Pass, 0 issues |
+| Images built by the release workflow, `linux/amd64`, signed with the interim key | Pass |
 
-The HTTP checks cover both health endpoints plus success, denied, unavailable, error and slow scenarios directly on Resource and through Participant. They check status mappings, request/correlation IDs, sample markers, reason codes, timestamps and safe-data shape. The HTTP adapter returned Resource's reason codes; this was a real local process-to-process HTTP call carrying sample outcomes, not Participant's in-process sample adapter.
+## Shared OSC namespace — 10 October 2026
 
-The Linux executable builds do not prove container behavior. The HTTP results do not prove authorization, credential revocation, scope enforcement, attestation or any final ZT acceptance row. Rerun the checks on the final PR revision after adding the container recipes; attach CI/runtime evidence separately.
+Installed into namespace `zero-trust` on the shared OSC cluster with the namespace's service account,
+one `deployment/helm/application-service` release per service.
 
-## Dockerfile receipt and checks — 10 October 2026
+| Release | Image | Reached at |
+| --- | --- | --- |
+| `protected-resource` | `ghcr.io/fune5tiatlas/facis-zero-trust-demonstrator/protected-resource@sha256:4e1d926f22ae0c6207810ccbe8788af0ecbc5aad7b3ceb28a1e00ac4b0adc325` | `http://protected-resource.zero-trust.svc.cluster.local:8086`, in the namespace only |
+| `participant` | `ghcr.io/fune5tiatlas/facis-zero-trust-demonstrator/participant@sha256:0c0048b89ce945acac4be8e243c4e2b90be820a24b6622d6d30892eb7bca4286` | `http://participant.zero-trust.svc.cluster.local:8085` in the namespace; `https://participant.zero-trust.160-44-12-115.sslip.io` through the shared ingress, with HTTP basic authentication |
 
-Both supplied Dockerfiles are now included unchanged. Static review confirms the service entry points and ports, repository-root COPY paths, non-root UID/GID 65532, CA certificate copy, SIGTERM and executable entry points. The Participant image selects http-sample and requires its Resource base URL at runtime.
+Effective settings: Participant `http-sample`, 5 s request timeout, Resource URL as above; Resource
+`sample` mode and adapter, 5 s request timeout, 2 s slow delay; log level `info` on both.
 
-The pinned builder index `golang:1.27.2-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d` was resolved using `docker buildx imagetools inspect`; it includes Linux/amd64. This verifies registry metadata, not image-layer contents or a successful build.
+| Check | Result |
+| --- | --- |
+| Both pods ready, health probes on `/health` | Pass |
+| `scripts/smoke-application-services.mjs` against both Services (port-forward) | Pass, 12 checks |
+| Ingress without credentials | `401` |
+| Through the ingress: success, denied, unavailable, error, slow | `200`, `403`, `503`, `502`, `200` after 2.3 s |
+| The same `requestId` and `correlationId` in both services' JSON logs | Pass |
 
-Both Go build commands passed with the Dockerfiles' `-mod=readonly -trimpath -buildvcs=false -ldflags="-s -w"` flags, compiling for Linux/amd64 from isolated directories containing only each Dockerfile's COPY inputs. These used the portable Go toolchain on Windows, not the builder container. Image build/scan, runtime container checks, signing/publication and deployment still require the ATLAS pipeline.
+Not in place on this route: the ingress serves the controller's self-signed certificate and accepts
+TLS 1.2 ([Application workloads](environments/application-workloads.md)); the namespace's allow-all
+policies widen each release's own network policy.

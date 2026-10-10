@@ -47,7 +47,7 @@ The processes read environment variables; they do not load `.env` files automati
 | `PARTICIPANT_RESOURCE_URL` | Empty | Required for `http-sample`; base URL without `/demo`, credentials, query or fragment. The adapter appends `/demo`. |
 | `PARTICIPANT_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 
-`configs/participant.env.example` enables the two-process local HTTP route. `configs/participant.osc.env.example` shows the separate-service deployment shape. It matches the Service the [application-service chart](../deployment/helm/application-service/README.md) creates. `127.0.0.1` cannot address a different pod.
+`configs/participant.env.example` enables the two-process local HTTP route. `configs/participant.osc.env.example` shows the separate-service deployment shape. It matches the Service the application-service chart (`deployment/helm/application-service`) creates. `127.0.0.1` cannot address a different pod.
 
 ### Protected Resource
 
@@ -149,6 +149,6 @@ It checks both health endpoints, all five standard scenarios directly and throug
 
 ## Deployment and returned evidence
 
-Deploy the two services in the shared OSC `zero-trust` namespace per [Application workloads](environments/application-workloads.md), as separate releases outside the platform umbrella. Images target `linux/amd64`, are published by the release workflow and selected by digest; the [application-service chart](../deployment/helm/application-service/README.md) installs each one. Network policy must allow the approved caller to Participant, Participant to Resource and required DNS; Resource needs no outbound application route. Observe namespace quotas and minimum requests. No cluster-scoped resources are needed by these applications.
+Deploy the two services in the shared OSC `zero-trust` namespace per [Application workloads](environments/application-workloads.md), as separate releases outside the platform umbrella. Images target `linux/amd64`, are published by the release workflow and selected by digest; the application-service chart (`deployment/helm/application-service`) installs each one. Network policy must allow the approved caller to Participant, Participant to Resource and required DNS; Resource needs no outbound application route. Observe namespace quotas and minimum requests. No cluster-scoped resources are needed by these applications.
 
 Return the source revision, image digests, effective non-secret environment settings, both health results, scenario results and correlated JSON logs from both processes. The current deployment and its results are recorded in [Application service verification](application-services-verification.md). The UI/ORCE bridge is outside these services. Shared-OSC deployment and sample HTTP results establish application integration only, not final two-zone security acceptance.
