@@ -55,11 +55,7 @@ func NewHTTPSampleAdapter(resourceURL string, client *http.Client) *HTTPSampleAd
 }
 
 func (a *HTTPSampleAdapter) Request(ctx context.Context, request AdapterRequest) (*AdapterResult, error) {
-	payload := DemoRequest{
-		RequestID: request.RequestID, CorrelationID: request.CorrelationID,
-		Resource: request.Resource, Action: request.Action, Scenario: request.Scenario,
-	}
-	body, err := json.Marshal(payload)
+	body, err := json.Marshal(DemoRequest(request))
 	if err != nil {
 		return nil, fmt.Errorf("encode protected resource request: %w", err)
 	}
@@ -74,7 +70,7 @@ func (a *HTTPSampleAdapter) Request(ctx context.Context, request AdapterRequest)
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	if response.StatusCode >= 300 && response.StatusCode < 400 {
 		return nil, ErrInvalidUpstreamResponse

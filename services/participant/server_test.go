@@ -34,7 +34,7 @@ func (a HTTPAdapter) Request(ctx context.Context, _ AdapterRequest) (*AdapterRes
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	return &AdapterResult{Outcome: OutcomeSuccess, ReasonCode: ReasonSampleGranted, Explanation: "received", SafeData: emptySafeData()}, nil
 }
 
@@ -46,7 +46,7 @@ func TestHealthEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("GET /health status = %d, want 200", response.StatusCode)
 	}
@@ -56,7 +56,7 @@ func TestHealthEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /health: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("POST /health status = %d, want 405", response.StatusCode)
 	}
@@ -157,7 +157,7 @@ func TestDemoRequestIdentifiers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("POST /demo: %v", err)
 		}
-		defer response.Body.Close()
+		defer func() { _ = response.Body.Close() }()
 		var result DemoResponse
 		if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 			t.Fatalf("decode /demo response: %v", err)
@@ -182,7 +182,7 @@ func TestDemoHTTPValidation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("PUT /demo: %v", err)
 		}
-		defer response.Body.Close()
+		defer func() { _ = response.Body.Close() }()
 		var result DemoResponse
 		if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 			t.Fatalf("decode PUT /demo response: %v", err)
@@ -276,7 +276,7 @@ func postDemo(t *testing.T, server *httptest.Server, body string) (DemoResponse,
 	if err != nil {
 		t.Fatalf("POST /demo: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	var result DemoResponse
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 		t.Fatalf("decode /demo response: %v", err)

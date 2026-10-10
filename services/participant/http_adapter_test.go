@@ -276,7 +276,7 @@ func TestParticipantHealthReportsSampleModeForHTTPSampleAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	var health struct {
 		Status   string `json:"status"`
 		Mode     string `json:"mode"`
