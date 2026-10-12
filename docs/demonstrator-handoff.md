@@ -2,7 +2,7 @@
 
 This contribution adds the demonstrator UI, ORCE flows, component tests and a
 reproducible Keycloak chart. It uses the identity/scenario contracts and the
-deployed sample-service interface recorded in upstream change 27, commit
+deployed sample-service interface recorded in pull request #27, commit
 `075aa150d7308bb7330a4e3ed8f79b5e07319bf9`. Integrate those prerequisite changes
 before installing this contribution on a clean environment.
 
