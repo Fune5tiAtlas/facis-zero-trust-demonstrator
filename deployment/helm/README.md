@@ -17,9 +17,12 @@ documents its values in its own README.
 Every pull request lints and renders every chart under `deployment/helm/` and
 `features/fixtures/charts/` with Helm v4.3.0 (the `charts` job in `.github/workflows/ci.yml`); a
 chart whose values have no defaults is checked with its `ci/values.yaml`. The lifecycle workflow
-itself runs a server-side dry-run before every install (`scripts/lifecycle.sh`). A server-side
-dry-run as a CI gate before a release is promoted (TDR-BDD-11) is not in place yet; that row is
-pending in the [catalogue](../../docs/bdd-catalogue.md).
+itself runs a server-side dry-run before every install (`scripts/lifecycle.sh`). The release
+workflow adds a server-side dry-run against a disposable cluster before any candidate is built (the
+`chart-gate` job in `.github/workflows/release.yml`, TDR-BDD-11), and proves with two deliberately
+broken charts (`features/fixtures/broken-charts/`) that a chart failing lint or the dry-run is
+refused. Both jobs run `scripts/ci/check-charts.sh`; a chart with dependencies is built from its
+committed `Chart.lock`.
 
 ```bash
 for chart in deployment/helm/*/ features/fixtures/charts/*/; do

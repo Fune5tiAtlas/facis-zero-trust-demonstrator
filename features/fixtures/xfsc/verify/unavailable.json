@@ -1,0 +1,12 @@
+{
+  "fixture": true,
+  "operation": "verify",
+  "case": "unavailable",
+  "input": {
+    "presentation": "present/allow"
+  },
+  "output": {
+    "error": "verification service unreachable"
+  },
+  "expect": "No outcome; the grant is refused and nothing is issued (fail closed). No reason code is registered for this case yet (open)."
+}

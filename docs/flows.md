@@ -17,7 +17,7 @@ rather than leaving a journey without an outcome.
 |---|---|---|---|
 | Successful call | Operator starts the journey from the UI | Backend registers → credential presented → token issued and DPoP-bound → attested channel established → guard permits → resource responds | Resource payload shown, every step green |
 | Revoked credential | Operator revokes the credential, then starts the journey | Presentation verified → status list consulted → verification negative → grant refused → token store fails closed | Refusal with the revocation reason |
-| Wrong scope | Operator starts the journey with a persona lacking the scope | Token issued → guard evaluates policy → no matching rule | Denial carrying the rule, the reason code and an OID4VP link |
+| Wrong scope | Operator starts the journey with a persona lacking the scope | Token issued → guard evaluates policy → no matching rule | Denial carrying the rule and the reason code; an OID4VP link when a presentation is required ([variants](scenarios.md#wrong-scope)) |
 | Tampered measurement | Operator alters the expected measurement | Attestation requested → report returned → expected and actual compared → mismatch | Handshake aborted, with the proof that no application traffic passed |
 | Credential issuance | Operator starts the issuing journey | Wallet receives the credential from the OCM W-Stack → credential unlocks the protected resource on the next call | Previously refused call now permitted |
 | Configuration change | Operator edits a trust zone or a policy in the UI | Change previewed → validated → applied as a pull request → effect visible on the next journey | Journey outcome changes, with the change traceable to its pull request |
@@ -25,6 +25,9 @@ rather than leaving a journey without an outcome.
 
 Each step reports its own result to the UI, so a journey that fails halfway shows *where* it
 stopped, not merely that it stopped.
+
+The inputs, allowed values, emitted events and roles for each journey are fixed in
+[Scenario decisions](scenarios.md).
 
 ## Builder node UI and parameters
 

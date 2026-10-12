@@ -1,0 +1,12 @@
+{
+  "fixture": true,
+  "operation": "status",
+  "case": "unavailable",
+  "input": {
+    "index": 42
+  },
+  "output": {
+    "error": "status list unreachable"
+  },
+  "expect": "Revocation cannot be checked; verification fails closed and no token is issued. No reason code is registered for this case yet (open)."
+}

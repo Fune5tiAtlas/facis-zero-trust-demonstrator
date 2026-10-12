@@ -13,7 +13,7 @@ reported is described in [BDD acceptance](bdd.md).
   This page is built from the repository, not from a run: each cluster run publishes its own
   copy of the catalogue with the basis filled in.
 
-94 rows: 6 implemented, 88 pending.
+94 rows: 8 implemented, 86 pending.
 
 | Row | Requirement | Gate | Status | Runner |
 |---|---|---|---|---|
@@ -105,10 +105,10 @@ reported is described in [BDD acceptance](bdd.md).
 | [TDR-BDD-05](#tdr-bdd-05) | Keycloak / policy / token integration | G3 | pending | godog |
 | [TDR-BDD-06](#tdr-bdd-06) | Structured logging and ORCE errors | G5 | implemented | Cucumber.js |
 | [TDR-BDD-07](#tdr-bdd-07) | TLS 1.3 runtime validation | G4 | pending | godog |
-| [TDR-BDD-08](#tdr-bdd-08) | Secrets and log masking | G2 | pending | godog |
+| [TDR-BDD-08](#tdr-bdd-08) | Secrets and log masking | G2 | implemented | godog |
 | [TDR-BDD-09](#tdr-bdd-09) | Required Kubernetes objects | G6 | pending | godog |
 | [TDR-BDD-10](#tdr-bdd-10) | External dependency reachability | G2 | pending | godog |
-| [TDR-BDD-11](#tdr-bdd-11) | Helm lint and dry-run | G6 | pending | godog |
+| [TDR-BDD-11](#tdr-bdd-11) | Helm lint and dry-run | G6 | implemented | godog |
 | [M7-01](#m7-01) | Final Validation and Demonstration | G7 | pending | Cucumber.js |
 | [M7-02](#m7-02) | Joint Final Report | G7 | pending | Cucumber.js |
 
@@ -2064,8 +2064,8 @@ Then TLS 1.3 succeeds where authorized and the older protocol version is rejecte
 | Test type | Security inspection |
 | Gate | G2 - Platform and documentation baseline (with BDD submission) |
 | Evidence | `evidence/bdd-tdr-008/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/security-baseline.feature` |
 
@@ -2130,8 +2130,8 @@ Then the required Keycloak and trust endpoints are reachable and their expected 
 | Test type | CI quality gate (every release) |
 | Gate | G6 - Quality readiness |
 | Evidence | `evidence/bdd-tdr-011/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/release-quality.feature` |
 
