@@ -19,8 +19,8 @@ and is declared as such in [Specification changes](specifications.md#readings-an
 | `.github/workflows/sbom.yml` | schedule, release, manual | Generates a CycloneDX SBOM for every release that has none and attaches it |
 | `.github/workflows/docs.yml` | push to `main` affecting `docs/`, manual | Builds the MkDocs site and publishes it to the `gh-pages` branch |
 | `.github/workflows/workflow-hygiene.yml` | every pull request, manual | Fails the pull request when an action is not pinned to a commit or a token scope is too wide |
-| `.github/workflows/ci.yml` | every pull request, push to `main`, published release, manual | Go lint and tests, image build with the Linux assertion and a Trivy scan, chart lint and dry-run render; on a published release, the chart packaging and publication (see [Chart release](#chart-release)) |
-| `.github/workflows/release.yml` | manual, push to a `candidate/**` branch | Release candidate: builds, pushes, signs and attests every image by digest, then verifies each one (see [Image signing](#image-signing)) |
+| `.github/workflows/ci.yml` | every pull request, push to `main`, published release, manual | Go lint and tests, image build with the Linux assertion and a Trivy scan, chart lint and dry-run render; on a published release, the chart gate once more and the chart packaging and publication (see [Chart release](#chart-release)) |
+| `.github/workflows/release.yml` | manual, push to a `candidate/**` branch | Release candidate: the chart gate (see [Chart gate](#chart-gate)), then builds, pushes, signs and attests every image by digest and verifies each one (see [Image signing](#image-signing)); beside it the secrets baseline (see [Secrets](secrets.md#the-baseline-proof-tdr-bdd-08)) |
 | `.github/workflows/measurement-determinism.yml` | pull request and push to `main` touching the check, manual | Measures one fixture on a hosted runner, in a container, and on a deliberately divergent checkout, and requires the normalised measurement to be the same on all three |
 
 ## The service pipeline
@@ -33,8 +33,8 @@ and nobody hand-rolls their own:
 | `Go tests` | Calls the shared `go-test.yml`, which runs the tests of every Go module it finds | yes |
 | `Go lint` | `golangci-lint run ./...`, with a pinned golangci-lint built by the Go version `go.mod` names | yes |
 | `Image build and scan` | Builds each context under `deployment/docker/` for `linux/amd64`, asserts the built image's OS, then scans it with Trivy for HIGH and CRITICAL vulnerabilities | yes |
-| `Chart lint and render` | `scripts/check-charts.sh`: `helm lint` and a `helm template` dry-run render of every chart under `deployment/helm/` and of the fixture charts under `features/fixtures/charts/`; then `scripts/check-charts_test.sh`, the cases that hold the script to refusing a package when a chart fails | yes |
-| `Release charts` | On a published release only, once every other gate job of the workflow has passed: packages the charts under `deployment/helm/` at the release version, attaches them to the release with their checksums and, when a registry is configured, pushes them as OCI chart artefacts — see [Chart release](#chart-release) | yes — a release whose gates fail ships no chart |
+| `Chart lint and render` | `scripts/ci/check-charts.sh`: `helm lint` and a `helm template` render of every chart under `deployment/helm/` and `features/fixtures/charts/`, dependencies built from `Chart.lock`; then `scripts/ci/check-charts_test.sh`, the cases that hold the script to refusing a package when a chart fails | yes |
+| `Release charts` | On a published release only, once every other gate job of the workflow has passed: runs the chart gate with its server dry-run on a disposable cluster, packages the charts under `deployment/helm/` at the release version, attaches them to the release with their checksums and, when a registry is configured, pushes them as OCI chart artefacts — see [Chart release](#chart-release) | yes — a release whose gates fail ships no chart |
 
 ZT-13 requires Linux images. The pipeline reads the OS back off the built image with
 `docker image inspect` and fails if it is anything but `linux/amd64`, rather than trusting the
@@ -76,6 +76,30 @@ actions and declared permissions this repository requires of its own workflows. 
 being references once the shared workflows accept a Go version or read `go.mod`; that is a change to
 propose in `eclipse-xfsc/dev-ops`.
 
+## Chart gate
+
+No release candidate is built unless every chart passes (TDR-BDD-11). The `chart-gate` job of
+`release.yml` creates a disposable kind cluster, installs the CRDs the charts render against (Cilium's
+network policies and Gatekeeper's external-data `Provider`, pinned in `scripts/tools/pins.env`), and
+runs the row in cluster mode: `scripts/ci/check-charts.sh --server-dry-run` lints, renders and
+dry-runs every chart against that API server, and two deliberately broken charts under
+`features/fixtures/broken-charts/` must be refused by the check each targets — one by `helm lint`,
+one only by the server dry-run (it ships a resource whose API the cluster does not serve). The step
+also checks that the `candidate` job needs the gate. The `candidate` job has `needs: [chart-gate]`;
+any later job that publishes charts or promotes a release must need it too, or run it again: the
+`Release charts` job of `ci.yml` runs on a published release, which no candidate run is tied to, so
+it creates the same disposable cluster and runs the same script with `--server-dry-run` before it
+packages anything (see [Chart release](#chart-release)).
+
+A server dry-run renders the chart, discovers the API and its schemas and checks existing resources.
+It does not run admission webhooks or hooks, and proves nothing about the release at runtime: that is
+what the lifecycle scenarios and the secrets baseline install for real. Without `--server-dry-run`,
+as in the pull-request job, the script records the server dry-run as not run, never as passed.
+
+The gate and the secrets baseline (TDR-BDD-08) run on a disposable cluster in `release.yml`, which
+decides both rows with a sheet of its own; the pull-request sheet and the client-target sheets list
+them as not run.
+
 ## Image signing
 
 The candidate job of `release.yml` builds every image under `deployment/docker/` for `linux/amd64`,
@@ -109,15 +133,19 @@ The Technical Development Requirements deliver the Helm charts with each release
 stage above creates no tag and no release; the charts are delivered when a release is published, by
 the `Release charts` job of `ci.yml`, and only after every gate job of that workflow has passed —
 the lifecycle jobs included, which may be skipped while the repository variable is off but not
-failed or cancelled. The lint and dry-run render are the gate in front of the package, so a chart
-that fails either is never released, which is the rule of Annex A row TDR-BDD-11. The pull-request
-job and the release job run the same `scripts/check-charts.sh`, which checks every chart first and
-packages only when all of them pass, so the gate a pull request clears is the gate the release is
-held to. Each package is then linted and rendered again with the chart's own values: the version
-now differs from `Chart.yaml`, and a template that reads it renders differently. One failing
-package leaves no package at all. `scripts/check-charts_test.sh` holds the script to that in the
-chart job, against charts it writes itself: a set that passes is packaged at the version with
-matching checksums, and one failing chart leaves no package, at the source or once packaged.
+failed or cancelled. The job then runs the [chart gate](#chart-gate) once more, on a disposable kind
+cluster of its own with the same CRDs: `release.yml` runs on candidate branches and `ci.yml` on the
+published release, no candidate run is tied to the tag, and a published chart must not skip the
+server dry-run. Lint, render and the server dry-run are the gate in front of the package, so a chart
+that fails any of them is never released, which is the rule of Annex A row TDR-BDD-11. The
+pull-request job, the release gate and the release job run the same `scripts/ci/check-charts.sh`,
+which checks every chart first and packages only when all of them pass, so the gate a pull request
+clears is the gate the release is held to. Each package is then checked again as its source was,
+with the chart's own values: the version now differs from `Chart.yaml`, and a template that reads
+it renders differently. One failing package leaves no package at all.
+`scripts/ci/check-charts_test.sh` holds the script to that in the chart job, against charts it
+writes itself: a set that passes is packaged at the version with matching checksums, and one failing
+chart leaves no package, at the source or once packaged.
 
 A release is tagged `vX.Y.Z`, or `vX.Y.Z-prerelease`. The charts are packaged at that version — the
 tag drives `--version` and `--app-version`, over the development version in each `Chart.yaml` — so
@@ -134,9 +162,10 @@ job also pushes every package with `helm push` and prints the digest of each int
 That digest is what a zone file pins: the lifecycle workflow accepts a chart only as a local path or
 as an `oci://` reference pinned by digest.
 
-Locally, `scripts/check-charts.sh` runs the same check, and
-`scripts/check-charts.sh --package dist --version 0.0.0-local` the same packaging, for a look at what
-a release would ship.
+Locally, `scripts/ci/check-charts.sh` runs the same check, and
+`scripts/ci/check-charts.sh --package dist --version 0.0.0-local` the same packaging, for a look at
+what a release would ship; with a cluster in the current kube context, `--server-dry-run` adds the
+gate's dry-run to both.
 
 ## Lifecycle scenarios on the client targets
 
@@ -243,9 +272,10 @@ exception before it is merged. The process and the OpenBao worked example are in
 
 ## Documentation publication
 
-`docs.yml` builds the MkDocs site and pushes it to the `gh-pages` branch. GitHub Pages must be
-enabled on the repository with its source set to that branch — a one-time repository setting a
-maintainer applies.
+`docs.yml` builds the MkDocs site and pushes it to the `gh-pages` branch, both at the branch root
+and under `docs/`. GitHub Pages must be enabled on the repository with its source set to that
+branch — a one-time repository setting a maintainer applies. The folder may be `/` (preferred) or
+`/docs`; the site is identical in both.
 
 ## Adding a workflow
 

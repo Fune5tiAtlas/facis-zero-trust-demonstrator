@@ -258,28 +258,32 @@ jobs:
           version: v4.3.0
 
       # The fixture chart under features/ is linted like a release chart: the TDR's lint and
-      # dry-run rule applies to every chart the pipeline installs. The same script packages the
-      # release, so the gate a pull request clears is the gate the release is held to.
+      # dry-run rule applies to every chart the pipeline installs. A chart whose values have no
+      # defaults ships its valid baseline in ci/values.yaml. The same script is the release gate,
+      # where it adds a server dry-run against a disposable cluster (release.yml, TDR-BDD-11), and
+      # packages the charts when a release is published (release-charts below), so the gate a pull
+      # request clears is the gate the release is held to.
       - name: Lint and render every chart
-        run: scripts/check-charts.sh
+        run: scripts/ci/check-charts.sh
 
       # What the release relies on, against charts the test writes: a set that passes is packaged
       # at the version with matching checksums, and one failing chart leaves no package at all.
       - name: Test the chart check
-        run: scripts/check-charts_test.sh
+        run: scripts/ci/check-charts_test.sh
 
   # The release set of charts. release.yml builds and signs the candidate images and creates no
   # release; this job delivers the charts when one is published, and only once every gate of this
   # workflow has passed - a gate job added above is added to needs here. The lifecycle jobs are
   # among them: they may be skipped (BDD_CLUSTER_ENABLED off) but never failed or cancelled, which
-  # the default condition cannot express, so the results are checked one by one. A chart that
-  # fails lint or the dry-run render is therefore never released (TDR-BDD-11): the script checks
-  # every chart first, refuses to package when one fails, and checks each package again at the
-  # release version. The chart version is the release tag without its leading v, so the release
-  # and every chart in it carry one version. The packages and their checksums are attached to the
-  # release; once the client's registry exists and CHART_REGISTRY names it, they are also pushed
-  # as OCI chart artefacts, and the digest each push prints is what a zone file pins
-  # (oci://...@sha256:).
+  # the default condition cannot express, so the results are checked one by one. The chart gate of
+  # release.yml (TDR-BDD-11) runs on candidate branches, not on the published release, so this job
+  # runs it again on a disposable cluster of its own: the script lints, renders and server dry-runs
+  # every chart first, refuses to package when one fails, and checks each package the same way at
+  # the release version, so a chart that fails lint or the dry-run is never released. The chart
+  # version is the release tag without its leading v, so the release and every chart in it carry
+  # one version. The packages and their checksums are attached to the release; once the client's
+  # registry exists and CHART_REGISTRY names it, they are also pushed as OCI chart artefacts, and
+  # the digest each push prints is what a zone file pins (oci://...@sha256:).
   release-charts:
     name: Release charts
     needs:
@@ -312,8 +316,24 @@ jobs:
         with:
           version: v4.3.0
 
+      # The same disposable cluster as release.yml's chart gate, with the CRDs the charts render
+      # against, so every package passes the server dry-run before it is attached.
+      - name: Install the pinned tools
+        run: |
+          scripts/tools/install.sh "$RUNNER_TEMP/bin" kind kubectl gatekeeper-chart cilium-crds
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Create the gate cluster with the CRDs the charts render against
+        run: |
+          . scripts/tools/pins.env
+          kind create cluster --name ztd-gate --image "$KIND_NODE_IMAGE" --wait 180s
+          tar -xzf "$RUNNER_TEMP/bin/gatekeeper-${GATEKEEPER_CHART_VERSION}.tgz" -C "$RUNNER_TEMP" gatekeeper/crds
+          kubectl apply -f "$RUNNER_TEMP/gatekeeper/crds/provider-customresourcedefinition.yaml" -f "$RUNNER_TEMP/bin/cilium-crds/"
+          kubectl wait --for condition=established --timeout=60s crd/providers.externaldata.gatekeeper.sh \
+            crd/ciliumclusterwidenetworkpolicies.cilium.io crd/ciliumnetworkpolicies.cilium.io
+
       - name: Check and package the release charts
-        run: scripts/check-charts.sh --package dist/charts --version "${GITHUB_REF_NAME#v}"
+        run: scripts/ci/check-charts.sh --server-dry-run --package dist/charts --version "${GITHUB_REF_NAME#v}"
 
       - name: Attach the charts to the release
         run: |
@@ -431,7 +451,13 @@ jobs:
           BDD_TARGET: ${{ matrix.target }}
           BDD_RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
           MODE: ${{ steps.admission.outputs.configured == 'true' && 'cluster' || 'cluster-dryrun' }}
-        run: BDD_MODE="$MODE" GODOG_CUCUMBER_OUT=bundles/bdd/go-cluster-report-${{ matrix.target }}.json go test ./internal/bdd
+        run: BDD_MODE="$MODE" GODOG_CUCUMBER_OUT=bundles/bdd/go-cluster-report-${{ matrix.target }}.json go test ./internal/bdd -godog.tags=@ZT-72
+
+      # The chart gate (TDR-BDD-11) and the secrets baseline (TDR-BDD-08) run on a disposable cluster in
+      # release.yml, which decides them; here they are listed as not run, never as passed.
+      - name: List the release-workflow rows
+        if: always()
+        run: BDD_MODE=cluster-dryrun GODOG_CUCUMBER_OUT=bundles/bdd/go-cluster-report-${{ matrix.target }}-release-rows.json go test ./internal/bdd -godog.tags=@TDR-BDD-08,@TDR-BDD-11
 
       - name: Run the repository scenarios
         if: always()
