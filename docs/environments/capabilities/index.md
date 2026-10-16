@@ -22,7 +22,9 @@ policies in the namespace is reported as unknown.
 | [OSC zone A](osc-zone-a.md) | target zone cluster `zerotrust-a` | cluster rights | measured 16 October 2026 |
 | [OSC zone B](osc-zone-b.md) | target zone cluster `zerotrust-b` | cluster rights | measured 16 October 2026 |
 
-Reachability from CI is **unverified**: these runs were made from a workstation.
+These runs were made from a workstation. Reachability from the pipeline is checked by the
+`cluster-reachability` job ([CI/CD](../../ci-cd.md#cluster-reachability)) once each cluster's observer
+secret is set; until then it is **unverified**.
 
 ## For the mesh decision
 
