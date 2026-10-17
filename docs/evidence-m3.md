@@ -44,5 +44,7 @@ restore could not complete (for example the API server was unreachable) and an o
 
 - Admission enforcement on the zone's own data plane (`ztd-data`) and its configuration through the
   umbrella chart: follows the umbrella integration.
-- The secrets baseline (OpenBao) on the zones: enabled through the zones' umbrella values.
+- The secrets baseline (OpenBao) on the zones: OpenBao moves out of the umbrella chart into a release of
+  its own, installed after the zone's identity components, so it has its workload identity before it
+  starts; until then it stays off on the zones.
 - The client signing key and registry (Harbor): the interim key and ghcr are used until delivery.
