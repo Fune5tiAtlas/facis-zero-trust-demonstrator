@@ -20,8 +20,12 @@ spec:
       labels:
         {{- include "token-store.labels" . | nindent 8 }}
         app.kubernetes.io/component: schema
+        {{- if .Values.identity.spireManagedIdentity }}
+        spiffe.io/spire-managed-identity: "true"
+        {{- end }}
     spec:
       restartPolicy: Never
+      serviceAccountName: {{ .Values.serviceAccount.schemaName | quote }}
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true

@@ -2,53 +2,18 @@ package main
 
 import (
 	"bytes"
-	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"log/slog"
-	"net/url"
-	"os"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/testsupport"
 )
 
-// testDatabaseURL creates a database of its own on the PostgreSQL that TOKEN_STORE_TEST_DATABASE_URL
-// names, dropped when the test ends, and returns its URL. Skips without the variable.
+// testDatabaseURL is a database of this test's own; see testsupport.DatabaseURL.
 func testDatabaseURL(t *testing.T) string {
 	t.Helper()
-	admin := os.Getenv("TOKEN_STORE_TEST_DATABASE_URL")
-	if admin == "" {
-		t.Skip("TOKEN_STORE_TEST_DATABASE_URL not set; this test needs a PostgreSQL")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	conn, err := pgx.Connect(ctx, admin)
-	if err != nil {
-		t.Fatalf("connecting to TOKEN_STORE_TEST_DATABASE_URL: %v", err)
-	}
-	var suffix [6]byte
-	_, _ = rand.Read(suffix[:])
-	name := "ts_cli_" + hex.EncodeToString(suffix[:])
-	ident := pgx.Identifier{name}.Sanitize()
-	if _, err := conn.Exec(ctx, "CREATE DATABASE "+ident); err != nil {
-		t.Fatalf("creating the test database: %v", err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_, _ = conn.Exec(ctx, "DROP DATABASE "+ident+" WITH (FORCE)")
-		_ = conn.Close(ctx)
-	})
-	u, err := url.Parse(admin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	u.Path = "/" + name
-	return u.String()
+	return testsupport.DatabaseURL(t, "cli")
 }
 
 // The migrate command end to end, exit codes included: status on an empty database is 3, up is 0

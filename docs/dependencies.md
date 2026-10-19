@@ -100,8 +100,8 @@ The JavaScript packages above are pinned by exact version with integrity hashes 
 | Grype (Anchore) | 0.119.0 | Apache-2.0 | adds the known-vulnerability references to the SBOM before it is signed |
 | gator (OPA Gatekeeper) | v3.23.1 | Apache-2.0 | offline tests of the admission constraints |
 | OPA Gatekeeper (Helm chart) | 3.23.1 | Apache-2.0 | admission control with the first-party external-data provider |
-| PostgreSQL | 16.10 (test service) | PostgreSQL License | token-store integration tests |
-| OpenBao | 2.7.0 (test service) | MPL-2.0 | token-store integration tests only; its use in the demonstrator is the declared licence exception |
+| PostgreSQL | 16.10 (test service) | PostgreSQL License | token-store integration tests and lifecycle proof |
+| OpenBao | 2.7.0 (test service) | MPL-2.0 | the token-store lifecycle proof only; its use in the demonstrator is the declared licence exception |
 | OpenBao (Helm chart `openbao`) | chart 0.28.3, server v2.5.4 | MPL-2.0 | the umbrella's X.509 key-value store when a zone turns it on ([Secrets](secrets.md)); covered by the declared licence exception |
 | Docker Distribution registry | 2.8.3 (test service) | Apache-2.0 | a local registry for signing and verification tests in CI |
 
