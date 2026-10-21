@@ -45,7 +45,8 @@
 #   5 jaeger                         traces, Badger on a persistent volume (upstream, pinned)
 #     telemetry-client-certs         copies each zone's client certificate into that zone, when
 #                                    TELEMETRY_ZONES names the zones (also a command of its own)
-# The log store is not installed: it is an open point of the observability design.
+# The logs of every zone end in files on the entry's volume (otel-entry-logs, one file per zone,
+# rotated by size); no log query service is installed.
 #
 # Usage:
 #   scripts/install-zone/install.sh install [release...]
@@ -331,7 +332,7 @@ plan() {
   fi
   if [ "$ROLE" = demonstrator ]; then
     say "  then telemetry-client-certs: ${TELEMETRY_ZONES:-not run (TELEMETRY_ZONES is empty)}"
-    say "  the log store is not installed (an open point of the observability design)"
+    say "  the logs of every zone are exported to files on the volume otel-entry-logs; no log query service is installed"
   fi
 }
 
@@ -513,8 +514,7 @@ if release in ("otel-node", "otel-gateway"):
         if vol["name"] == "telemetry-client":
             vol["secret"]["secretName"] = te["clientSecret"]
     if release == "otel-node" and inc.get("namespace"):
-        # kind only: the demonstrator role shares the cluster; its pods are not the zone's, and the
-        # entry's debug exporter would otherwise read back its own output.
+        # kind only: the demonstrator role shares the cluster; its pods are not the zone's.
         values["config"]["receivers"]["filelog"]["exclude"] = [f"/var/log/pods/{inc['namespace']}_*/*/*.log"]
     if release == "otel-gateway":
         values["config"]["receivers"]["http_check/revocation"]["targets"][0]["endpoint"] = te["revocationStatusListUrl"]
@@ -524,6 +524,22 @@ if release == "otel-entry":
     lb = fact(doc, "zone.loadBalancer.type") or "none"
     values["service"]["type"] = "ClusterIP" if lb == "none" else "LoadBalancer"
     values["service"]["loadBalancerSourceRanges"] = list(e.get("sourceRanges") or [])
+    # The log export: one file per zone on the volume otel-entry-logs, rotated by size. The size at
+    # which a file rotates is the volume shared out over every zone's current file and backups, with a
+    # tenth kept free.
+    lx = values.pop("logExport")
+    size = str((ob.get("volumes") or {}).get("logs") or "")
+    unit = {"Mi": 1, "Gi": 1024, "Ti": 1024 * 1024}.get(size[-2:])
+    if not unit or not size[:-2].isdigit():
+        sys.exit(f"install-zone: release otel-entry: observabilityBackends.volumes.logs ({size!r}) is not a size in Mi, Gi or Ti")
+    files = len(e["zones"]) * (int(lx["maxBackups"]) + 1)
+    rotate_mb = int(int(size[:-2]) * unit * 0.9 // files)
+    if rotate_mb < 1:
+        sys.exit(f"install-zone: release otel-entry: the logs volume ({size}) is too small for {files} files")
+    for obj in values.get("extraManifests") or []:
+        if obj.get("kind") == "PersistentVolumeClaim":
+            obj["spec"]["storageClassName"] = fact(doc, "zone.storageClass")
+            obj["spec"]["resources"]["requests"]["storage"] = size
     for z in e["zones"]:
         n, port = z["name"], int(z["port"])
         if len(f"tcp-{n}") > 15:
@@ -536,7 +552,10 @@ if release == "otel-entry":
             "trace_statements": [f'set(resource.attributes["zone"], "{n}")', 'delete_key(span.attributes, "zone")'],
             "metric_statements": [f'set(resource.attributes["zone"], "{n}")', 'delete_key(datapoint.attributes, "zone")'],
             "log_statements": [f'set(resource.attributes["zone"], "{n}")', 'delete_key(log.attributes, "zone")']}
-        for signal, exporter in (("traces", "otlp/jaeger"), ("metrics", "prometheus_remote_write"), ("logs", "debug")):
+        cfg["exporters"][f"file/{n}"] = {"path": f"{lx['directory']}/{n}.jsonl", "format": "json",
+            "flush_interval": "1s",
+            "rotation": {"max_megabytes": rotate_mb, "max_backups": int(lx["maxBackups"]), "localtime": False}}
+        for signal, exporter in (("traces", "otlp/jaeger"), ("metrics", "prometheus_remote_write"), ("logs", f"file/{n}")):
             cfg["service"]["pipelines"][f"{signal}/{n}"] = {"receivers": [f"otlp/{n}"],
                 "processors": ["memory_limiter", f"transform/zone-{n}", "batch"], "exporters": [exporter]}
         values["ports"][f"tcp-{n}"] = {"enabled": True, "containerPort": port, "servicePort": port, "protocol": "TCP"}

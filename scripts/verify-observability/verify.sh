@@ -9,9 +9,9 @@
 # exit, interrupted or not.
 #
 # Checks, each named by what it proves:
-#   pod-logs-collected          a pod's log lines, JSON and plain text, reach the entry with zone,
-#                               namespace, pod and container; a node collector runs on every node the
-#                               SPIRE agents run on
+#   pod-logs-collected          a pod's log lines, JSON and plain text, reach the zone's exported file
+#                               with zone, namespace, pod and container; a node collector runs on every
+#                               node the SPIRE agents run on
 #   if01-fields-kept            an IF-01 event keeps correlation_id, run_id and seq as fields
 #   spire-agents-scraped        every SPIRE agent is scraped, labelled with its node and zone
 #   agents-stay-on-loopback     the agents answer their metrics only on 127.0.0.1:9988
@@ -38,7 +38,10 @@
 #   silent-zone-alerts          the gateway's egress is cut: a silent-zone alert within 30 s, resolved
 #   revocation-endpoint-alerts  the status list stops: an alert within 30 s, resolved
 #   no-private-key-in-records   no private-key material in the rendered manifests or the record
-#   logs-queryable              PENDING: the log store is an open point of the design; never faked
+#   logs-exported               the records of one request are found by correlation_id in the exported
+#                               file of their zone, with zone, pod and timestamp, and in no other
+#                               zone's file; a record claiming another zone lands in the listener's
+#                               zone's file; the files survive a restart of the receiving collector
 #
 # Writes evidence.md and record.json to a run directory outside the repository and prints it last.
 # The record names the clusters, the transport in use (telemetryExport.entry.transport) and the
@@ -182,7 +185,7 @@ cleanup() {
   kz -n "$NSM" delete pod obs-gateway-standin --ignore-not-found --wait=false >/dev/null 2>&1
   kz -n "$NSM" delete deploy,svc -l app.kubernetes.io/part-of=verify-observability --ignore-not-found --wait=false >/dev/null 2>&1
   kz -n "$NSM" delete configmap status-list-fixture --ignore-not-found >/dev/null 2>&1
-  kd -n "$NSB" delete pod obs-demonstrator-probe --ignore-not-found --wait=false >/dev/null 2>&1
+  kd -n "$NSB" delete pod obs-demonstrator-probe log-export-reader --ignore-not-found --wait=false >/dev/null 2>&1
   kz delete namespace "$NS_SCRATCH" --ignore-not-found --wait=false >/dev/null 2>&1
   rm -rf "$work"
 }
@@ -210,12 +213,14 @@ for f in status-list.yaml trace-echo.yaml client.yaml gateway-standin.yaml node-
   fixture "$f" | kz apply -f - >>"$LOG" || { say "fixture $f could not be applied"; exit 125; }
 done
 fixture demonstrator-probe.yaml | kd apply -f - >>"$LOG"
+fixture log-export-reader.yaml | kd apply -f - >>"$LOG"
 kz -n "$NSM" rollout status deploy/status-list --timeout=180s >>"$LOG" 2>&1
 kz -n "$NSD" rollout status deploy/trace-echo --timeout=180s >>"$LOG" 2>&1
 for p in "$NSD/obs-client" "$NSM/obs-gateway-standin" "$NS_SCRATCH/obs-node-address-probe"; do
   kz -n "${p%/*}" wait --for=condition=Ready "pod/${p#*/}" --timeout=180s >>"$LOG" 2>&1 || { say "fixture $p not Ready"; exit 125; }
 done
 kd -n "$NSB" wait --for=condition=Ready pod/obs-demonstrator-probe --timeout=180s >>"$LOG" 2>&1 || { say "the demonstrator probe is not Ready"; exit 125; }
+kd -n "$NSB" wait --for=condition=Ready pod/log-export-reader --timeout=180s >>"$LOG" 2>&1 || { say "the log export reader is not Ready"; exit 125; }
 
 # ---- helpers: queries from the demonstrator side, requests from the zone side
 probe() { kd -n "$NSB" exec obs-demonstrator-probe -- "$@"; }
@@ -308,41 +313,64 @@ alert_check() {
 sleep 20
 
 # ---------------------------------------------------------------- collection
-entry_log() { kd -n "$NSB" logs deploy/otel-entry --since=10m 2>/dev/null; }
-# A debug-exporter record block that names the client pod and the marker.
-log_record() { # log_record <marker>: the record block (resource and record) that holds the marker
-  entry_log | python3 -c '
-import sys, re
+# The exported log files, read on the demonstrator cluster through the reader fixture, which mounts
+# the entry's volume read-only: /var/lib/ztd-logs/<zone>.jsonl and its rotated backups
+# (<zone>-<UTC time>.jsonl), one OTLP JSON object per line.
+LOG_EXPORT=/var/lib/ztd-logs
+# The files of zone $z, in the reader's shell (the backup pattern keeps zone kind apart from kind-other).
+ZONE_FILES='"$z.jsonl" "$z"-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*.jsonl'
+reader() { kd -n "$NSB" exec -i log-export-reader -c reader -- "$@"; }
+# zone_records <zone> <marker>: the log records of that zone's files that hold the marker in their
+# body or attributes, one JSON object per line: {resource: {..}, attributes: {..}, body, time}.
+# A zone without a file yet has no records.
+zone_records() {
+  reader sh -c 'cd "$1" || exit 0; z=$2; for f in '"$ZONE_FILES"'; do [ -f "$f" ] && grep -hF -- "$3" "$f"; done; exit 0' \
+    sh "$LOG_EXPORT" "$1" "$2" </dev/null 2>/dev/null | python3 -c '
+import json, sys
 marker = sys.argv[1]
-text = sys.stdin.read()
-for block in text.split("ResourceLog #")[1:]:
-    for rec in block.split("LogRecord #")[1:]:
-        if marker in rec:
-            print(block.split("ScopeLogs #")[0]); print(rec); sys.exit(0)
-sys.exit(1)' "$1"
+def val(v):
+    if "stringValue" in v: return v["stringValue"]
+    if "boolValue" in v: return v["boolValue"]
+    if "intValue" in v: return int(v["intValue"])
+    if "doubleValue" in v: return float(v["doubleValue"])
+    if "kvlistValue" in v: return {a["key"]: val(a.get("value", {})) for a in v["kvlistValue"].get("values", [])}
+    if "arrayValue" in v: return [val(x) for x in v["arrayValue"].get("values", [])]
+    return None
+attrs = lambda xs: {a["key"]: val(a.get("value", {})) for a in xs or []}
+for line in sys.stdin:
+    try: doc = json.loads(line)
+    except ValueError: continue
+    for rl in doc.get("resourceLogs", []):
+        res = attrs(rl.get("resource", {}).get("attributes"))
+        for sl in rl.get("scopeLogs", []):
+            for lr in sl.get("logRecords", []):
+                if marker not in json.dumps(lr): continue
+                print(json.dumps({"resource": res, "attributes": attrs(lr.get("attributes")),
+                    "body": val(lr.get("body", {})), "time": lr.get("timeUnixNano") or lr.get("observedTimeUnixNano") or "0"}))
+' "$2"
+}
+log_record() { # log_record <marker>: the first record of the zone's files that holds the marker
+  local r; r=$(zone_records "$ZONE" "$1" | head -1); [ -n "$r" ] && printf '%s\n' "$r"
 }
 if until_true 90 log_record "plain text line $RUN_ID"; then
   plain=$(log_record "plain text line $RUN_ID")
   ok=true
-  for want in "zone: Str($ZONE)" "k8s.namespace.name: Str($NSD)" "k8s.pod.name: Str(obs-client)" "k8s.container.name: Str(client)"; do
-    grep -qF "$want" <<<"$plain" || ok=false
-  done
+  jq -e --arg z "$ZONE" --arg ns "$NSD" '.resource.zone == $z and .resource["k8s.namespace.name"] == $ns
+    and .resource["k8s.pod.name"] == "obs-client" and .resource["k8s.container.name"] == "client"' <<<"$plain" >/dev/null || ok=false
   ds_desired=$(kz -n ztd-otel-node get ds otel-node-agent -o jsonpath='{.status.desiredNumberScheduled}')
   ds_ready=$(kz -n ztd-otel-node get ds otel-node-agent -o jsonpath='{.status.numberReady}')
   agents=$(kz -n spire-system get ds spire-agent -o jsonpath='{.status.desiredNumberScheduled}')
   [ "$ds_desired" = "$agents" ] && [ "$ds_ready" = "$ds_desired" ] || ok=false
-  if $ok; then record pod-logs-collected passed "plain-text line of $NSD/obs-client at the entry with zone, namespace, pod and container; node collectors $ds_ready/$ds_desired, on every node of the $agents SPIRE agents"
-  else record pod-logs-collected failed "record or node coverage incomplete (collectors $ds_ready/$ds_desired, agents $agents)"; fi
-else record pod-logs-collected failed "the client pod's plain-text line did not reach the entry within 90 s"; fi
+  if $ok; then record pod-logs-collected passed "plain-text line of $NSD/obs-client in the exported file of $ZONE with zone, namespace, pod and container; node collectors $ds_ready/$ds_desired, on every node of the $agents SPIRE agents"
+  else record pod-logs-collected failed "record or node coverage incomplete (resource $(jq -c .resource <<<"$plain"); collectors $ds_ready/$ds_desired, agents $agents)"; fi
+else record pod-logs-collected failed "the client pod's plain-text line did not reach the exported file of $ZONE within 90 s"; fi
 
-if if01=$(log_record "corr-$RUN_ID"); then
-  ok=true
-  for want in "correlation_id: Str(corr-$RUN_ID)" "run_id: Str($RUN_ID)" "seq: Double(1)" "ztd.if01: Bool(true)" "k8s.pod.name: Str(obs-client)"; do
-    grep -qF "$want" <<<"$if01" || { ok=false; missing=$want; }
-  done
-  if $ok; then record if01-fields-kept passed "IF-01 event of obs-client kept correlation_id, run_id and seq as fields"
-  else record if01-fields-kept failed "field missing: ${missing:-?}"; fi
-else record if01-fields-kept failed "the IF-01 event did not reach the entry"; fi
+if if01=$(zone_records "$ZONE" "corr-$RUN_ID" | jq -c 'select(.attributes.seq == 1)' | head -1) && [ -n "$if01" ]; then
+  if jq -e --arg c "corr-$RUN_ID" --arg r "$RUN_ID" '.attributes.correlation_id == $c and .attributes.run_id == $r
+       and .attributes.seq == 1 and .attributes["ztd.if01"] == true and .resource["k8s.pod.name"] == "obs-client"' <<<"$if01" >/dev/null; then
+    record if01-fields-kept passed "IF-01 event of obs-client kept correlation_id, run_id and seq as fields in the exported file of $ZONE"
+  else record if01-fields-kept failed "fields kept: $(jq -c '.attributes' <<<"$if01")"; fi
+else record if01-fields-kept failed "the IF-01 event did not reach the exported file of $ZONE"; fi
 
 agents_up=$(pq "up{job=\"spire-agent\",zone=\"$ZONE\"} == 1" | jq -r '[.data.result[].metric.node] | sort | join(",")')
 agent_nodes=$(kz -n spire-system get pods -l app.kubernetes.io/name=agent -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' | sort | paste -sd, -)
@@ -662,8 +690,8 @@ else record metrics-survive-restart failed "before $before, after $after"; fi
 mkdir -p "$EVIDENCE/render"
 RENDER_DIR="$EVIDENCE/render/zone" ZONE_VALUES="$ZONE_VALUES" "$REPO/scripts/install-zone/install.sh" render >>"$LOG" 2>&1
 RENDER_DIR="$EVIDENCE/render/demonstrator" ZONE_VALUES="$DEMONSTRATOR_VALUES" "$REPO/scripts/install-zone/install.sh" render >>"$LOG" 2>&1
-# The log of the run holds the entry's debug output only through these checks' greps, never a key;
-# the scan covers everything written to the run directory so far.
+# The run log holds no exported log record (the checks keep parsed fields only), never a key; the
+# scan covers everything written to the run directory so far.
 if hits=$(grep -rlE -- '-----BEGIN ([A-Z]+ )?PRIVATE KEY-----' "$EVIDENCE" 2>/dev/null) && [ -n "$hits" ]; then
   record no-private-key-in-records failed "private-key material in: $hits"
 elif [ -z "$(ls -A "$EVIDENCE/render/zone" 2>/dev/null)" ] || [ -z "$(ls -A "$EVIDENCE/render/demonstrator" 2>/dev/null)" ]; then
@@ -672,7 +700,64 @@ else
   record no-private-key-in-records passed "no private-key material in the rendered manifests of both roles ($(find "$EVIDENCE/render" -name '*.yaml' | wc -l) files) or the record"
 fi
 
-record logs-queryable pending "the log store is an open point of the design: the entry's log pipeline ends in its debug exporter, nothing stores or queries the records yet"
+# ---------------------------------------------------------------- log export
+# The records of one request (the client's two IF-01 events, one correlation_id) in the file of the
+# zone that produced them, and in no other zone's; a record that claims another zone, sent through the
+# zone's own listener, in the listener's zone's file only; then the files across a restart of the entry.
+other_zones=$(python3 -c 'import json,sys; print(" ".join(z["name"] for z in json.loads(sys.argv[1]) if z["name"] != sys.argv[2]))' \
+  "$(fact "$DEMONSTRATOR_VALUES" observabilityBackends.entry.zones)" "$ZONE")
+claim_zone=${OTHER_ZONE%%:*}; claim_zone=${claim_zone:-$( [ "$ZONE" = zone-b ] && echo zone-a || echo zone-b )}
+log_claim() { # log_claim <correlation id>: an OTLP log record claiming claim_zone, through the zone gateway
+  jq -nc --arg z "$claim_zone" --arg c "$1" --arg t "$(now_ns)" '{resourceLogs: [{resource: {attributes: [
+    {key: "service.name", value: {stringValue: "verify-observability-claim"}}, {key: "zone", value: {stringValue: $z}}]},
+    scopeLogs: [{logRecords: [{timeUnixNano: $t, severityText: "INFO", body: {stringValue: ("log export claim " + $c)},
+      attributes: [{key: "correlation_id", value: {stringValue: $c}}, {key: "zone", value: {stringValue: $z}}]}]}]}]}' | post_otlp logs
+}
+request_records() { zone_records "$ZONE" "corr-$RUN_ID" | jq -sc --arg c "corr-$RUN_ID" 'map(select(.attributes.correlation_id == $c))'; }
+request_complete() { request_records | jq -e --arg z "$ZONE" 'map(.attributes.seq) | sort == [1, 2]' >/dev/null; }
+claim_in_zone() { zone_records "$ZONE" "claim-$1" | jq -se --arg z "$ZONE" 'length > 0 and all(.resource.zone == $z)' >/dev/null; }
+lx_ok=true; lx_why=""
+ccode=$(log_claim "claim-$RUN_ID")
+if until_true 90 request_complete; then
+  recs=$(request_records)
+  jq -e --arg z "$ZONE" 'length == 2 and all(.resource.zone == $z and .resource["k8s.pod.name"] == "obs-client"
+      and .resource["k8s.namespace.name"] != null and (.time | tonumber) > 0)' <<<"$recs" >/dev/null \
+    || { lx_ok=false; lx_why="records without zone, pod or timestamp: $(jq -c 'map({zone: .resource.zone, pod: .resource["k8s.pod.name"], time})' <<<"$recs"); "; }
+else lx_ok=false; lx_why="the two records of corr-$RUN_ID are not both in the file of $ZONE within 90 s; "; fi
+if [ "$ccode" = 200 ] && until_true 60 claim_in_zone "$RUN_ID"; then :
+else lx_ok=false; lx_why="${lx_why}the record claiming $claim_zone (HTTP $ccode) is not in the file of $ZONE with zone $ZONE; "; fi
+elsewhere=""
+for oz in $other_zones; do
+  n=$( { zone_records "$oz" "corr-$RUN_ID"; zone_records "$oz" "claim-$RUN_ID"; } | wc -l)
+  [ "$n" = 0 ] || elsewhere="$elsewhere $oz:$n"
+done
+[ -z "$elsewhere" ] || { lx_ok=false; lx_why="${lx_why}records of the run in other zones' files:$elsewhere; "; }
+# Every file before the restart: its name, size and the sha256 of that many bytes. After the restart,
+# the same bytes must start that file, or (rotated meanwhile) another file of the same zone.
+snapshot=$(reader sh -c 'cd "$1" || exit 1; for f in *.jsonl; do [ -f "$f" ] || continue; n=$(wc -c <"$f"); printf "%s %s %s\n" "$f" "$n" "$(head -c "$n" "$f" | sha256sum | cut -d" " -f1)"; done' sh "$LOG_EXPORT" </dev/null 2>>"$LOG")
+files_before=$(grep -c . <<<"$snapshot"); bytes_before=$(awk '{s += $2} END {print s + 0}' <<<"$snapshot")
+old_pod=$(kd -n "$NSB" get pod -l app.kubernetes.io/instance=otel-entry -o jsonpath='{.items[0].metadata.name}')
+kd -n "$NSB" delete pod "$old_pod" --wait=true >>"$LOG" 2>&1
+kd -n "$NSB" rollout status deploy/otel-entry --timeout=180s >>"$LOG" 2>&1
+new_pod=$(kd -n "$NSB" get pod -l app.kubernetes.io/instance=otel-entry -o jsonpath='{.items[0].metadata.name}')
+lost=$(reader sh -c 'cd "$1" || exit 1
+  while read -r f n h; do
+    [ -n "$f" ] || continue
+    z=${f%.jsonl}; z=${z%-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*}
+    for g in "$f" '"$ZONE_FILES"'; do
+      [ -f "$g" ] && [ "$(head -c "$n" "$g" | sha256sum | cut -d" " -f1)" = "$h" ] && continue 2
+    done
+    echo "$f"
+  done' sh "$LOG_EXPORT" <<<"$snapshot" 2>>"$LOG")
+if [ "$files_before" -gt 0 ] && [ -z "$lost" ] && [ "$new_pod" != "$old_pod" ] && request_complete; then :
+else lx_ok=false; lx_why="${lx_why}after the restart ($old_pod -> $new_pod): files before $files_before, not intact:${lost:+ $lost}; "; fi
+# The export goes on into the same file after the restart.
+acode=$(log_claim "claim-after-$RUN_ID")
+if [ "$acode" = 200 ] && until_true 90 claim_in_zone "after-$RUN_ID"; then :
+else lx_ok=false; lx_why="${lx_why}a record sent after the restart (HTTP $acode) is not in the file of $ZONE; "; fi
+if $lx_ok; then
+  record logs-exported passed "the 2 records of corr-$RUN_ID in $LOG_EXPORT/$ZONE.jsonl (and its backups) with zone $ZONE, pod $NSD/obs-client and a timestamp, none in ${other_zones:-another zone}'s file; a record claiming $claim_zone stored in $ZONE's file; $files_before files ($bytes_before bytes) intact across the restart of the entry ($old_pod -> $new_pod), and the export resumed"
+else record logs-exported failed "${lx_why%; }"; fi
 
 # ---------------------------------------------------------------- record
 {

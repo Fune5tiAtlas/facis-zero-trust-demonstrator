@@ -8,7 +8,7 @@ flowchart LR
   accDescr {
     Two SPIFFE trust domains, zone-a and zone-b, each one cluster. Inside each zone the data-plane workloads, which hold SVIDs, sit next to the management-plane components placed in that zone: the SPIRE server, the zone gateway and node collectors (OpenTelemetry) and cmcd. Calls from the data plane into that management plane are denied by default at both the NetworkPolicy and the mesh layer and are allowed only along the ZT-55 allow-matrix paths: named mTLS pairs and the ZT-26 observability export.
     Zone-a reaches zone-b only through the attested channel plus a TRAIN verdict.
-    The demonstrator cluster (IONOS), outside both trust domains, holds the observability backends: the receiving collector, Prometheus, Jaeger and a log store still open. Each zone exports telemetry to it outward only, a ZT-26 declared bypass with mutual TLS and its own egress control; no edge leads from it into a zone.
+    The demonstrator cluster (IONOS), outside both trust domains, holds the observability backends: the receiving collector, Prometheus, Jaeger and the log files of every zone. Each zone exports telemetry to it outward only, a ZT-26 declared bypass with mutual TLS and its own egress control; no edge leads from it into a zone.
     The management-plane components whose placement is not yet recorded, TRAIN (TCR and TSPA), the TSA policy engine and OCM, are drawn outside both zones; both zones reach them under the same rule, the ZT-55 allow matrix at both layers.
     Anything without an SVID or with an unsigned image is denied: it cannot join or cannot start.
     The allow matrix in architecture section 6 is the place of record for every permitted path.
@@ -37,7 +37,7 @@ flowchart LR
 
   subgraph DEMO["demonstrator cluster (IONOS), outside both trust domains: placement recorded"]
     direction TB
-    O1["observability backends:<br/>receiving collector · Prometheus · Jaeger · log store (open)"]:::obs
+    O1["observability backends:<br/>receiving collector · Prometheus · Jaeger · log files"]:::obs
   end
   TD_A == "ZT-26 observability export<br/>(outward only, mTLS, own egress control)" ==> DEMO
   TD_B == "ZT-26 observability export<br/>(outward only, mTLS, own egress control)" ==> DEMO

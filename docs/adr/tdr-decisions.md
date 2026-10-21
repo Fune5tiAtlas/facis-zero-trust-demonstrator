@@ -106,7 +106,8 @@ status list within 30 seconds (a rule in the `firing` state is the alert), and
 Jaeger stores the traces. `scripts/verify-observability/verify.sh`
 proves it on a cluster.
 
-**Not yet:** a store in which the logs are queryable. The log pipeline reaches the demonstrator
-cluster, but the store is an open point; until it is chosen the records end in the receiving
-collector's debug exporter and ZT-27's "OTEL logs available" is not met. The alert rules for the
-Policy Engine, TRAIN and OCM come with those components.
+The logs are exported, as this record and IF-04 ask: the receiving collector writes the JSON records
+of every zone to files on the demonstrator cluster, one file per zone, rotated by size, each record
+keeping its zone, namespace, pod, timestamp and IF-01 fields. No log query service is installed.
+
+**Not yet:** the alert rules for the Policy Engine, TRAIN and OCM come with those components.

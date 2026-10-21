@@ -94,7 +94,7 @@ except the umbrella:
 |---|---|---|---|
 | 1 | `ztd-demonstrator` (in `ztd-system`) | `deployment/helm/ztd`, demonstrator role: the backends' namespace and its policies only | the zone file |
 | 2 | `telemetry-issuers` | `deployment/helm/telemetry-issuers` (cert-manager resources) | zone facts: the zones, the server name |
-| 3 | `otel-entry` | `opentelemetry-collector` 0.176.1 | `deployment/helm/values/otel-entry.yaml` + derived values: one mutual-TLS listener and its pipelines per zone, the Service's ports and source ranges |
+| 3 | `otel-entry` | `opentelemetry-collector` 0.176.1 | `deployment/helm/values/otel-entry.yaml` + derived values: one mutual-TLS listener and its pipelines per zone, one log file per zone on the volume `otel-entry-logs`, the Service's ports and source ranges |
 | 4 | `prometheus` | `prometheus` 29.37.0 | `deployment/helm/values/prometheus.yaml` + zone facts (retention, size bound, volume, storage class) + one silent-zone rule per zone |
 | 5 | `jaeger` | `jaeger` 4.16.1 | `deployment/helm/values/jaeger.yaml` + derived values (volume) |
 
@@ -109,8 +109,11 @@ certificate at start: after a copy that replaced one (a renewal, or the demonstr
 reinstalled with a new CA), restart them (`kubectl -n ztd-otel-node rollout restart
 ds/otel-node-agent`, `kubectl -n ztd-mgmt rollout restart deploy/otel-gateway`). On kind an
 `uninstall` of the demonstrator role followed by an `install` left no release behind and reinstalled
-every release (2026-10-21). The log store is not
-installed; it is an open point of ADR-0017.
+every release (2026-10-21). The logs of every zone end in files on the entry's volume
+`otel-entry-logs` (`/var/lib/ztd-logs/<zone>.jsonl`, OTLP JSON lines, rotated by size with nine
+backups; the installer sizes the rotation so that every zone's files fit in
+`observabilityBackends.volumes.logs`). No log query service is installed; the volume goes with the
+release on `uninstall`.
 
 A Prometheus rule in the `firing` state is the alert, read from
 Prometheus's alerts API (`/api/v1/alerts`) and the `ALERTS` series.
@@ -216,7 +219,7 @@ by the zone file:
 | `otel-node`, `otel-gateway` | the exporter's endpoint and server name; the client certificate's Secret | `telemetryExport.entry` (`address` or `inCluster.host`, `port`, `serverName`), `telemetryExport.clientSecret` |
 | `otel-gateway` | the revocation probe's URL; `nodeSelector` (istiod's node) | `telemetryExport.revocationStatusListUrl`; `openbao.pinToMeshNode` |
 | `telemetry-issuers` | `zones`, `serverName` | `observabilityBackends.entry.zones`, `.serverName` |
-| `otel-entry` | the listeners, pipelines, ports, CA mounts; the Service type and source ranges | `observabilityBackends.entry.zones`, `.sourceRanges`; `zone.loadBalancer.type` |
+| `otel-entry` | the listeners, pipelines, ports, CA mounts; the Service type and source ranges; the log files (one per zone), their rotation size, the volume's size and storage class | `observabilityBackends.entry.zones`, `.sourceRanges`; `zone.loadBalancer.type`; `observabilityBackends.volumes.logs`, `zone.storageClass` |
 | `prometheus` | retention, size bound, volume size, storage class; the silent-zone rules | `observabilityBackends.retention`, `.retentionSize`, `.volumes.prometheus`, `zone.storageClass`; `observabilityBackends.entry.zones` |
 | `jaeger` | volume size, storage class | `observabilityBackends.volumes.jaeger`, `zone.storageClass` |
 

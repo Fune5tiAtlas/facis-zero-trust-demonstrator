@@ -41,12 +41,22 @@ pod without an SVID.
 - On the **demonstrator cluster** (`deployment/helm/ztd/zones/ionos.yaml`, `zone.role: demonstrator`),
   in the namespace `ztd-observability`, outside both SPIFFE trust domains: a receiving collector (the
   entry), Prometheus (metrics by remote write; it scrapes nothing in a zone; the alert rules) and
-  Jaeger. The log store is an open point; until it is chosen, the entry's log pipeline ends in its
-  debug exporter.
+  Jaeger.
 - **Alerts are Prometheus rules in the `firing` state.** An alert is emitted when its rule fires, and
   is read from Prometheus's alerts API (`/api/v1/alerts`) and the `ALERTS` series. The proof records
   each firing alert with its detection time as evidence. No source names a receiver to route an
   alert to.
+- **Logs are exported to files, not to a query service.** The entry's log pipeline of each zone ends
+  in the collector's `file` exporter: the zone's records as OTLP JSON lines in
+  `/var/lib/ztd-logs/<zone>.jsonl` on a persistent volume of the cluster's storage class
+  (`otel-entry-logs`), rotated by size with nine backups, the rotation size set by the installer so
+  that every zone's files fit in the volume. Each record keeps its zone, namespace, pod, container,
+  timestamps and IF-01 fields, so the records of one request are found by `correlation_id`. That is
+  what the sources ask for logs: ZT-27 requires events exported from the cluster in OTel format, and
+  names retention only for metrics and a backend only for traces; IF-04 and ADR 006 fix the JSON
+  record format. No source asks for a log query service, so none is installed: Loki is excluded by
+  licence, and OpenSearch would add a store and its operation for no stated need. The proof's
+  `logs-exported` check reads the files.
 - **Authentication** (default of an open point): mutual TLS 1.3. A cert-manager root on the
   demonstrator cluster issues the entry's server certificate and one intermediate per zone; each
   zone's client certificate is issued by its intermediate. The entry has one listener per zone (zone A
@@ -80,8 +90,8 @@ fails one that arrives later than 30 s.
 
 ## Consequences
 
-- Positive: one store per demonstrator, queried by zone (every series, span and log record carries
-  `zone`); the visualization runs on IONOS (ZT-15); no zone decision changes (agents on the loopback,
+- Positive: one store per signal on the demonstrator, read by zone (every series, span and log record
+  carries `zone`, and each zone's logs have their own file); the visualization runs on IONOS (ZT-15); no zone decision changes (agents on the loopback,
   STRICT mTLS mesh-wide, the allow-matrix row as it was).
 - Positive: the transport is a zone-file value, so the move to the CUG changes no chart.
 - Negative: the demonstrator cluster has one node and the backends have no replicas: losing that node
@@ -92,7 +102,10 @@ fails one that arrives later than 30 s.
   host network with read access to every pod's logs, so the key adds no new trust boundary.
 - Negative: during the contingency period the demonstrator cluster has a public entry. Only the
   per-zone mutual-TLS listeners are behind it, with the zones' egress addresses as source ranges.
+- Negative: the logs are files, searched on the cluster (a pod that mounts the volume read-only), not
+  through a query interface. Their retention is the volume: once a zone's backups are used up, its
+  oldest file is removed.
 - Reopen when: an operator channel to notify is named (its routing delay then counts in the
-  budget); FACIS confirms a reading of ADR-0005 that requires backends per cluster; the open
+  budget); a source or FACIS asks for logs queryable through a service; FACIS confirms a reading of ADR-0005 that requires backends per cluster; the open
   point on zone authentication settles on bearer tokens (the listener per zone stays, its trust
   changes); or the demonstrator cluster gains a second node, which allows replicated backends.

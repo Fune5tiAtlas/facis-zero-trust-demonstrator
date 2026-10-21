@@ -399,10 +399,12 @@ an acceptance scenario, not by eye.
 
 ## Operations
 
-- **Logs, metrics and traces** are collected in the zone by the OpenTelemetry Collector and stored on
-  the demonstrator cluster, read through the Prometheus and Jaeger interfaces; there is no Grafana in
-  this deployment, and [why](../specifications.md#readings-and-additions) is recorded. A store in
-  which the logs are queryable is still an open point.
+- **Logs, metrics and traces** are collected in the zone by the OpenTelemetry Collector and sent to
+  the demonstrator cluster. Metrics and traces are read through the Prometheus and Jaeger interfaces;
+  the logs are written to one file per zone (`/var/lib/ztd-logs/<zone>.jsonl` on the volume
+  `otel-entry-logs`) and read from a pod that mounts the volume read-only
+  ([Troubleshooting](../troubleshooting.md)). There is no Grafana and no log query service in this
+  deployment, and [why](../specifications.md#readings-and-additions) is recorded.
 - **A refusal is diagnosed by its reason code**, not by grepping for stack traces — see
   [Troubleshooting](../troubleshooting.md).
 - **Certificate and key material** lives in OpenBao and is never written into a chart value or a

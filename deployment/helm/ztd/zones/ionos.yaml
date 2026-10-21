@@ -42,7 +42,8 @@ networkPolicy:
 # (zone A 4317, zone B 4417, matching telemetryExport.entry.port of each zone file). The zones' egress
 # addresses are recorded when the entry is installed (the LoadBalancer's loadBalancerSourceRanges and
 # the entry's ingress sources); the installer refuses this file while they are empty, so the entry is
-# never published without its source ranges. Metrics are kept for the project's duration.
+# never published without its source ranges. Metrics are kept for the project's duration; the logs of
+# every zone are exported to files on the `logs` volume, rotated by size.
 observabilityBackends:
   namespace: ztd-observability
   entry:
@@ -55,3 +56,4 @@ observabilityBackends:
   volumes:
     prometheus: 50Gi
     jaeger: 20Gi
+    logs: 20Gi

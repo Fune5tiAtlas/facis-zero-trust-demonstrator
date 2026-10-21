@@ -179,7 +179,8 @@ Each file's header states what the release does; the choices that matter:
 | `otel-gateway.yaml` | `config.receivers.http_check/revocation` | every 5 s | ZT-51's availability monitoring of the revocation endpoint |
 | `otel-gateway.yaml`, `otel-entry.yaml` | `podSecurityContext.fsGroup`, Secret `defaultMode` | 10001, `0440` | the non-root collector reads the mounted certificate and key |
 | `otel-entry.yaml` | `service.*` | type and source ranges from the zone file, `externalTrafficPolicy: Local` | the only public listener of the demonstrator cluster, restricted to the zones' egress addresses, which the ingress policy then sees unchanged |
-| `otel-entry.yaml` | `config.exporters.debug` | `verbosity: detailed` | the stand-in for the log store, an open point: the records are printed, not stored |
+| `otel-entry.yaml` | `config.exporters.file/<zone>` (installer), `logExport`, `extraManifests` | one file per zone, `/var/lib/ztd-logs/<zone>.jsonl`, OTLP JSON lines, rotated by size with 9 backups, on the volume `otel-entry-logs` | the logs of every zone are exported to files on the demonstrator cluster; the rotation size is set so that every zone's files fit in the volume |
+| `otel-entry.yaml` | `rollout.rollingUpdate` | `maxSurge: 0`, `maxUnavailable: 1` | one writer of the log files at a time: the old pod stops before the new one starts |
 | `otel-entry.yaml` | `config.exporters.prometheus_remote_write.resource_to_telemetry_conversion` | enabled | `zone` and the Kubernetes attributes become labels |
 | `prometheus.yaml` | `server.extraFlags` | `web.enable-remote-write-receiver` | the metrics arrive by remote write; Prometheus scrapes no zone |
 | `prometheus.yaml` | `server.global.evaluation_interval`, rule groups `interval` | `5s` | the detection budget (23 to 25 s worst case, by alert) |

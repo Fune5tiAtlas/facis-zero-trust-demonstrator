@@ -322,6 +322,10 @@ observabilityBackends:
   # How long Prometheus keeps the metrics, and the size bound that keeps it inside its volume.
   retention: 30d
   retentionSize: 9GB
+  # The volumes of the backends. `logs` holds the exported log files of every zone (release
+  # otel-entry): one directory per zone, its current file and a bounded number of rotated backups,
+  # sized by the installer so that every zone's files fit in the volume.
   volumes:
     prometheus: 10Gi
     jaeger: 10Gi
+    logs: 10Gi

@@ -101,10 +101,13 @@ Records sent through the ORCE logging API are one JSON object per line
 ([ORCE logging](flows.md#orce-logging)); output outside that API is not. The node collectors read every
 pod's log lines; a line that is an IF-01 event keeps `correlation_id`, `run_id` and `seq` as fields,
 and any other line is kept as it is ([ADR-0017](adr/0017-central-observability-backends.md)).
-Correlate by the request identifier carried across hops rather than by timestamp. A store in which the
-logs are queryable is still an open point: until it is chosen, the records reach the receiving
-collector on the demonstrator cluster and are printed by its debug exporter
-(`kubectl -n ztd-observability logs deploy/otel-entry`).
+Correlate by the request identifier carried across hops rather than by timestamp. The records are
+exported to files on the demonstrator cluster: one file per zone, `/var/lib/ztd-logs/<zone>.jsonl`
+on the receiving collector's volume `otel-entry-logs`, one OTLP JSON object per line, with rotated
+backups next to it. No log query service is installed; read the files from a pod that mounts the
+volume read-only, as the proof's `log-export-reader` fixture does, and search them for the
+`correlation_id`. A zone whose file stops growing is a silent zone, or a zone whose node collectors
+stopped.
 
 ## Observability and alerts
 

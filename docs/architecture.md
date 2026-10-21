@@ -332,7 +332,7 @@ The observability stack is one management-plane role with two placements
 | Role | Placement | Services | Reached from the data plane |
 |---|---|---|---|
 | Observability stack | the collectors, in each participant zone's management plane | the node collectors (`ztd-otel-node`, host network, no mesh) and the zone gateway (the management namespace, meshed, with its own SVID) | through the zone gateway only, on 4317 and 4318, along the row workloads → OTel collector |
-| Observability stack | the backends, on the demonstrator cluster, outside both trust domains | the receiving collector (the entry), Prometheus (its alert rules in the `firing` state are the alerts), Jaeger; the log store is an open point | never: a data-plane workload has no path to the demonstrator cluster, and the zone's egress policy refuses one |
+| Observability stack | the backends, on the demonstrator cluster, outside both trust domains | the receiving collector (the entry), which also writes the logs of every zone to files, Prometheus (its alert rules in the `firing` state are the alerts), Jaeger | never: a data-plane workload has no path to the demonstrator cluster, and the zone's egress policy refuses one |
 
 **Declared bypasses of the observability export class (ZT-26).** ZT-26 lets observability APIs bypass
 the Zero Trust Connector, each with its own ingress and egress configuration. Two paths carry this

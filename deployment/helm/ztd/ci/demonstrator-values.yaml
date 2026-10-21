@@ -31,3 +31,4 @@ observabilityBackends:
   volumes:
     prometheus: 2Gi
     jaeger: 2Gi
+    logs: 1Gi

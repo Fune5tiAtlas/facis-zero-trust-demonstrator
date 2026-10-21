@@ -184,8 +184,9 @@ Grafana or Loki component.
 **Excluded: Grafana and Loki.** Both are AGPL-3.0, which breaches the Apache-2.0-compatibility rule;
 neither is installed. The Prometheus and Jaeger interfaces, reached with cluster access, are the
 visualization of the observability data on the IONOS cluster until the demonstrator UI takes over
-([Specifications](specifications.md)). The log store is an open point of ADR-0017; whichever is chosen
-gets its row here and its pin in `scripts/tools/pins.env`.
+([Specifications](specifications.md)). The logs are exported to files by the receiving collector's
+`file` exporter (part of the pinned contrib image); no log query service is installed, so none has a
+row here.
 
 **Upgrades.** An upgrade changes a version and its digest in `scripts/tools/pins.env` (and, for an
 image, the index digest read with `docker buildx imagetools inspect <image>:<tag>`), then reruns

@@ -30,11 +30,12 @@ scripts/verify-observability/verify.sh
 
 It installs only its fixtures (`fixtures/`: the meshed echo `tools/trace-echo`, the static server of
 the fixture status list `features/fixtures/xfsc/status/allow.json`, a meshed data-plane client, a
-stand-in with the zone gateway's labels, a probe on the demonstrator side, a probe in a scratch
-namespace) and removes them at the end. To inject failures it stops and restores components: the
+stand-in with the zone gateway's labels, a probe on the demonstrator side, a reader of the exported
+log files that mounts the entry's volume read-only, a probe in a scratch namespace) and removes them
+at the end. To inject failures it stops and restores components: the
 SPIRE server (scaled to 0), one SPIRE agent and one node collector (a temporary `nodeSelector` that
 matches no node), the zone gateway's egress (its policy deleted and the gateway restarted), the
-status list, and the entry (60 s, twice). Every change is undone on exit, interrupted or not.
+status list, and the entry (60 s, twice, then one pod deletion for `logs-exported`). Every change is undone on exit, interrupted or not.
 
 ## Running it against a zone and the demonstrator cluster
 
@@ -58,7 +59,7 @@ Each check is named by what it proves; the result is `passed`, `failed` or `pend
 
 | Check | What it proves |
 |---|---|
-| `pod-logs-collected` | a pod's plain-text line reaches the entry with zone, namespace, pod and container; a node collector runs on every node the SPIRE agents run on |
+| `pod-logs-collected` | a pod's plain-text line reaches the exported file of its zone with zone, namespace, pod and container; a node collector runs on every node the SPIRE agents run on |
 | `if01-fields-kept` | an IF-01 event keeps `correlation_id`, `run_id` and `seq` as fields |
 | `spire-agents-scraped` | every SPIRE agent is scraped (`up == 1`), labelled with its node and zone |
 | `agents-stay-on-loopback` | the agents listen on `127.0.0.1:9988` only, and a pod asking a node address on 9988 is refused |
@@ -81,7 +82,7 @@ Each check is named by what it proves; the result is `passed`, `failed` or `pend
 | `silent-zone-alerts` | the zone gateway's egress is cut: a silent-zone alert within 30 s, resolved when it returns |
 | `revocation-endpoint-alerts` | the status list stops: an alert naming the zone and the URL within 30 s, resolved when it answers |
 | `no-private-key-in-records` | no private-key material in the rendered manifests of both roles or in the record |
-| `logs-queryable` | **pending**: the log store is an open point of ADR-0017; never reported passed until a store answers a query by pod and by `correlation_id` |
+| `logs-exported` | the two IF-01 records of one request are found by `correlation_id` in the exported file of the zone that produced them (`/var/lib/ztd-logs/<zone>.jsonl` and its backups), each with its zone, pod and timestamp, and in no other zone's file; a record claiming another zone, sent through the zone's listener, is in the listener's zone's file only; every file is intact after the receiving collector's pod is deleted and comes back, and the export resumes into it |
 
 An alert is a Prometheus rule in the `firing` state.
 An alert counts only when it became active after the failure was injected (`activeAt`), so an alert
