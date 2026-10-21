@@ -136,9 +136,12 @@ the entry of its own pod, not to any entry with the same ID. Last, the record li
 without an identity**: every pod of a plane namespace from which no certificate was read, with its
 labels, so that the record says in one place which plane workloads are outside the mesh (the
 control planes' own pods, in the namespaces without the injection label, on one line). That list
-fails nothing; STRICT and the admission policy own it. On the kind zone OpenBao appears there: the
-first release creates it in `ztd-mgmt` before istiod exists, so it runs without the identity label
-and without a proxy, holds no certificate and is no declared workload.
+fails nothing; STRICT and the admission policy own it. The secret store is a declared workload: the
+release `ztd-openbao` is installed after `zone-policy`, so its server pod `ztd-mgmt/ztd-openbao-0`
+carries the identity label and a proxy from its first start, and the record lists it as matched with
+its SPIFFE ID (`…/ns/ztd-mgmt/sa/ztd-openbao`); two checks fail the run if it is not matched or if
+any pod of that release is a plane pod without an identity. Its finished job pods (bootstrap,
+verification) are gone to the reader, their entries ones without a certificate in use.
 
 **Provenance.** An entry was created by the registration rule when its selector is the
 `k8s:pod-uid` of a pod of a plane namespace that carries the identity label, its parent is the
@@ -169,14 +172,14 @@ Kubernetes API, and a failure fails the release:
 |---|---|---|
 | `server-healthy` | 20 | the SPIRE server's StatefulSet is Ready (its readiness probe is the server's health endpoint) and every agent is Ready |
 | `trust-bundle-published` | 25 | the server has published its trust bundle (`spire-bundle`), and the controller-manager and the mesh both run with the zone's trust domain |
-| `registrations-reconciled` | 30 | the controller-manager has reconciled the `ClusterSPIFFEID` with no entry or render failure, and every running labelled pod of the plane namespaces is selected, so its entry exists on the server |
+| `registrations-reconciled` | 30 | the controller-manager has reconciled the `ClusterSPIFFEID` with no entry or render failure, and every labelled pod of the plane namespaces past Pending (running, or finished, as a completed job's pod is) is selected, so its entry exists on the server |
 
 **What the Jobs read.** The Jobs hold no SPIRE credential and never call the SPIRE server, so they
 read Kubernetes objects that stand for the server's state: `server-healthy` reads the readiness of
 the server's StatefulSet, which the server's own health endpoint drives through the readiness
 probe, not the endpoint itself; `registrations-reconciled` reads the counters the controller-manager
 writes into the `ClusterSPIFFEID` status after it has set the entries on the server, not the entries
-themselves. On a zone with no running labelled pod (a fresh install, before any workload),
+themselves. On a zone with no labelled pod past Pending (a fresh install, before any workload),
 `registrations-reconciled` has nothing to compare and passes on the absence of failures alone. The
 entries themselves are read on the server by each run of the mesh identity proof
 (`spire-server entry show`, in the record a run writes; see `scripts/verify-mesh-identity/README.md`).
@@ -462,7 +465,7 @@ collector that runs on the node's host network, never a pod or another host.
 ## Installing it
 
 The zone installer, `scripts/install-zone/install.sh`, installs the identity path with the rest of
-the zone, from one zone file, as seven releases in order; see
+the zone, from one zone file, as eight releases in order; see
 [its README](https://github.com/eclipse-xfsc/facis-zero-trust-demonstrator/tree/main/scripts/install-zone)
 and the [zone installation guide](environments/osc.md#3-workload-identity). The upstream charts and
 their pins are in [OSS dependencies](dependencies.md#identity-and-service-mesh); every value the
@@ -505,7 +508,7 @@ record). A run shows:
 
 | Check | Proves |
 |---|---|
-| `install-order-idempotent` | the seven releases install in order with no manual step, every pod is Ready, and a second run leaves every release's manifest identical |
+| `install-order-idempotent` | the eight releases install in order with no manual step, every pod is Ready, and a second run leaves every release's manifest identical |
 | `svid-over-csi-socket` | a labelled pod gets, over the mounted socket, the SVID of its service account in the zone's trust domain, chained to the SPIRE CA; an unlabelled pod gets no entry and no SVID |
 | `native-sidecar-version` | the server is 1.33 or later and the proxy is an init container with `restartPolicy: Always` |
 | `mesh-identity-issued-by-spire` | the proxy's certificate has `O = SPIRE`, the SPIRE CA as issuer and the SVID's URI SAN, and its `ROOTCA` bundle is the SPIRE CA; under the capture rule (`capture-at-injector-defaults`), a pod in a plane namespace with an excluded application port, capture mode `NONE`, a moved status port, a proxy-config override, an injection opt-out, a swapped proxy image or a pod-supplied `istio-proxy` is refused at admission, an ordinary pod is admitted carrying the injector's status-port exclusion and `REDIRECT`, and the istiod and `istio-cni` pods, which opt out of injection, are admitted in `istio-system` |
