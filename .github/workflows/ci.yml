@@ -262,9 +262,18 @@ jobs:
       # defaults ships its valid baseline in ci/values.yaml. The same script is the release gate,
       # where it adds a server dry-run against a disposable cluster (release.yml, TDR-BDD-11), and
       # packages the charts when a release is published (release-charts below), so the gate a pull
-      # request clears is the gate the release is held to.
+      # request clears is the gate the release is held to. The umbrella is also rendered with every
+      # shipped zone file under deployment/helm/ztd/zones/ (the example excepted), so a zone file
+      # that stops rendering is caught here rather than by an operator on the cluster. Rendering only.
       - name: Lint and render every chart
-        run: scripts/ci/check-charts.sh
+        run: |
+          scripts/ci/check-charts.sh
+          for zone in deployment/helm/ztd/zones/*.yaml; do
+            [ "$(basename "$zone")" = zone-a.example.yaml ] && continue
+            echo "render deployment/helm/ztd with $zone"
+            helm lint deployment/helm/ztd -f "$zone"
+            helm template deployment/helm/ztd -f "$zone" >/dev/null
+          done
 
       # What the release relies on, against charts the test writes: a set that passes is packaged
       # at the version with matching checksums, and one failing chart leaves no package at all.
