@@ -1,25 +1,66 @@
 #!/usr/bin/env bash
-# Evidence that the zone's mesh identities are SPIRE's, on the local kind cluster with Cilium chained
-# (scripts/dev/kind-cilium-up.sh). Installs the zone from an empty cluster with
-# scripts/install-zone/install.sh, twice, then proves with stand-in pods: an SVID over the CSI socket,
-# the proxy's certificate and root bundle issued by SPIRE, no proxy without the SPIRE socket and a
-# certificate from istiod's CA refused by a meshed peer, the proxy's traffic capture held at the
-# injector's defaults (the capture rule), the TLS 1.3 minimum of mesh mTLS, an
+# Evidence that the zone's mesh identities are SPIRE's, on the local kind cluster with Cilium
+# chained (scripts/dev/kind-cilium-up.sh) or on one of the two participant clusters with the
+# provider's Cilium. Installs the zone from an empty cluster with scripts/install-zone/install.sh,
+# twice, then proves with stand-in pods: an SVID over the CSI socket, on every node with a SPIRE
+# agent too (one unmeshed stand-in per node in spire-system, from fixtures/svid-on-node.yaml), the
+# SPIRE server's and the controller-manager's metrics endpoints answering beside the agents'
+# loopback ones, the proxy's certificate and root bundle issued by SPIRE, no proxy without the SPIRE
+# socket and a certificate from istiod's CA refused by a meshed peer, the proxy's traffic capture
+# held at the injector's defaults (the capture rule), the TLS 1.3 minimum of mesh mTLS, an
 # unregistered workload cut off, traffic through the proxies, the default deny intact with the
-# chained CNI and both control planes inside it, the native-sidecar version rule, the identity-band checks, and a teardown that leaves nothing
-# behind. Writes docs/evidences/mesh-identity/evidence.md and environment.json; the exit status is
-# non-zero if any check failed. Never run by CI: the evidence is the record of a run on a cluster.
+# chained CNI and both control planes inside it, the native-sidecar version rule, the identity-band
+# checks, the cluster's CNI left as found, and a teardown that leaves nothing behind (or, on a
+# participant cluster with the keep opt-in and every check passed, the record of what stays).
+# On a participant cluster every pod the proof creates (the stand-ins, their -capture-check copies,
+# the probe of section 8's scratch namespace, the kube-public pod of section 13) is pinned to the
+# node istiod runs on, with a required node affinity on kubernetes.io/hostname: the provider's pod
+# network masquerades pod traffic between nodes, so the mesh is proven node-locally there until the
+# provider changes it. The one exception is the per-node SVID stand-ins, each placed on its own node.
+# Kind is not pinned.
+# Writes evidence.md and environment.json to a run directory outside the repository (see
+# ZTD_EVIDENCE_DIR below) and prints that directory as its last line; it never writes under docs/ or
+# anywhere else in the repository, which holds no record of a run. Never run by CI: the evidence is
+# the record of a run on a cluster.
 #
 # Usage:
 #   scripts/verify-mesh-identity/verify.sh           run the proof: DESTRUCTIVE, it uninstalls the zone
 #                                                    from the cluster first and again at the end
 #   scripts/verify-mesh-identity/verify.sh --help    this text; touches nothing
-# Any other argument prints this text and exits 2 without touching the cluster.
+# Any other argument prints this text and exits 125 without touching the cluster.
+#
+# Exit status:
+#   0        every check passed
+#   1-124    the number of failed checks (capped at 124); the evidence is written
+#   125      refused or not run (an argument, CI, the context guard, a run directory inside the
+#            repository): nothing written
+#   130/143  interrupted (INT/TERM); on a participant cluster the zone is torn down, no evidence
 #
 # Environment:
-#   KUBE_CONTEXT   kubectl context   (default: kind-ztd); refused unless it is a kind cluster (the
-#                  context is named kind-<name> and every node's provider ID is kind://...)
-#   ZONE_VALUES    zone file         (default: deployment/helm/ztd/ci/values.yaml, the kind zone)
+#   KUBE_CONTEXT          kubectl context (default: kind-ztd). Accepted: a kind cluster (named
+#                         kind-<name>, every node's provider ID kind://...), or the participant
+#                         cluster zerotrust-a or zerotrust-b when all of these hold: ZTD_CONFIRM_CLUSTER
+#                         equals the context name, the context's API server host begins with
+#                         api.<context>., every node's provider ID begins with onmetal:// and every
+#                         node name contains --<context>-. Anything else is refused (exit 125) before
+#                         the cluster is read or written.
+#   ZTD_CONFIRM_CLUSTER   on a participant cluster: the context name, typed for this run
+#   ZTD_KEEP_ZONE         on a participant cluster: the context name to leave the zone installed when
+#                         every check passed (the teardown is replaced by the record of what remains);
+#                         unset, a failed check or an interrupted run tears the zone down. Refused on
+#                         kind and with any other value.
+#   ZONE_VALUES           zone file (default: deployment/helm/ztd/ci/values.yaml on kind,
+#                         deployment/helm/ztd/zones/zone-<a|b>.yaml on zerotrust-<a|b>); on a
+#                         participant cluster its zone.name must be zone-<a|b> of that context
+#   ZTD_EVIDENCE_DIR      the run directory: created if missing, used as given, refused inside the
+#                         repository (exit 125). Default: a new directory per run,
+#                         ${XDG_STATE_HOME:-$HOME/.local/state}/ztd/verify-mesh-identity/<context>/<UTC start, YYYYMMDDTHHMMSSZ>/
+#
+# On zerotrust-a and zerotrust-b the proof's pods are pinned to istiod's node (read after the install);
+# the evidence header, section 5 and the record of what remains state the pin and its reason. On kind
+# the scheduler places them as before. On every cluster the per-node SVID stand-ins (svid-on-<node> in
+# spire-system, one per node with a SPIRE agent) are placed by their own node affinity, never pinned,
+# and removed with the other stand-ins.
 #
 # Every check is "<test>; check $? <title>": the status of the test is what the check records.
 # shellcheck disable=SC2319,SC2016,SC2181,SC1091
@@ -27,37 +68,79 @@ set -uo pipefail
 usage() { sed -n '2,/^# Every check/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
 case $# in
   0) ;;
-  1) case $1 in -h|--help) usage; exit 0;; esac; usage >&2; echo "verify-mesh-identity: unknown argument: $1" >&2; exit 2;;
-  *) usage >&2; echo "verify-mesh-identity: takes no arguments" >&2; exit 2;;
+  1) case $1 in -h|--help) usage; exit 0;; esac; usage >&2; echo "verify-mesh-identity: unknown argument: $1" >&2; exit 125;;
+  *) usage >&2; echo "verify-mesh-identity: takes no arguments" >&2; exit 125;;
 esac
 if [ -n "${CI:-}" ]; then
   echo "verify-mesh-identity: refusing to run under CI; the evidence is written from a run on a cluster" >&2
-  exit 2
+  exit 125
 fi
-cd "$(dirname "$0")" || exit 1
+# A relative zone file or run directory is the caller's, read before the script moves into its own
+# directory.
+[ -n "${ZONE_VALUES:-}" ] && ZONE_VALUES=$(realpath -m -- "$ZONE_VALUES")
+[ -n "${ZTD_EVIDENCE_DIR:-}" ] && ZTD_EVIDENCE_DIR=$(realpath -m -- "$ZTD_EVIDENCE_DIR")
+cd "$(dirname "$0")" || exit 125
 REPO=$(git rev-parse --show-toplevel)
 CHART=$REPO/deployment/helm/ztd
-ZONE_VALUES=${ZONE_VALUES:-$CHART/ci/values.yaml}
 CONTEXT=${KUBE_CONTEXT:-kind-ztd}
-# The run uninstalls and reinstalls the zone: refuse any cluster that is not a local kind cluster,
-# before anything is read from it or written to it.
-case $CONTEXT in
-  kind-?*) ;;
-  *) echo "verify-mesh-identity: refusing context '$CONTEXT': not a kind cluster (kind-<name>); the run uninstalls the zone" >&2; exit 2;;
-esac
-providers=$(kubectl --context "$CONTEXT" get nodes -o jsonpath='{range .items[*]}{.spec.providerID}{"\n"}{end}' 2>/dev/null)
-if [ -z "$providers" ] || grep -qv '^kind://' <<<"$providers"; then
-  echo "verify-mesh-identity: refusing context '$CONTEXT': unreachable, or a node whose provider ID is not kind://" >&2
-  exit 2
-fi
-INSTALL=$REPO/scripts/install-zone/install.sh
-EVID=$REPO/docs/evidences/mesh-identity
-export ZONE_VALUES KUBE_CONTEXT=$CONTEXT
 # yaml_get <file> <key>... : one value out of a YAML file; the path travels as an argument, never inside the source
 yaml_get() { python3 -c 'import sys,yaml
 v=yaml.safe_load(open(sys.argv[1]))
 for k in sys.argv[2:]: v=v[k]
 print(v)' "$@"; }
+# A refusal exits 125, outside the range of the failure count (1-124), so a caller tells them apart.
+refuse() { echo "verify-mesh-identity: refusing context '$CONTEXT': $*" >&2; exit 125; }
+# The run uninstalls and reinstalls the zone: refuse any cluster that is neither a local kind cluster
+# nor a confirmed participant cluster, before anything is read from it or written to it.
+KEEP=0
+case $CONTEXT in
+  kind-?*)
+    [ -z "${ZTD_KEEP_ZONE:-}" ] || refuse "ZTD_KEEP_ZONE is set ('$ZTD_KEEP_ZONE'), expected unset: the keep opt-in applies to a participant cluster only (kind-cilium-up.sh recreates a kind zone)"
+    CLUSTER_KIND=kind
+    ZONE_VALUES=${ZONE_VALUES:-$CHART/ci/values.yaml}
+    providers=$(kubectl --context "$CONTEXT" get nodes -o jsonpath='{range .items[*]}{.spec.providerID}{"\n"}{end}' 2>/dev/null)
+    if [ -z "$providers" ] || grep -qv '^kind://' <<<"$providers"; then
+      refuse "unreachable, or a node whose provider ID is not kind://"
+    fi
+    ;;
+  zerotrust-a|zerotrust-b)
+    [ "${ZTD_CONFIRM_CLUSTER:-}" = "$CONTEXT" ] \
+      || refuse "a participant cluster: expected ZTD_CONFIRM_CLUSTER=$CONTEXT, found ${ZTD_CONFIRM_CLUSTER:+ZTD_CONFIRM_CLUSTER=}${ZTD_CONFIRM_CLUSTER:-it unset}"
+    case ${ZTD_KEEP_ZONE:-} in
+      '') ;;
+      "$CONTEXT") KEEP=1;;
+      *) refuse "expected ZTD_KEEP_ZONE unset or ZTD_KEEP_ZONE=$CONTEXT, found ZTD_KEEP_ZONE=$ZTD_KEEP_ZONE";;
+    esac
+    CLUSTER_KIND=provider
+    zone_name=zone-${CONTEXT#zerotrust-}
+    ZONE_VALUES=${ZONE_VALUES:-$CHART/zones/$zone_name.yaml}
+    [ "$(yaml_get "$ZONE_VALUES" zone name 2>/dev/null)" = "$zone_name" ] \
+      || refuse "expected a zone file whose zone.name is $zone_name, found '$(yaml_get "$ZONE_VALUES" zone name 2>/dev/null)' in $ZONE_VALUES"
+    # The binding of the local context name to the cluster it points at: the API host's prefix, the
+    # nodes' provider and the nodes' names (no address or domain is kept in the repository).
+    api=$(kubectl config view --minify --context "$CONTEXT" -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null)
+    api_host=${api#*://}; api_host=${api_host%%[:/]*}
+    [[ $api_host == "api.$CONTEXT."* ]] || refuse "expected the context's API server host to begin with api.$CONTEXT., found '${api_host:-none}'"
+    nodes=$(kubectl --context "$CONTEXT" get nodes -o jsonpath='{range .items[*]}{.metadata.name} {.spec.providerID}{"\n"}{end}' 2>/dev/null)
+    [ -n "$nodes" ] || refuse "unreachable, or no node listed"
+    bad=$(awk '$2 !~ /^onmetal:\/\// {print $1 " (provider ID " ($2 == "" ? "none" : $2) ")"}' <<<"$nodes")
+    [ -z "$bad" ] || refuse "expected every node's provider ID to begin with onmetal://, found $(paste -sd, - <<<"$bad")"
+    bad=$(awk -v c="--$CONTEXT-" '!index($1, c) {print $1}' <<<"$nodes")
+    [ -z "$bad" ] || refuse "expected every node name to contain --$CONTEXT-, found $(paste -sd, - <<<"$bad")"
+    ;;
+  *) refuse "neither a kind cluster (kind-<name>) nor a participant cluster (zerotrust-a, zerotrust-b); the run uninstalls the zone";;
+esac
+INSTALL=$REPO/scripts/install-zone/install.sh
+ZONE_NAME=$(yaml_get "$ZONE_VALUES" zone name)
+# The run directory (see the header): outside the repository, one per run unless the caller names it.
+# A run never writes into the repository, so a directory inside it is refused before the cluster is
+# touched.
+if [ -n "${ZTD_EVIDENCE_DIR:-}" ]; then EVID=$ZTD_EVIDENCE_DIR
+else EVID=$(realpath -m -- "${XDG_STATE_HOME:-$HOME/.local/state}")/ztd/verify-mesh-identity/$CONTEXT; fi
+case $EVID/ in
+  "$REPO"/*) echo "verify-mesh-identity: refusing run directory '$EVID': it is inside the repository, which holds no record of a run" >&2; exit 125;;
+esac
+export ZONE_VALUES KUBE_CONTEXT=$CONTEXT
 MGMT=$(yaml_get "$CHART/values.yaml" planes management namespace)
 DATA=$(yaml_get "$CHART/values.yaml" planes data namespace)
 TD=$(yaml_get "$ZONE_VALUES" zone trustDomain)
@@ -72,23 +155,75 @@ STATUS_PORT=""
 
 work=$(mktemp -d)
 # restore_capture: puts the capture validation back into the live policy when it is missing from it
-# and section 5 saved it (restore.json); a no-op otherwise, so it is safe to call more than once.
+# and section 5 saved it (restore.json); a no-op otherwise, so it is safe to call more than once. A
+# policy it cannot read (other than one already uninstalled) or cannot patch is named on stderr, as
+# the capture validation may then still be lifted.
 restore_capture() {
+  local live
   [ -s "$work/restore.json" ] || return 0
-  kubectl --context "$CONTEXT" get validatingadmissionpolicy "$POLICY" -o json 2>/dev/null \
-    | jq -e '[.spec.validations[].expression | contains("variables.captureDefaults")] | index(true) == null' >/dev/null || return 0
-  kubectl --context "$CONTEXT" patch validatingadmissionpolicy "$POLICY" --type=json --patch-file "$work/restore.json" >/dev/null
+  if ! live=$(kubectl --context "$CONTEXT" get validatingadmissionpolicy "$POLICY" -o json 2>"$work/restore.err"); then
+    grep -q NotFound "$work/restore.err" \
+      || echo "verify-mesh-identity: cannot read the admission policy $POLICY to put its capture validation back; it may still be lifted: $(head -1 "$work/restore.err")" >&2
+    return 0
+  fi
+  jq -e '[.spec.validations[].expression | contains("variables.captureDefaults")] | index(true) == null' <<<"$live" >/dev/null || return 0
+  kubectl --context "$CONTEXT" patch validatingadmissionpolicy "$POLICY" --type=json --patch-file "$work/restore.json" >/dev/null 2>"$work/restore.err" \
+    || echo "verify-mesh-identity: the capture validation of the admission policy $POLICY could not be put back; it is still lifted: $(head -1 "$work/restore.err")" >&2
 }
-# On any exit, an interrupt included, the capture validation lifted in section 5 is put back first.
-trap 'restore_capture; rm -rf "$work"' EXIT
+# keep_zone: 1 once the record of what remains passed (section 15), the CNI check included; kept: 1
+# only once that record is written to the run directory, so an interrupt or a failed write before
+# then still tears the zone down; written: 1 once both files of the evidence are written (an
+# interrupt between that write and kept=1 keeps the zone the record names); cleaned: 1 once the
+# teardown ran.
+keep_zone=0; kept=0; written=0; cleaned=0
+# provider_cleanup: on a participant cluster, unless the run ended with the zone kept or already torn
+# down, removes everything the run put there (the fixture of section 13, the scratch namespace of
+# section 8, the seven releases, the release namespace), so that an error, INT or TERM leaves the
+# cluster as it was found; idempotent, every step ignores what is already gone.
+# delete_stand_ins: removes the stand-in pods of section 5 while the SPIFFE CSI driver still runs, so
+# that their csi.spiffe.io volumes unmount (once the spire release is gone they would hang in
+# Terminating and hold their namespace); a no-op when there are none. The per-node SVID stand-ins of
+# fixtures/svid-on-node.yaml go too, by their label (whatever nodes they were rendered for, a run
+# interrupted before section 6 included), and the ServiceAccount of that fixture with them.
+delete_stand_ins() {
+  sed -e "s/__DATA__/$DATA/g" -e "s/__MGMT__/$MGMT/g" fixtures/stand-ins.yaml \
+    | kubectl --context "$CONTEXT" delete -f - --ignore-not-found --wait=true >/dev/null 2>&1
+  kubectl --context "$CONTEXT" -n "$SPIRE_NS" delete pod -l app.kubernetes.io/name=svid-on-node --ignore-not-found --wait=true >/dev/null 2>&1
+  kubectl --context "$CONTEXT" -n "$SPIRE_NS" delete serviceaccount stand-in --ignore-not-found >/dev/null 2>&1
+}
+# shellcheck disable=SC2317  # called from the EXIT trap only
+provider_cleanup() {
+  [ "$CLUSTER_KIND" = provider ] && [ "$kept" != 1 ] && [ "$cleaned" != 1 ] || return 0
+  [ "$keep_zone" = 1 ] && [ "$written" = 1 ] && return 0
+  if [ "$keep_zone" = 1 ]; then
+    echo "verify-mesh-identity: every check passed but the record of the kept zone was not written; no evidence of it exists, tearing it down on $CONTEXT" >&2
+  else
+    echo "verify-mesh-identity: the run did not end with the zone kept; tearing it down on $CONTEXT" >&2
+  fi
+  delete_stand_ins
+  kubectl --context "$CONTEXT" -n kube-public delete pod declared-not-reconciled --ignore-not-found --wait=true >/dev/null 2>&1
+  kubectl --context "$CONTEXT" label ns kube-public ztd.facis.io/plane- >/dev/null 2>&1
+  kubectl --context "$CONTEXT" delete namespace mesh-identity-outside --ignore-not-found --wait=true >/dev/null 2>&1
+  "$INSTALL" uninstall >/dev/null 2>&1
+  kubectl --context "$CONTEXT" delete namespace ztd-system --ignore-not-found --wait=true >/dev/null 2>&1
+  cleaned=1
+}
+# On any exit, an interrupt included, the capture validation lifted in section 5 is put back first;
+# on a participant cluster the zone is then torn down unless the run kept it (kind: unchanged).
+trap 'restore_capture; provider_cleanup; rm -rf "$work"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 OUT=$work/evidence.md
 failures=0
-# The commit and the dirty flag are read before anything is written into the tree.
+# The commit and the dirty flag describe the code that runs; neither refuses a run.
 commit=$(git rev-parse HEAD)
 dirty=false; [ -n "$(git status --porcelain)" ] && dirty=true
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# The default run directory is named by the run's UTC start; an existing one is never reused.
+if [ -z "${ZTD_EVIDENCE_DIR:-}" ]; then
+  base=$EVID/$(date -u -d "$started" +%Y%m%dT%H%M%SZ); EVID=$base; n=1
+  while [ -e "$EVID" ]; do EVID=$base-$n; n=$((n+1)); done
+fi
 
 k() { kubectl --context "$CONTEXT" "$@"; }
 h() { helm --kube-context "$CONTEXT" "$@"; }
@@ -102,6 +237,38 @@ check() { # check <PASS-condition exit status> <title> <detail...>
 }
 section() { say '' "## $1" ''; echo "== $1"; }
 spire_server() { k -n "$SPIRE_NS" exec spire-server-0 -c spire-server -- /opt/spire/bin/spire-server "$@"; }
+# agent_nodes: the nodes the SPIRE agent DaemonSet runs on, one per line, from its pods' spec.nodeName
+agent_nodes() { k -n "$SPIRE_NS" get pods -o json | jq -r '.items[] | select(.metadata.ownerReferences[0].name == "spire-agent") | .spec.nodeName' | sort -u; }
+# cilium_on <node>: the Cilium agent pod of that node (host network), through which the proof reads
+# the node's host; the only use of kube-system is such a read-only exec
+cilium_on() { k --request-timeout=30s -n kube-system get pod -l k8s-app=cilium --field-selector "spec.nodeName=$1" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null; }
+# host_get <node> <address> <port>: GET /metrics on <address>:<port> from the host of <node>, through
+# its Cilium agent (bash and /dev/tcp of the Cilium image, nothing installed, nothing written); the
+# raw HTTP response on stdout; the API calls are bounded too, so a stalled API server cannot hang the run
+host_get() {
+  local C; C=$(cilium_on "$1")
+  [ -n "$C" ] || return 1
+  k --request-timeout=60s -n kube-system exec "$C" -c cilium-agent -- timeout 20 bash -c 'exec 3<>"/dev/tcp/$0/$1"; printf "GET /metrics HTTP/1.0\r\nHost: %s:%s\r\n\r\n" "$0" "$1" >&3; cat <&3' "$2" "$3" 2>/dev/null
+}
+# agent_answers <node>: the check that the SPIRE agent of <node> answers on 127.0.0.1:9988 with
+# spire_agent samples
+agent_answers() {
+  local n; n=$(host_get "$1" 127.0.0.1 9988 | grep -c '^spire_agent')
+  [ "$n" -gt 0 ]; check $? "node $1: the agent's metrics answer on 127.0.0.1:9988 (the contract with a node-local collector)" "$n spire_agent samples"
+}
+# metrics_answer <component> <family> <port>: the check that the endpoint of <component> in the SPIRE
+# server pod answers on <port> with HTTP 200 and at least one sample of <family>, read from the host
+# of the server pod's node (the kubelet's path to the pod, which its readiness probes take)
+metrics_answer() {
+  local node ip out code n
+  node=$(k -n "$SPIRE_NS" get pod spire-server-0 -o jsonpath='{.spec.nodeName}' 2>/dev/null)
+  ip=$(k -n "$SPIRE_NS" get pod spire-server-0 -o jsonpath='{.status.podIP}' 2>/dev/null)
+  out=$([ -n "$node" ] && [ -n "$ip" ] && host_get "$node" "$ip" "$3")
+  code=$(head -1 <<<"$out" | awk '{print $2}')
+  n=$(grep -c "^$2" <<<"$out")
+  [ "$code" = 200 ] && [ "$n" -gt 0 ]
+  check $? "$1: the metrics endpoint answers on the server pod's port $3 (/metrics), HTTP 200 with samples of its own family $2, read from the host of its node through that node's Cilium agent" "node ${node:-unknown}, port $3, HTTP ${code:-no answer}, $n $2 samples"
+}
 # http <ns> <pod> <container> <url>: HTTP code and the first line of the body; denied(<curl exit>)
 # only when the network refused the call (7 refused, 28 timed out, 52 empty reply, 56 reset);
 # error(<exit>) for anything else (a name that does not resolve, an exec that failed, ...), which
@@ -129,9 +296,39 @@ metric() {
   k -n "$1" exec "$2" -c istio-proxy -- pilot-agent request GET stats/prometheus 2>/dev/null \
     | awk -v r="reporter=\"$3\"" '/^istio_requests_total/ && index($0, r) { s += $NF } END { print s + 0 }'
 }
+# The pin of a participant cluster (see the header): PIN_NODE is istiod's node once section 5 read it;
+# PIN_NONE, a node name that matches nothing, stands in when istiod has no node, so no pod runs unpinned.
+PIN_NODE=""; PIN_NONE=istiod-node-not-found
+# pin_affinity <node>: the pod spec fragment, as JSON, that requires the node <node>
+pin_affinity() {
+  jq -cn --arg n "$1" '{affinity: {nodeAffinity: {requiredDuringSchedulingIgnoredDuringExecution: {nodeSelectorTerms: [{matchExpressions: [{key: "kubernetes.io/hostname", operator: "In", values: [$n]}]}]}}}}'
+}
+# pin_pods <node> <file>...: adds that affinity to every Pod of each manifest file, in place
+pin_pods() {
+  local node=$1; shift
+  python3 - "$(pin_affinity "$node")" "$@" <<'PY'
+import json, sys, yaml
+aff = json.loads(sys.argv[1])["affinity"]
+for f in sys.argv[2:]:
+    docs = [d for d in yaml.safe_load_all(open(f)) if d]
+    for d in docs:
+        if d.get("kind") == "Pod":
+            d["spec"]["affinity"] = aff
+    yaml.safe_dump_all(docs, open(f, "w"), sort_keys=False)
+PY
+}
 
 : > "$OUT"
 say "# Mesh identity evidence ($started)" ''
+if [ "$CLUSTER_KIND" = kind ]; then
+  say "Cluster kind: **kind**, the local cluster from \`scripts/dev/kind-cilium-up.sh\` with Cilium chained. Keep opt-in: not applicable on kind; the run tears the zone down." ''
+else
+  keep_text="not set: the run tears the zone down"
+  [ "$KEEP" = 1 ] && keep_text="set (\`ZTD_KEEP_ZONE=$CONTEXT\`): the zone stays installed only if every check passes, otherwise the run tears it down"
+  interim=""; [[ $TD == *.trust.invalid ]] && interim=" The trust domain \`$TD\` is **interim**: the zone is re-installed with its final name under the delegated trust-framework zone once that name is confirmed, and a zone on an interim name is not acceptance evidence."
+  say "Cluster kind: **participant cluster** \`$CONTEXT\` (zone \`$ZONE_NAME\`), Cilium installed and managed by the provider, confirmed with \`ZTD_CONFIRM_CLUSTER=$CONTEXT\`. Keep opt-in: $keep_text.$interim Every IPv4 address of the cluster is replaced by \`<address>\` in this record." ''
+  say "Proof pods pinned to __PIN_NODE__: every pod this run creates but the per-node SVID stand-ins (the stand-ins of section 5, their \`-capture-check\` copies, the \`probe\` of section 8's scratch namespace, the \`kube-public\` pod of section 13) carries a required node affinity on \`kubernetes.io/hostname\` to the node istiod runs on, because the provider's pod network masquerades pod traffic between nodes (see the preconditions); the mesh is proven node-locally on this cluster, and cross-node meshed traffic is not proven here until the provider changes its pod network. The exception: the per-node SVID stand-ins of section 6 (\`svid-on-<node>\` in \`$SPIRE_NS\`, unmeshed) are placed one per node with a SPIRE agent by their own node affinity, never pinned, so the SVID is shown on every node." ''
+fi
 say "Cluster context \`$CONTEXT\`, zone file \`${ZONE_VALUES#"$REPO"/}\` (trust domain \`$TD\`), installed with \`scripts/install-zone/install.sh\`: the seven releases \`ztd\`, \`spire-crds\`, \`spire\`, \`istio-base\`, \`istiod\`, \`istio-cni\`, \`zone-policy\`. Commit \`$commit\`, tree dirty: $dirty. Versions in \`environment.json\`." ''
 say 'Probe results: an HTTP code with the first line of the body when the call went through its proxies; `denied(28)` when a raw TCP connection timed out because the policy dropped the packets; `denied(56)` when the peer reset the connection; `error(<exit>)`, which fails a negative check, for any other failure (a name that does not resolve, an exec that failed).' ''
 
@@ -139,22 +336,79 @@ say 'Probe results: an HTTP code with the first line of the body when the call w
 section "0. Preconditions"
 server=$(k version -o json | jq -r .serverVersion.gitVersion)
 recorded=$(yaml_get "$ZONE_VALUES" zone kubernetesVersion)
-[ "$server" = "$recorded" ]; check $? "the zone file records the server version the cluster runs" "server $server, recorded $recorded"
-python3 - "$server" <<'PY'; check $? "native-sidecar-version: the server is Kubernetes 1.33 or later (native sidecar containers)" "server $server"
+# majmin_patch <version>: major.minor.patch of a Kubernetes version (v1.34.7-gke.1 -> 1.34.7)
+majmin_patch() { sed -n 's/^v\{0,1\}\([0-9]*\.[0-9]*\.[0-9]*\).*/\1/p' <<<"$1"; }
+[ -n "$(majmin_patch "$server")" ] && [ "$(majmin_patch "$server")" = "$(majmin_patch "$recorded")" ]
+check $? "native-sidecar-version: the zone file's zone.kubernetesVersion equals the server version the cluster runs (major.minor.patch)" "server $server, zone file $recorded"
+python3 - "$server" <<'PY2'; check $? "native-sidecar-version: the server is Kubernetes 1.33 or later (native sidecar containers)" "server $server"
 import re, sys
 major, minor = map(int, re.match(r"v(\d+)\.(\d+)", sys.argv[1]).groups())
 sys.exit(0 if (major, minor) >= (1, 33) else 1)
-PY
+PY2
 cni=$(k -n kube-system get ds cilium -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)
 [ -n "$cni" ]; check $? "Cilium is the CNI" "$cni"
 excl=$(k -n kube-system get cm cilium-config -o jsonpath='{.data.cni-exclusive}' 2>/dev/null)
 [ "$excl" = "false" ]; check $? "cni-exclusive=false (the Istio CNI plugin can chain)" "cni-exclusive=$excl"
-inotify=$(cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null || echo 0)
-[ "$inotify" -ge 512 ]; check $? "the host allows 512 inotify instances (kind runs every node's agents on one kernel; the Istio CNI agent fails below)" "fs.inotify.max_user_instances=$inotify"
+# The cluster's CNI as found, read again at the end: the run reads it and never writes it.
+cni_state() { printf 'image=%s generation=%s cilium-config.resourceVersion=%s' \
+  "$(k -n kube-system get ds cilium -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)" \
+  "$(k -n kube-system get ds cilium -o jsonpath='{.metadata.generation}' 2>/dev/null)" \
+  "$(k -n kube-system get cm cilium-config -o jsonpath='{.metadata.resourceVersion}' 2>/dev/null)"; }
+cni_before=$(cni_state)
+# cni_check: the CNI read again and compared with cni_before, as a check. On the keep path it is one of
+# the checks of the record of what remains (section 15), before the zone is declared kept; on the
+# teardown path it runs after the uninstall.
+cni_check() {
+  local cni_after; cni_after=$(cni_state)
+  [ "$cni_after" = "$cni_before" ]; check $? "the Cilium DaemonSet (image, generation) and cilium-config (resource version) are unchanged by the run" "before \`$cni_before\`; after \`$cni_after\`"
+}
+say "  the Cilium DaemonSet and its ConfigMap as found: \`$cni_before\`"
+# Whether pod-to-pod traffic between nodes keeps the source pod's address (and so its identity at the
+# destination): Cilium masquerades traffic to destinations outside ipv4-native-routing-cidr. Only the
+# yes/no outcome is recorded, never an address.
+routing=$(k -n kube-system get cm cilium-config -o json 2>/dev/null | jq -r '.data | "routing-mode=\(.["routing-mode"] // "-") enable-ipv4-masquerade=\(.["enable-ipv4-masquerade"] // "-") enable-bpf-masquerade=\(.["enable-bpf-masquerade"] // "-")"')
+native=$(k -n kube-system get cm cilium-config -o jsonpath='{.data.ipv4-native-routing-cidr}' 2>/dev/null)
+pod_cidrs=$(k get nodes -o jsonpath='{.items[*].spec.podCIDR}')
+# shellcheck disable=SC2086  # one argument per pod range
+inside=$(python3 -c 'import ipaddress, sys
+n, cidrs = sys.argv[1], sys.argv[2:]
+if not n or not cidrs: print("unknown"); sys.exit()
+net = ipaddress.ip_network(n, strict=False)
+inn = sum(1 for c in cidrs if ipaddress.ip_network(c, strict=False).subnet_of(net))
+print(f"{inn} of {len(cidrs)} node pod ranges inside ipv4-native-routing-cidr")' "$native" $pod_cidrs)
+if [ -n "$native" ]; then
+  say "  pod-to-pod routing as found: \`$routing\`, ${inside:-unknown}. In native routing a pod range outside ipv4-native-routing-cidr is masqueraded to the node address when masquerading is on, so a pod on another node then reaches a pod as remote-node, not as itself."
+else
+  say "  pod-to-pod routing as found: \`$routing\`; no ipv4-native-routing-cidr (tunnel): pod addresses are kept between nodes."
+fi
+# The inotify instance limit of every node, read through the node's own Cilium agent (one per node,
+# host /proc): the Istio CNI agent fails below 512. On kind every node shares this machine's kernel.
+inotify_detail=""; inotify_read=0; inotify_ok=1
+nodes_all=$(k get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+for NODE in $nodes_all; do
+  C=$(k -n kube-system get pod -l k8s-app=cilium --field-selector "spec.nodeName=$NODE" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+  v=""
+  [ -n "$C" ] && v=$(k -n kube-system exec "$C" -c cilium-agent -- cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null | tr -d '[:space:]')
+  if [[ $v =~ ^[0-9]+$ ]]; then
+    inotify_read=$((inotify_read+1)); [ "$v" -ge 512 ] || inotify_ok=0
+    inotify_detail="$inotify_detail $NODE=$v"
+  else
+    inotify_ok=0
+    if [ -n "$C" ]; then inotify_detail="$inotify_detail $NODE=unreadable (through $C)"
+    else inotify_detail="$inotify_detail $NODE=unreadable (no Cilium pod on the node)"; fi
+  fi
+done
+nodes_n=$(grep -c . <<<"$nodes_all")
+[ "$nodes_n" -gt 0 ] && [ "$inotify_read" -eq "$nodes_n" ] && [ "$inotify_ok" = 1 ]
+check $? "every node allows 512 inotify instances, read on the node through its Cilium agent (the Istio CNI agent fails below)" "fs.inotify.max_user_instances, $inotify_read of $nodes_n nodes read:$inotify_detail"
+# The nodes as found, for environment.json
+provider=$(k get nodes -o jsonpath='{.items[0].spec.providerID}' | sed -n 's#^\([a-z0-9-]*\)://.*#\1#p')
+nodes_json=$(k get nodes -o json | jq -c '[.items[] | {name: .metadata.name, osImage: .status.nodeInfo.osImage, kubelet: .status.nodeInfo.kubeletVersion, containerRuntime: .status.nodeInfo.containerRuntimeVersion}]')
 code "$(k get nodes -o wide | sed 's/  */ /g')"
 
 # --------------------------------------------------------------------------------------------
 section "1. Clean slate"
+delete_stand_ins
 "$INSTALL" uninstall >"$work/clean.log" 2>&1
 k get ns "$MGMT" "$DATA" "$SPIRE_NS" "$ISTIO_NS" >/dev/null 2>&1; [ $? -ne 0 ]; check $? "no plane namespace and no control-plane namespace exists before the install"
 left=$(k get crd -o name | grep -E 'spiffe\.io|istio\.io' || true)
@@ -229,6 +483,16 @@ mesh_td=$(k -n "$ISTIO_NS" get cm istio -o jsonpath='{.data.mesh}' | awk '/^trus
 section "5. Stand-in pods"
 say 'From `scripts/verify-mesh-identity/fixtures/stand-ins.yaml`: in the data plane a meshed peer, a labelled caller with a Workload API client on the CSI socket, an unlabelled meshed pod, an unlabelled pod without proxy with a Workload API client, the matrix pair `pdp-adapter` and the cross-plane caller `data-plain`; in the management plane `tsa-policy-engine`, `openbao` and `mgmt-caller`; in both a proxy-less `probe` for raw TCP probes. All in the service account `stand-in` unless noted.' ''
 sed -e "s/__DATA__/$DATA/g" -e "s/__MGMT__/$MGMT/g" fixtures/stand-ins.yaml >"$work/stand-ins.yaml"
+# The pin (participant cluster only): every pod the proof creates runs on istiod's node. The provider's
+# pod network masquerades pod traffic between nodes to the node address (see the preconditions), so a
+# proxy on another node reaches istiod as remote-node, which no opening admits, and never starts.
+if [ "$CLUSTER_KIND" = provider ]; then
+  PIN_NODE=$(k -n "$ISTIO_NS" get pod -l app=istiod -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null)
+  pin_detail=$PIN_NODE; [ -n "$PIN_NODE" ] || pin_detail="no istiod pod with a node in $ISTIO_NS: the proof's pods are pinned to the unmatched name $PIN_NONE and stay Pending"
+  [ -n "$PIN_NODE" ]; check $? "istiod's node is read, to pin the proof's pods to it" "$pin_detail"
+  PIN_NODE=${PIN_NODE:-$PIN_NONE}
+  say '' "The proof's pods are pinned to the node \`$PIN_NODE\`, the node istiod runs on (a required node affinity on \`kubernetes.io/hostname\`): the provider's pod network masquerades pod traffic between nodes to the node's address, so a meshed pod on another node reaches istiod on 15012 as \`remote-node\`, which no namespace- or label-keyed opening admits, and never starts. The mesh is proven node-locally on this cluster until the provider changes its pod network; nothing of the pin is in the chart, the policies or the zone file." ''
+fi
 # The stand-ins that opt out of injection go apart: the capture rule refuses them (below).
 # Their refusal is asked with a server dry-run create of a copy under other names (suffix
 # -capture-check): a create of a name that exists would still reach admission, but kubectl apply of
@@ -244,7 +508,18 @@ check = [copy.deepcopy(d) for d in docs if off(d)]
 for d in check: d["metadata"]["name"] += "-capture-check"
 yaml.safe_dump_all(check, open(sys.argv[4], "w"), sort_keys=False)
 PY
-k apply -f "$work/stand-ins-meshed.yaml" >/dev/null
+[ "$CLUSTER_KIND" = provider ] && pin_pods "$PIN_NODE" "$work/stand-ins-meshed.yaml" "$work/stand-ins-proxyless.yaml" "$work/stand-ins-proxyless-check.yaml"
+# The per-node SVID stand-ins (section 6): fixtures/svid-on-node.yaml rendered once per node the SPIRE
+# agent runs on, each with its own node affinity; never passed to pin_pods, so on a participant
+# cluster they are the one exception to the pin.
+SVID_NODES=$(agent_nodes)
+svid_files=(); svid_pods=()
+for NODE in $SVID_NODES; do
+  sed "s/__NODE__/$NODE/g" fixtures/svid-on-node.yaml >"$work/svid-on-$NODE.yaml"
+  svid_files+=(-f "$work/svid-on-$NODE.yaml"); svid_pods+=("pod/svid-on-$NODE")
+done
+say "In \`$SPIRE_NS\`, from \`scripts/verify-mesh-identity/fixtures/svid-on-node.yaml\`: one unmeshed stand-in per node with a SPIRE agent ($(paste -sd, - <<<"$SVID_NODES" | sed 's/,/, /g')), \`svid-on-<node>\`, each placed on its node by a required node affinity$([ "$CLUSTER_KIND" = provider ] && echo ', not pinned to istiod'"'"'s node') (section 6)." ''
+k apply -f "$work/stand-ins-meshed.yaml" "${svid_files[@]}" >/dev/null
 proxyless=$(python3 -c 'import sys,yaml
 print(", ".join("`" + d["metadata"]["name"] + "` in " + d["metadata"]["namespace"] for d in yaml.safe_load_all(open(sys.argv[1])) if d))' "$work/stand-ins-proxyless.yaml")
 say '' "The three proxy-less stand-ins ($proxyless) opt out of injection, which the capture rule of \`$POLICY\` refuses in a plane namespace (section 8). They stand for the program without a proxy that the later sections show the zone resisting anyway, so the proof creates them with that one validation lifted from the policy for the time of their creation, puts it back unchanged, and checks that it refuses them again; the template and socket rules stay in force throughout." ''
@@ -263,20 +538,33 @@ k get validatingadmissionpolicy "$POLICY" -o json >"$work/policy.json"
 idx=$(jq '[.spec.validations[].expression | contains("variables.captureDefaults")] | index(true)' "$work/policy.json")
 jq -c --argjson i "${idx:-null}" '[{op: "test", path: "/spec/validations/\($i)", value: .spec.validations[$i]}, {op: "remove", path: "/spec/validations/\($i)"}]' "$work/policy.json" >"$work/lift.json" 2>/dev/null
 jq -c --argjson i "${idx:-null}" '[{op: "add", path: "/spec/validations/\($i)", value: .spec.validations[$i]}]' "$work/policy.json" >"$work/restore.json" 2>/dev/null
-rc_create=1
+rc_create=1; held=0
+# Each API server replica takes up a policy change on its own (a provider's control plane runs more
+# than one), so one admitted dry run does not mean the next request is admitted: the create is
+# retried while the capture rule still refuses it (any other error ends the retries), and after the
+# restore the refusal must hold five times in a row, a second apart, which the check requires. The
+# lift lasts at most about 45 s: up to 20 dry runs a second apart, then up to 10 creates 2 s apart.
 if [ "${idx:-null}" != null ] && k patch validatingadmissionpolicy "$POLICY" --type=json --patch-file "$work/lift.json" >/dev/null 2>&1; then
-  for _ in $(seq 30); do proxyless_admitted && break; sleep 1; done
-  k apply -f "$work/stand-ins-proxyless.yaml" >/dev/null; rc_create=$?
+  for _ in $(seq 20); do proxyless_admitted && break; sleep 1; done
+  for _ in $(seq 10); do
+    k apply -f "$work/stand-ins-proxyless.yaml" >/dev/null 2>"$work/proxyless-create.err"; rc_create=$?
+    [ $rc_create -eq 0 ] && break
+    grep -q 'denied request: capture rule' "$work/proxyless-create.err" || break
+    sleep 2
+  done
+  [ $rc_create -eq 0 ] || cat "$work/proxyless-create.err" >&2
   restore_capture
-  for _ in $(seq 30); do proxyless_refused && break; sleep 1; done
+  for _ in $(seq 60); do if proxyless_refused; then held=$((held+1)); [ $held -ge 5 ] && break; else held=0; fi; sleep 1; done
 fi
 check $rc_create "with the capture validation (index ${idx:-none}) lifted, the three proxy-less stand-ins are created"
-diff <(jq -S .spec "$work/policy.json") <(k get validatingadmissionpolicy "$POLICY" -o json | jq -S .spec) >/dev/null && proxyless_refused
-check $? "the policy is put back unchanged (its spec equals the one read before the lift) and refuses the three again" "$(k get validatingadmissionpolicy "$POLICY" -o json | jq '.spec.validations | length') validations in force"
+diff <(jq -S .spec "$work/policy.json") <(k get validatingadmissionpolicy "$POLICY" -o json | jq -S .spec) >/dev/null && [ "$held" -ge 5 ]
+check $? "the policy is put back unchanged (its spec equals the one read before the lift) and refuses the three again, five times in a row a second apart (each API server replica takes up the change on its own)" "$(k get validatingadmissionpolicy "$POLICY" -o json | jq '.spec.validations | length') validations in force; refusals held $held of 5 in a row"
 k -n "$DATA" wait --for=condition=Ready pod/peer pod/caller pod/unregistered-svid pod/probe pod/pdp-adapter pod/data-plain --timeout=240s >/dev/null 2>&1; check $? "the labelled data-plane stand-ins are Ready"
 k -n "$MGMT" wait --for=condition=Ready pod/tsa-policy-engine pod/openbao pod/mgmt-caller pod/probe --timeout=240s >/dev/null 2>&1; check $? "the management-plane stand-ins are Ready"
+# The per-node stand-ins are counted in section 6, node by node.
+[ ${#svid_pods[@]} -gt 0 ] && k -n "$SPIRE_NS" wait --for=condition=Ready "${svid_pods[@]}" --timeout=240s >/dev/null 2>&1
 sleep 10
-code "$(k get pods -n "$DATA" -o wide | sed 's/  */ /g'; echo; k get pods -n "$MGMT" -o wide | sed 's/  */ /g')"
+code "$(k get pods -n "$DATA" -o wide | sed 's/  */ /g'; echo; k get pods -n "$MGMT" -o wide | sed 's/  */ /g'; echo; k get pods -n "$SPIRE_NS" -l app.kubernetes.io/name=svid-on-node -o wide | sed 's/  */ /g')"
 
 # --------------------------------------------------------------------------------------------
 section "6. svid-over-csi-socket"
@@ -302,6 +590,33 @@ entry_for() { jq -r --arg u "k8s:pod-uid:$1" '.entries[] | select([.selectors[] 
 [ -z "$(entry_for "$uid_unreg")$(entry_for "$uid_unreg_svid")" ]; check $? "the SPIRE server lists no entry for the two unlabelled pods"
 out=$(k -n "$DATA" exec unregistered-svid -c svid -- /opt/spire/bin/spire-agent api fetch x509 -socketPath /run/spiffe/socket -timeout 5s 2>&1); rc=$?
 [ $rc -ne 0 ]; check $? "an unlabelled pod's fetch over the mounted socket returns no SVID" "$(grep -v 'command terminated' <<<"$out" | tail -1)"
+say '' "The \`caller\` above runs on one node$([ "$CLUSTER_KIND" = provider ] && echo ", istiod's (the pin)"). Every node with a SPIRE agent, the \`caller\`'s included, is asked too, by the per-node stand-ins of section 5 (\`svid-on-<node>\`, the \`caller\`'s \`svid\` container alone, service account \`stand-in\`, the identity label). They are unmeshed and in \`$SPIRE_NS\` because that is the plane namespace without the injection label on every cluster the proof accepts, so they need no proxy and no opt-out$([ "$CLUSTER_KIND" = provider ] && echo ", and a meshed pod off istiod's node does not start on this cluster (the pin)"); the fetch is a node-local read over a Unix socket to the node's agent and needs no lane. They are placed one per node by their own node affinity, so the SVID is shown on every node a workload can run on:" ''
+SVID_NODE_ID="spiffe://$TD/ns/$SPIRE_NS/sa/stand-in"
+svid_n=$(wc -w <<<"$SVID_NODES"); svid_ready=0; svid_state=""
+for NODE in $SVID_NODES; do
+  s=$(k -n "$SPIRE_NS" get pod "svid-on-$NODE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+  [ "$s" = True ] && svid_ready=$((svid_ready+1))
+  svid_state="$svid_state svid-on-$NODE=${s:-absent}"
+done
+[ "$svid_n" -gt 0 ] && [ "$svid_ready" -eq "$svid_n" ]
+check $? "one per-node SVID stand-in is Ready on every node with a SPIRE agent" "$svid_ready of $svid_n Ready:${svid_state:- no agent node}"
+for NODE in $SVID_NODES; do
+  pod=svid-on-$NODE; on=$(k -n "$SPIRE_NS" get pod "$pod" -o jsonpath='{.spec.nodeName}' 2>/dev/null)
+  id=""
+  for _ in 1 2 3 4 5 6; do
+    k -n "$SPIRE_NS" exec "$pod" -c svid -- /opt/spire/bin/spire-agent api fetch x509 -socketPath /run/spiffe/socket -output json >"$work/svid-node.json" 2>/dev/null
+    id=$(jq -r '.svids[0].spiffe_id // empty' "$work/svid-node.json" 2>/dev/null)
+    [ -n "$id" ] && break; sleep 5
+  done
+  # Only the certificate is kept; the JSON with the private key goes at once.
+  jq -r '.svids[0].x509_svid // empty' "$work/svid-node.json" 2>/dev/null | base64 -d 2>/dev/null \
+    | openssl x509 -inform DER -out "$work/svid-node.pem" 2>/dev/null || : >"$work/svid-node.pem"
+  rm -f "$work/svid-node.json"
+  [ "$id" = "$SVID_NODE_ID" ] && [ "$on" = "$NODE" ]
+  check $? "node $NODE: the SVID fetched over the node's mounted socket by $pod carries the SPIFFE ID of its service account in the zone's trust domain" "pod on ${on:-no node}: ${id:-no SVID}"
+  [ -s "$work/svid-node.pem" ] && openssl verify -CAfile "$work/spire-bundle.pem" "$work/svid-node.pem" >/dev/null 2>&1
+  check $? "node $NODE: that SVID chains to the SPIRE server's CA (the bundle read from the server)" "$(openssl x509 -noout -issuer -nameopt RFC2253 -in "$work/svid-node.pem" 2>/dev/null || echo 'no certificate')"
+done
 stats=$(k get clusterspiffeid plane-workloads -o jsonpath='{.status.stats}')
 say "  ClusterSPIFFEID \`plane-workloads\` status: \`$stats\`"
 
@@ -491,7 +806,9 @@ jq -e '[(.spec.initContainers // [])[].name] | index("istio-proxy")' <<<"$out" >
 check $? "there it is admitted with a proxy and no SPIRE socket: that proxy would ask istiod's CA" "containers: $(jq -r '[(.spec.initContainers // [])[].name, .spec.containers[].name] | join(",")' <<<"$out" 2>/dev/null)"
 printf '%s\n' 'apiVersion: v1' 'kind: Pod' 'metadata: { name: probe }' \
   'spec: { terminationGracePeriodSeconds: 2, containers: [ { name: app, image: "docker.io/curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b", command: [sleep, "3600"] } ] }' \
-  | k -n "$OUTSIDE" create -f - >/dev/null
+  >"$work/outside-probe.yaml"
+[ "$CLUSTER_KIND" = provider ] && pin_pods "$PIN_NODE" "$work/outside-probe.yaml"
+k -n "$OUTSIDE" create -f "$work/outside-probe.yaml" >/dev/null
 k -n "$OUTSIDE" wait --for=condition=Ready pod/probe --timeout=120s >/dev/null 2>&1
 ISTIOD_IP=$(k -n "$ISTIO_NS" get pod -l app=istiod -o jsonpath='{.items[0].status.podIP}')
 r=$(tcp "$OUTSIDE" probe "$ISTIOD_IP" 15012)
@@ -613,31 +930,37 @@ done
 # The agents run on the host network, outside every network policy: their metrics endpoint must be
 # bound to the node's loopback. Their listening sockets are read in the host network namespace,
 # through the host-networked Cilium agent of the same node.
-for NODE in $(k -n "$SPIRE_NS" get pods -o json | jq -r '.items[] | select(.metadata.ownerReferences[0].name == "spire-agent") | .spec.nodeName'); do
-  C=$(k -n kube-system get pod -l k8s-app=cilium --field-selector "spec.nodeName=$NODE" -o jsonpath='{.items[0].metadata.name}')
+for NODE in $(agent_nodes); do
+  C=$(cilium_on "$NODE")
   listen=$(k -n kube-system exec "$C" -c cilium-agent -- cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$4 == "0A" && $2 ~ /:2704$/ {print $2}' | sort -u | tr '\n' ' ')
   [ -n "$listen" ] && ! grep -qvE '^(0100007F|00000000000000000000000001000000):2704$' <<<"$(tr ' ' '\n' <<<"$listen" | grep .)"
   check $? "node $NODE: the SPIRE agent's metrics port 9988 listens on the loopback only, not on the node's addresses" "listening (hex address:port): ${listen:-none}"
-  n=$(k -n kube-system exec "$C" -c cilium-agent -- bash -c 'exec 3<>/dev/tcp/127.0.0.1/9988; printf "GET /metrics HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3; cat <&3' 2>/dev/null | grep -c '^spire_agent')
-  [ "$n" -gt 0 ]; check $? "node $NODE: the agent's metrics answer on 127.0.0.1:9988 (the contract with a node-local collector)" "$n spire_agent samples"
+  agent_answers "$NODE"
 done
+say '' '### metrics-endpoints-answer' ''
+say "The SPIRE server's metrics endpoint (pod port 9988) and the controller-manager's (pod port 8082, a container of \`spire-server-0\`) are denied to the workload planes (above); that they answer at all is read from the host of the node the server pod runs on, the kubelet's path to the pod that its readiness probes take, through that node's Cilium agent with the same read-only \`kubectl exec\` and \`/dev/tcp\` read as the agents' check: no lane, no pod, nothing written. A read answers when it returns HTTP 200 and at least one sample of the component's own family (\`spire_server_\`, \`controller_runtime_\`; the runtime's \`go_\` and \`process_\` families, which any Go binary exposes, do not count). Nothing in the zone scrapes these endpoints yet." ''
+metrics_answer "the SPIRE server" spire_server_ 9988
+metrics_answer "the SPIRE controller-manager" controller_runtime_ 8082
 
 # --------------------------------------------------------------------------------------------
 section "13. A declared registration without its entry fails the release"
-say 'The registrations-reconciled check counts the running labelled pods of every plane namespace and compares them with what the controller-manager reconciled. To make one registration go unreconciled, the kind namespace `local-path-storage`, which the controller-manager is configured to ignore, is labelled as a plane for the duration of the step and gets a labelled pod; then zone-policy is upgraded through the lifecycle step with a 20 s check timeout. Afterwards the label and the pod are removed and the rollback restores the release.' ''
-k label ns local-path-storage ztd.facis.io/plane=data --overwrite >/dev/null
-k -n local-path-storage run declared-not-reconciled --image=docker.io/curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b --labels=spiffe.io/spire-managed-identity=true --command -- sleep 3600 >/dev/null
-k -n local-path-storage wait --for=condition=Ready pod/declared-not-reconciled --timeout=120s >/dev/null 2>&1
+say 'The registrations-reconciled check counts the running labelled pods of every plane namespace and compares them with what the controller-manager reconciled. To make one registration go unreconciled, the namespace `kube-public`, which the controller-manager is configured to ignore on every cluster (the default `ignoreNamespaces` of the SPIRE chart) and which holds no pod, is labelled as a plane for the duration of the step and gets a labelled pod; then zone-policy is upgraded through the lifecycle step with a 20 s check timeout. Afterwards the label and the pod are removed and the rollback restores the release.' ''
+k label ns kube-public ztd.facis.io/plane=data --overwrite >/dev/null
+pin_overrides=(); [ "$CLUSTER_KIND" = provider ] && pin_overrides=(--overrides "{\"apiVersion\":\"v1\",\"spec\":$(pin_affinity "$PIN_NODE")}")
+k -n kube-public run declared-not-reconciled --image=docker.io/curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b --labels=spiffe.io/spire-managed-identity=true "${pin_overrides[@]}" --command -- sleep 3600 >/dev/null
+k -n kube-public wait --for=condition=Ready pod/declared-not-reconciled --timeout=120s >/dev/null 2>&1
 printf 'trustDomain: %s\nchecks:\n  timeoutSeconds: 20\n' "$TD" >"$work/zp-values.yaml"
 k config view --minify --flatten --context "$CONTEXT" >"$work/kubeconfig"
-res=$(KUBECONFIG=$work/kubeconfig LIFECYCLE_RELEASE=zone-policy LIFECYCLE_NAMESPACE=$ISTIO_NS LIFECYCLE_CHART=$REPO/deployment/helm/zone-policy \
-  LIFECYCLE_VALUES_FILE=$work/zp-values.yaml LIFECYCLE_TIMEOUT=3m "$REPO/scripts/lifecycle.sh" deploy 2>/dev/null | grep '^RESULT_JSON=' | cut -d= -f2-)
-[ "$(jq -r .ok <<<"$res")" = false ]; check $? "the upgrade fails and is rolled back" "$(jq -r '.error.message' <<<"$res")"
+KUBECONFIG=$work/kubeconfig LIFECYCLE_RELEASE=zone-policy LIFECYCLE_NAMESPACE=$ISTIO_NS LIFECYCLE_CHART=$REPO/deployment/helm/zone-policy \
+  LIFECYCLE_VALUES_FILE=$work/zp-values.yaml LIFECYCLE_TIMEOUT=3m "$REPO/scripts/lifecycle.sh" deploy >"$work/lifecycle.log" 2>&1
+res=$(grep '^RESULT_JSON=' "$work/lifecycle.log" | cut -d= -f2-)
+[ "$(jq -r .ok <<<"$res")" = false ]
+check $? "the upgrade fails and is rolled back" "$(if [ -n "$res" ]; then jq -r '.error.message' <<<"$res"; else echo "no result from the lifecycle step: $(grep -v '^$' "$work/lifecycle.log" | tail -1 | cut -c1-200)"; fi)"
 jl=$(k -n "$ISTIO_NS" logs job/zone-policy-registrations-reconciled 2>/dev/null | grep -E '^(FAIL|ok)' | tail -2 | tr '\n' ' ')
 grep -q 'FAIL every registration' <<<"$jl"; check $? "the registrations-reconciled job exits non-zero naming the gap" "$jl"
 k -n "$ISTIO_NS" delete job -l ztd.facis.io/identity-check --ignore-not-found >/dev/null
-k -n local-path-storage delete pod declared-not-reconciled --wait=true >/dev/null 2>&1
-k label ns local-path-storage ztd.facis.io/plane- >/dev/null
+k -n kube-public delete pod declared-not-reconciled --wait=true >/dev/null 2>&1
+k label ns kube-public ztd.facis.io/plane- >/dev/null
 st=$(h status zone-policy -n "$ISTIO_NS" -o json | jq -r .info.status)
 [ "$st" = deployed ]; check $? "after the step the release is deployed again (rollback)" "$(h history zone-policy -n "$ISTIO_NS" --max 3 -o json | jq -r '[.[] | "\(.revision) \(.status)"] | join(", ")')"
 
@@ -659,56 +982,220 @@ out=$(helm template ztd "$CHART" -f "$ZONE_VALUES" --set zone.kubernetesVersion=
 [ $rc -ne 0 ] && grep -q 'native sidecar' <<<"$out"; check $? "the umbrella refuses sidecar mode below Kubernetes 1.33" "$(grep -o 'mesh.mode sidecar needs.*' <<<"$out")"
 out=$(helm template ztd "$CHART" -f "$ZONE_VALUES" --set cni.cilium.enabled=false 2>&1); rc=$?
 [ $rc -ne 0 ] && grep -q 'derogation' <<<"$out"; check $? "the umbrella refuses a meshed zone without Cilium, naming the openings and the derogation" "$(grep -o 'mesh.mode sidecar needs Cilium[^:]*' <<<"$out")"
+# The provider facts of the zone values (planes.namespaceLabels, networkPolicy.dns.ports,
+# controlPlaneWebhooks.fromEndpoints): a label the umbrella sets itself is refused, and each shipped
+# zone file (the kind file and every zones/*.yaml but the example) renders its facts and nothing else.
+for key in ztd.facis.io/plane istio-injection; do
+  out=$(helm template ztd "$CHART" -f "$ZONE_VALUES" --set-string "planes.namespaceLabels.${key//./\\.}=x" 2>&1); rc=$?
+  [ $rc -ne 0 ] && grep -q "planes.namespaceLabels may not set $key" <<<"$out"
+  check $? "the umbrella refuses planes.namespaceLabels setting $key, a label it sets itself" "$(grep -o 'planes.namespaceLabels may not set[^"]*' <<<"$out" | head -1)"
+done
+facts_ok=(0 0 0); facts_detail=("" "" "")
+for zf in "$CHART/ci/values.yaml" "$CHART"/zones/*.yaml; do
+  case $zf in *.example.yaml) continue;; esac
+  helm template ztd "$CHART" -f "$zf" >"$work/facts.yaml" 2>"$work/facts.err" || { for i in 0 1 2; do facts_ok[i]=1; facts_detail[i]="${facts_detail[i]} ${zf#"$CHART"/}: no render ($(tail -1 "$work/facts.err"));"; done; continue; }
+  # zone_facts <chart values> <zone file> <rendered>: one line per fact, "<0|1> <detail>" (0: as the zone states)
+  mapfile -t res < <(python3 - "$CHART/values.yaml" "$zf" "$work/facts.yaml" <<'PY'
+import json, sys, yaml
+def merge(a, b):
+    if isinstance(a, dict) and isinstance(b, dict):
+        return {k: merge(a.get(k), b[k]) if k in b else a[k] for k in {**a, **b}}
+    return b
+v = merge(yaml.safe_load(open(sys.argv[1])), yaml.safe_load(open(sys.argv[2])) or {})
+docs = [d for d in yaml.safe_load_all(open(sys.argv[3])) if d]
+np = v["networkPolicy"]
+# DNS bypass: every allow-dns-egress policy admits the zone's resolver ports, UDP and TCP, and no other
+want = sorted((p, t) for p in (np["dns"].get("ports") or [53]) for t in ("UDP", "TCP"))
+dns = [d for d in docs if d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "allow-dns-egress"]
+got = {json.dumps(sorted((p["port"], p["protocol"]) for e in d["spec"]["egress"] for p in e["ports"])) for d in dns}
+ok = bool(dns) and got == {json.dumps(want)} if np["dns"].get("enabled", True) else not dns
+print(0 if ok else 1, f"dns ports {sorted({p for p, _ in want})} in {len(dns)} policies" + ("" if ok else f", found {sorted(got)}"))
+# fromEndpoints: one rule per webhook target, on its port, with the zone's selectors; none without them
+w = np["controlPlaneWebhooks"]
+eps = w.get("fromEndpoints") or []
+want = sorted((t["namespace"], str(t["port"]), json.dumps(eps, sort_keys=True)) for t in w["targets"]) if w.get("enabled") and eps else []
+got = sorted((d["metadata"]["namespace"], p["port"], json.dumps([m["matchLabels"] for m in r["fromEndpoints"]], sort_keys=True))
+             for d in docs if d["kind"] == "CiliumNetworkPolicy"
+             for r in d["spec"].get("ingress") or [] if "fromEndpoints" in r
+             for tp in r["toPorts"] for p in tp["ports"])
+print(0 if got == want else 1, f"fromEndpoints rules {[(n, p) for n, p, _ in got] or 'none'}" + ("" if got == want else f", expected {[(n, p) for n, p, _ in want] or 'none'}"))
+# namespace labels: every Namespace the umbrella renders carries them
+labels = v["planes"].get("namespaceLabels") or {}
+ns = [d for d in docs if d["kind"] == "Namespace"]
+bad = [d["metadata"]["name"] for d in ns if any(d["metadata"]["labels"].get(k) != str(x) for k, x in labels.items())]
+print(0 if ns and not bad else 1, f"namespace labels {sorted(labels) or 'none'} on {len(ns) - len(bad)} of {len(ns)} namespaces")
+PY
+)
+  for i in 0 1 2; do
+    [ "${res[i]%% *}" = 0 ] || facts_ok[i]=1
+    facts_detail[i]="${facts_detail[i]} ${zf#"$CHART"/}: ${res[i]#* };"
+  done
+done
+[ "${facts_ok[0]}" = 0 ]; check $? "each shipped zone file renders the DNS bypass on its own resolver port (networkPolicy.dns.ports), UDP and TCP" "${facts_detail[0]}"
+[ "${facts_ok[1]}" = 0 ]; check $? "the webhook relay (controlPlaneWebhooks.fromEndpoints) renders only where the zone file names it, on the webhook ports" "${facts_detail[1]}"
+[ "${facts_ok[2]}" = 0 ]; check $? "the zone file's planes.namespaceLabels reach every namespace the umbrella creates" "${facts_detail[2]}"
 
 # --------------------------------------------------------------------------------------------
-section "15. Teardown: uninstall in reverse order"
-kept=$(k get crd -o json | jq -r '[.items[] | select(.spec.group == "spire.spiffe.io") | "\(.metadata.name)=\(.metadata.annotations["helm.sh/resource-policy"] // "none")"] | join(" ")')
-[ "$(wc -w <<<"$kept")" = 3 ] && ! grep -q '=keep' <<<"$kept"
-check $? "the three SPIRE CRDs carry no helm.sh/resource-policy keep, so the uninstall of spire-crds removes them through Helm alone (the installer deletes CRDs itself only for istio-base)" "$kept"
-sed -e "s/__DATA__/$DATA/g" -e "s/__MGMT__/$MGMT/g" fixtures/stand-ins.yaml | k delete -f - --wait=true >/dev/null 2>&1
-"$INSTALL" uninstall >"$work/uninstall.log" 2>&1; rc=$?
-check $rc "the installer uninstalls the seven releases in reverse order" "$(grep -c 'done$' "$work/uninstall.log") releases removed"
-code "$(cat "$work/uninstall.log")"
-for _ in $(seq 1 60); do k get ns "$MGMT" "$DATA" "$SPIRE_NS" "$ISTIO_NS" >/dev/null 2>&1 || break; sleep 3; done
-left=$(k get ns "$MGMT" "$DATA" "$SPIRE_NS" "$ISTIO_NS" --ignore-not-found -o name 2>/dev/null)
-[ -z "$left" ]; check $? "no plane namespace and no control-plane namespace remains" "${left:-none}"
-left=$(k get crd -o name | grep -E 'spiffe\.io|istio\.io' || true)
-[ -z "$left" ]; check $? "no SPIRE or Istio custom resource definition remains" "${left:-none}"
-left=$(k get validatingwebhookconfiguration,mutatingwebhookconfiguration -o name | grep -E 'istio|spire' || true)
-[ -z "$left" ]; check $? "no admission webhook of either control plane remains" "${left:-none}"
-say "  the umbrella's release namespace \`ztd-system\` remains, as expected: the installer creates it and no release owns it" ''
+# The stand-ins are removed in every case: they are fixtures of the proof, never part of a kept zone.
+delete_stand_ins
+not_kept=""
+if [ "$KEEP" != 1 ]; then
+  if [ "$CLUSTER_KIND" = kind ]; then not_kept="no opt-in (kind)"; else not_kept="no opt-in (ZTD_KEEP_ZONE unset)"; fi
+elif [ "$failures" -ne 0 ]; then
+  not_kept="$failures check(s) failed"
+else
+  # The CNI read-back comes first on the keep path: a check of the decision to keep, like the record
+  # below, so a changed CNI tears the zone down (on the teardown path it runs after the uninstall).
+  before=$failures
+  section "The cluster's CNI as found"
+  say "Read again before the zone is declared kept: if it changed, the zone is torn down." ''
+  cni_check
+  section "15. What remains installed"
+  say "The keep opt-in is set and every check above passed, so the teardown is replaced by this record, read from the cluster. Each item is a check, as is the CNI read-back above: if one fails, the zone is torn down after all." ''
+  nodes_n=$(k get nodes -o name | grep -c .)
+  rel=$(h list -A -o json | jq -r '.[] | "\(.name):\(.namespace) \(.status)"')
+  n=0; for r in $RELEASES; do grep -qx "$r deployed" <<<"$rel" && n=$((n+1)); done
+  [ "$n" -eq 7 ]; check $? "the seven releases are installed with status deployed" "$n of 7 deployed"
+  code "$(h list -A -o json | jq -r '(["RELEASE","NAMESPACE","REVISION","STATUS","CHART"] | join(" ")), (.[] | [.name, .namespace, .revision, .status, .chart] | join(" "))')"
+  sts=$(k -n "$SPIRE_NS" get sts spire-server -o jsonpath='{.status.readyReplicas}/{.spec.replicas}')
+  [ "${sts%/*}" = "${sts#*/}" ] && [ "${sts%/*}" -ge 1 ] 2>/dev/null; check $? "the SPIRE server StatefulSet is ready" "spire-server ready $sts"
+  cm=$(k -n "$SPIRE_NS" get pod spire-server-0 -o jsonpath='{.status.containerStatuses[?(@.name=="spire-controller-manager")].ready}')
+  [ "$cm" = true ]; check $? "the SPIRE controller-manager (container spire-controller-manager of spire-server-0) is ready" "ready=$cm"
+  for ds in spire-agent spire-spiffe-csi-driver; do
+    nr=$(k -n "$SPIRE_NS" get ds "$ds" -o jsonpath='{.status.numberReady}')
+    [ "$nr" = "$nodes_n" ]; check $? "the DaemonSet $ds has one ready pod on every node" "numberReady $nr, nodes $nodes_n"
+  done
+  attested=$(spire_server agent list -output json 2>/dev/null | jq '.agents | length')
+  [ "$attested" = "$nodes_n" ]; check $? "the SPIRE server lists one attested agent per node" "attested $attested, nodes $nodes_n"
+  # The three metrics endpoints again (section 12), as checks of the decision to keep.
+  metrics_answer "the SPIRE server" spire_server_ 9988
+  metrics_answer "the SPIRE controller-manager" controller_runtime_ 8082
+  for NODE in $(agent_nodes); do agent_answers "$NODE"; done
+  # The proof's fixtures are gone (delete_stand_ins ran above, its errors silenced): the stand-ins of
+  # both planes and their Services and ServiceAccounts, the per-node SVID stand-ins and the
+  # ServiceAccount stand-in of the SPIRE namespace, the kube-public pod, the scratch namespace, and
+  # any SPIRE entry for a stand-in identity (the controller-manager removes those once the pods are
+  # gone, so they are waited for). A leftover is a failed check, so the zone is torn down after all.
+  left=$( { sed -e "s/__DATA__/$DATA/g" -e "s/__MGMT__/$MGMT/g" fixtures/stand-ins.yaml | k get -f - --ignore-not-found -o name \
+    && k -n "$SPIRE_NS" get pods -l app.kubernetes.io/name=svid-on-node -o name \
+    && k -n "$SPIRE_NS" get serviceaccount stand-in --ignore-not-found -o name \
+    && k -n kube-public get pod declared-not-reconciled --ignore-not-found -o name \
+    && k get namespace mesh-identity-outside --ignore-not-found -o name; } 2>&1 || echo "a read failed")
+  for _ in $(seq 30); do
+    entries=$(spire_server entry show -output json 2>/dev/null | jq -er '[.entries[] | select(.spiffe_id.path | endswith("/sa/stand-in")) | "spiffe://\(.spiffe_id.trust_domain)\(.spiffe_id.path)"] | join(" ")') || entries="the entries could not be read"
+    [ -z "$entries" ] && break; sleep 2
+  done
+  [ -z "$left" ] && [ -z "$entries" ]
+  check $? "nothing of the proof's fixtures stays in the zone: no stand-in pod, Service or ServiceAccount in either plane, no per-node SVID stand-in and no stand-in ServiceAccount in $SPIRE_NS, no kube-public pod, no scratch namespace, and no SPIRE entry for a stand-in identity" "left: $(tr '\n' ' ' <<<"${left:-none}"); stand-in entries: ${entries:-none}"
+  code "$(k -n "$SPIRE_NS" get pods -o wide | sed 's/  */ /g')"
+  server_td=$(k -n "$SPIRE_NS" get cm spire-server -o jsonpath='{.data.server\.conf}' | jq -r .server.trust_domain)
+  td_note="final"; [[ $server_td == *.trust.invalid ]] && td_note="interim"
+  [ "$server_td" = "$TD" ]; check $? "the SPIRE server runs with the zone file's trust domain" "$server_td ($td_note)"
+  if [ "$failures" -eq "$before" ]; then
+    keep_zone=1
+    say '' "The zone stays installed on \`$CONTEXT\` with the trust domain \`$server_td\` ($td_note). An interim trust domain is fixed in the SPIRE root CA, so the zone is re-installed with its final name under the delegated trust-framework zone once that name is confirmed; until then this kept zone is not acceptance evidence. A later run of this proof starts from the clean slate (section 1) and uninstalls it first."
+    [ "$CLUSTER_KIND" = provider ] && say '' "The mesh of this zone was proven node-locally, with the proof's pods pinned to istiod's node \`$PIN_NODE\`: cross-node meshed traffic is not proven and does not work on this cluster until the provider changes its pod network to keep a pod's address between nodes."
+  else
+    not_kept="$((failures - before)) check(s) of the CNI read-back and the record of what remains failed"
+  fi
+fi
+CRDS_KEEP=$(k get crd -o json | jq -r '[.items[] | select(.spec.group == "spire.spiffe.io") | "\(.metadata.name)=\(.metadata.annotations["helm.sh/resource-policy"] // "none")"] | join(" ")')
+if [ "$keep_zone" != 1 ]; then
+  section "$([ "$KEEP" = 1 ] && [ "$failures" -gt 0 ] && [ -n "${before:-}" ] && echo 16 || echo 15). Teardown: uninstall in reverse order"
+  say "Not kept: $not_kept." ''
+  [ "$(wc -w <<<"$CRDS_KEEP")" = 3 ] && ! grep -q '=keep' <<<"$CRDS_KEEP"
+  check $? "the three SPIRE CRDs carry no helm.sh/resource-policy keep, so the uninstall of spire-crds removes them through Helm alone (the installer deletes CRDs itself only for istio-base)" "$CRDS_KEEP"
+  "$INSTALL" uninstall >"$work/uninstall.log" 2>&1; rc=$?
+  check $rc "the installer uninstalls the seven releases in reverse order" "$(grep -c 'done$' "$work/uninstall.log") releases removed"
+  code "$(cat "$work/uninstall.log")"
+  # The umbrella's release namespace holds nothing once the umbrella is uninstalled; it goes last.
+  k delete namespace ztd-system --ignore-not-found --wait=true >/dev/null 2>&1
+  cleaned=1
+  for _ in $(seq 1 60); do k get ns "$MGMT" "$DATA" "$SPIRE_NS" "$ISTIO_NS" ztd-system >/dev/null 2>&1 || break; sleep 3; done
+  left=$(k get ns "$MGMT" "$DATA" "$SPIRE_NS" "$ISTIO_NS" ztd-system --ignore-not-found -o name 2>/dev/null)
+  [ -z "$left" ]; check $? "no plane, control-plane or release namespace (ztd-system) remains" "${left:-none}"
+  left=$(k get crd -o name | grep -E 'spiffe\.io|istio\.io' || true)
+  [ -z "$left" ]; check $? "no SPIRE or Istio custom resource definition remains" "${left:-none}"
+  left=$(k get validatingwebhookconfiguration,mutatingwebhookconfiguration -o name | grep -E 'istio|spire' || true)
+  [ -z "$left" ]; check $? "no admission webhook of either control plane remains" "${left:-none}"
+
+  # ------------------------------------------------------------------------------------------
+  section "The cluster's CNI as found"
+  cni_check
+fi
 
 # --------------------------------------------------------------------------------------------
 say '' '## Result' ''
 if [ "$failures" -eq 0 ]; then say 'All checks passed.'; else say "**$failures check(s) failed.**"; fi
+if [ "$keep_zone" = 1 ]; then say '' "Zone kept: yes, installed on \`$CONTEXT\` (trust domain \`$TD\`)."
+else say '' "Zone kept: no (not kept: $not_kept)."; fi
 
-# environment.json: what the run was made on.
+# environment.json: what the run was made on, and the cluster as found.
 ver() { "$@" 2>/dev/null | head -1; }
-node_image=$(sed -n 's/^NODE_IMAGE=\${KIND_NODE_IMAGE:-\(.*\)}$/\1/p' "$REPO/scripts/dev/kind-cilium-up.sh")
 host_kind="$(uname -s) $(uname -r)"
 grep -qi microsoft /proc/version 2>/dev/null && host_kind="$host_kind (WSL)"
 [ -r /etc/os-release ] && host_kind="$host_kind, $(. /etc/os-release && echo "$PRETTY_NAME")"
-jq -n --arg commit "$commit" --argjson dirty "$dirty" --arg date "$started" --arg finished "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  --arg host "$host_kind" --arg context "$CONTEXT" --arg zone "${ZONE_VALUES#"$REPO"/}" --arg td "$TD" \
-  --arg kind "$(ver kind version)" --arg kubectl "$(kubectl version --client -o json 2>/dev/null | jq -r .clientVersion.gitVersion)" \
-  --arg helm "$(ver helm version --short)" --arg istioctl "$(istioctl version --remote=false 2>/dev/null | sed 's/^client version: //' | head -1)" \
-  --arg cilium "$(cilium version --client 2>/dev/null | head -1)" --arg server "$server" --arg cni "$cni" --arg nodeImage "$node_image" \
-  --arg spire "$(sed -n 's/^SPIRE_VERSION=\([^ ]*\).*/\1/p' "$INSTALL")" --arg spireCrds "$(sed -n 's/^SPIRE_CRDS_VERSION=\(.*\)/\1/p' "$INSTALL")" \
-  --arg istio "$(sed -n 's/^ISTIO_VERSION=\(.*\)/\1/p' "$INSTALL")" \
-  --arg imgSpire "$images_spire" --arg imgIstio "$images_istio" --arg imgProxy "$images_proxy" \
-  --argjson failures "$failures" '{
-    commit: $commit, dirty: $dirty, date: $date, finished: $finished,
-    host: { kind: $host },
-    cluster: { context: $context, kubernetes: $server, kindNodeImage: $nodeImage, cni: $cni },
-    zone: { file: $zone, trustDomain: $td },
-    tools: { kind: $kind, kubectl: $kubectl, helm: $helm, istioctl: $istioctl, cilium: $cilium },
-    charts: { "spire-crds": $spireCrds, spire: $spire, "istio-base": $istio, istiod: $istio, "istio-cni": $istio },
-    images: { "spire-system": ($imgSpire | split(",")), "istio-system": ($imgIstio | split(",")), proxy: $imgProxy, cilium: $cni },
-    result: { failures: $failures }
-  }' >"$work/environment.json"
+# write_environment <file>: environment.json from the run's variables; the kind fields (the node image
+# and the kind version) only on kind
+write_environment() {
+  local node_image="" kind_version=""
+  if [ "$CLUSTER_KIND" = kind ]; then
+    node_image=$(sed -n 's/^NODE_IMAGE=\${KIND_NODE_IMAGE:-\(.*\)}$/\1/p' "$REPO/scripts/dev/kind-cilium-up.sh")
+    kind_version=$(ver kind version)
+  fi
+  local interim=false; [[ $TD == *.trust.invalid ]] && interim=true
+  local keptj=false; [ "$keep_zone" = 1 ] && keptj=true
+  jq -n --arg commit "$commit" --argjson dirty "$dirty" --arg date "$started" --arg finished "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg host "$host_kind" --arg context "$CONTEXT" --arg clusterKind "$CLUSTER_KIND" --arg provider "$provider" \
+    --argjson nodes "${nodes_json:-[]}" --arg zone "${ZONE_VALUES#"$REPO"/}" --arg zoneName "$ZONE_NAME" --arg td "$TD" \
+    --argjson interim "$interim" --argjson kept "$keptj" --arg notKept "$not_kept" \
+    --arg kind "$kind_version" --arg kubectl "$(kubectl version --client -o json 2>/dev/null | jq -r .clientVersion.gitVersion)" \
+    --arg helm "$(ver helm version --short)" --arg istioctl "$(istioctl version --remote=false 2>/dev/null | sed 's/^client version: //' | head -1)" \
+    --arg cilium "$(cilium version --client 2>/dev/null | head -1)" --arg server "$server" --arg cni "$cni" --arg nodeImage "$node_image" \
+    --arg spire "$(sed -n 's/^SPIRE_VERSION=\([^ ]*\).*/\1/p' "$INSTALL")" --arg spireCrds "$(sed -n 's/^SPIRE_CRDS_VERSION=\(.*\)/\1/p' "$INSTALL")" \
+    --arg istio "$(sed -n 's/^ISTIO_VERSION=\(.*\)/\1/p' "$INSTALL")" \
+    --arg imgSpire "$images_spire" --arg imgIstio "$images_istio" --arg imgProxy "$images_proxy" \
+    --argjson failures "$failures" '{
+      commit: $commit, dirty: $dirty, date: $date, finished: $finished,
+      host: { kind: $host },
+      cluster: ({ context: $context, kind: $clusterKind, provider: $provider, kubernetes: $server, nodes: $nodes, cni: $cni }
+        + (if $clusterKind == "kind" then { kindNodeImage: $nodeImage } else {} end)),
+      zone: ({ file: $zone, name: $zoneName, trustDomain: $td, trustDomainInterim: $interim, kept: $kept }
+        + (if $kept then {} else { notKept: $notKept } end)),
+      tools: ((if $clusterKind == "kind" then { kind: $kind } else {} end) + { kubectl: $kubectl, helm: $helm, istioctl: $istioctl, cilium: $cilium }),
+      charts: { "spire-crds": $spireCrds, spire: $spire, "istio-base": $istio, istiod: $istio, "istio-cni": $istio },
+      images: { "spire-system": ($imgSpire | split(",")), "istio-system": ($imgIstio | split(",")), proxy: $imgProxy, cilium: $cni },
+      result: { failures: $failures }
+    }' >"$1"
+}
+write_environment "$work/environment.json"
+# The node of the pin is known from section 5 on; the header written before the install names it now.
+if [ -n "$PIN_NODE" ]; then pin_text="\`$PIN_NODE\`, the node istiod runs on"
+else pin_text="istiod's node (never read: the run did not reach section 5)"; fi
+sed -i "s|__PIN_NODE__|$pin_text|" "$OUT"
 
-mkdir -p "$EVID"
-cp "$OUT" "$EVID/evidence.md"
-cp "$work/environment.json" "$EVID/environment.json"
-echo "evidence written to ${EVID#"$REPO"/} ($failures failure(s))"
-exit $(( failures > 0 ))
+if mkdir -p "$EVID"; then
+  if [ "$CLUSTER_KIND" = kind ]; then
+    cp "$OUT" "$EVID/evidence.md" && cp "$work/environment.json" "$EVID/environment.json" && written=1
+  else
+    # No address of a client cluster is kept in a record: every IPv4 address (nodes, pods, the
+    # probed servers) is replaced in the record of a participant cluster. The loopback 127.0.0.1 is
+    # no address of the cluster and stays, so the record still shows where the agents answer.
+    mask() { sed -E 's/(^|[^0-9.])127\.0\.0\.1([^0-9.]|$)/\1@LOOPBACK@\2/g; s/(^|[^0-9.])127\.0\.0\.1([^0-9.]|$)/\1@LOOPBACK@\2/g
+      s/(^|[^0-9.])([0-9]{1,3}\.){3}[0-9]{1,3}([^0-9.]|$)/\1<address>\3/g; s/(^|[^0-9.])([0-9]{1,3}\.){3}[0-9]{1,3}([^0-9.]|$)/\1<address>\3/g
+      s/@LOOPBACK@/127.0.0.1/g' "$1"; }
+    mask "$OUT" >"$EVID/evidence.md" && mask "$work/environment.json" >"$EVID/environment.json" && written=1
+  fi
+fi
+if [ "$written" != 1 ]; then
+  # No record, no kept zone: kept stays 0, so the EXIT trap tears a participant zone down.
+  echo "verify-mesh-identity: the evidence could not be written to $EVID" >&2
+  failures=$((failures+1))
+  exit $(( failures > 124 ? 124 : failures ))
+fi
+# The zone counts as kept only now that its record is on disk (the EXIT trap tears it down before).
+[ "$keep_zone" = 1 ] && kept=1
+echo "evidence written ($failures failure(s); zone kept: $([ "$kept" = 1 ] && echo yes || echo "no, $not_kept")); run directory:"
+# The last line of the output is the run directory, alone, so a caller takes it with tail -n 1.
+echo "$EVID"
+exit $(( failures > 124 ? 124 : failures ))
