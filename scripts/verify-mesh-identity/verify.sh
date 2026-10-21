@@ -147,7 +147,7 @@ DATA=$(yaml_get "$CHART/values.yaml" planes data namespace)
 TD=$(yaml_get "$ZONE_VALUES" zone trustDomain)
 SPIRE_NS=spire-system; ISTIO_NS=istio-system
 images_spire=""; images_istio=""; images_proxy=""
-RELEASES="ztd:ztd-system spire-crds:$SPIRE_NS spire:$SPIRE_NS istio-base:$ISTIO_NS istiod:$ISTIO_NS istio-cni:$ISTIO_NS zone-policy:$ISTIO_NS"
+RELEASES="ztd:ztd-system spire-crds:$SPIRE_NS spire:$SPIRE_NS istio-base:$ISTIO_NS istiod:$ISTIO_NS istio-cni:$ISTIO_NS zone-policy:$ISTIO_NS ztd-openbao:$MGMT"
 SA_ID="spiffe://$TD/ns/$DATA/sa/stand-in"
 # The admission policy of zone-policy. The proxy status port its capture rule lets the injector
 # exclude is read from the installed release in section 8, not from the chart's defaults.
@@ -179,7 +179,7 @@ restore_capture() {
 keep_zone=0; kept=0; written=0; cleaned=0
 # provider_cleanup: on a participant cluster, unless the run ended with the zone kept or already torn
 # down, removes everything the run put there (the fixture of section 13, the scratch namespace of
-# section 8, the seven releases, the release namespace), so that an error, INT or TERM leaves the
+# section 8, the eight releases, the release namespace), so that an error, INT or TERM leaves the
 # cluster as it was found; idempotent, every step ignores what is already gone.
 # delete_stand_ins: removes the stand-in pods of section 5 while the SPIFFE CSI driver still runs, so
 # that their csi.spiffe.io volumes unmount (once the spire release is gone they would hang in
@@ -389,7 +389,7 @@ else
   say "Cluster kind: **participant cluster** \`$CONTEXT\` (zone \`$ZONE_NAME\`), Cilium installed and managed by the provider, confirmed with \`ZTD_CONFIRM_CLUSTER=$CONTEXT\`. Keep opt-in: $keep_text.$interim Every IPv4 address of the cluster is replaced by \`<address>\` in this record." ''
   say "Proof pods pinned to __PIN_NODE__: every pod this run creates but the per-node SVID stand-ins (the stand-ins of section 5, their \`-capture-check\` copies, the \`probe\` of section 8's scratch namespace, the \`kube-public\` pod of section 13) carries a required node affinity on \`kubernetes.io/hostname\` to the node istiod runs on, because the provider's pod network masquerades pod traffic between nodes (see the preconditions); the mesh is proven node-locally on this cluster, and cross-node meshed traffic is not proven here until the provider changes its pod network. The exception: the per-node SVID stand-ins of section 6 (\`svid-on-<node>\` in \`$SPIRE_NS\`, unmeshed) are placed one per node with a SPIRE agent by their own node affinity, never pinned, so the SVID is shown on every node." ''
 fi
-say "Cluster context \`$CONTEXT\`, zone file \`${ZONE_VALUES#"$REPO"/}\` (trust domain \`$TD\`), installed with \`scripts/install-zone/install.sh\`: the seven releases \`ztd\`, \`spire-crds\`, \`spire\`, \`istio-base\`, \`istiod\`, \`istio-cni\`, \`zone-policy\`. Commit \`$commit\`, tree dirty: $dirty. Versions in \`environment.json\`." ''
+say "Cluster context \`$CONTEXT\`, zone file \`${ZONE_VALUES#"$REPO"/}\` (trust domain \`$TD\`), installed with \`scripts/install-zone/install.sh\`: the eight releases \`ztd\`, \`spire-crds\`, \`spire\`, \`istio-base\`, \`istiod\`, \`istio-cni\`, \`zone-policy\`, \`ztd-openbao\`. Commit \`$commit\`, tree dirty: $dirty. Versions in \`environment.json\`." ''
 say 'Probe results: an HTTP code with the first line of the body when the call went through its proxies; `denied(28)` when a raw TCP connection timed out because the policy dropped the packets; `denied(56)` when the peer reset the connection; `error(<exit>)`, which fails a negative check, for any other failure (a name that does not resolve, an exec that failed).' ''
 
 # --------------------------------------------------------------------------------------------
@@ -479,7 +479,7 @@ section "2. install-order-idempotent: the zone from an empty cluster, twice"
 start=$(date +%s)
 "$INSTALL" install >"$work/install1.log" 2>&1; rc=$?
 check $rc "first installer run from an empty cluster returns 0, no manual step between the releases" "$(( $(date +%s) - start ))s"
-code "$(grep -E '^(  [0-9]/7|step|zone installed)' "$work/install1.log")"
+code "$(grep -E '^(  [0-9]/8|  ztd-openbao is pinned|step|zone installed)' "$work/install1.log")"
 [ $rc -ne 0 ] && code "$(tail -30 "$work/install1.log")"
 for r in $RELEASES; do h get manifest "${r%%:*}" -n "${r#*:}" >"$work/manifest-1-${r%%:*}.yaml" 2>/dev/null; done
 start=$(date +%s)
@@ -490,9 +490,18 @@ for r in $RELEASES; do
   h get manifest "${r%%:*}" -n "${r#*:}" >"$work/manifest-2-${r%%:*}.yaml" 2>/dev/null
   if [ -s "$work/manifest-1-${r%%:*}.yaml" ] && diff -q "$work/manifest-1-${r%%:*}.yaml" "$work/manifest-2-${r%%:*}.yaml" >/dev/null; then same=$((same+1)); else diffs="$diffs ${r%%:*}"; fi
 done
-[ "$same" -eq 7 ]; check $? "helm get manifest of every release is identical between the two runs" "$same of 7 identical${diffs:+; differ:$diffs}"
+[ "$same" -eq 8 ]; check $? "helm get manifest of every release is identical between the two runs, the bootstrap Job of ztd-openbao included" "$same of 8 identical${diffs:+; differ:$diffs}"
 tail -1 "$work/install2.log" | grep -q '^zone installed: every pod'; check $? "every pod in the plane and control-plane namespaces is Ready (the installer's exit condition)" "$(tail -1 "$work/install2.log")"
 code "$(h list -A -o json | jq -r '(["RELEASE","NAMESPACE","REVISION","STATUS","CHART"] | join(" ")), (.[] | [.name, .namespace, .revision, .status, .chart] | join(" "))')"
+# The secret store, the eighth release: the bootstrap Job keeps its state in the Secret it owns (only
+# the state field is read here), and the verification hook's log names each check and a hash of the
+# fixture value, never a value or a token.
+bao_state=$(k -n "$MGMT" get secret ztd-openbao-bootstrap -o jsonpath='{.data.state}' 2>/dev/null | base64 -d 2>/dev/null)
+[ "$bao_state" = configured ]; check $? "ztd-openbao: the bootstrap initialised, unsealed and configured the store (Secret ztd-openbao-bootstrap, state configured)" "state ${bao_state:-missing}"
+bao_log=$(k -n "$MGMT" logs job/ztd-verify-openbao -c verify 2>&1)
+grep -qx 'OpenBao verified' <<<"$bao_log"; check $? "ztd-openbao: the verification hook passed after the second run (initialised and unsealed, kv-v2 at secret/, transit at transit/, the fixture value read and the transit key round-tripped)" "$(tail -1 <<<"$bao_log")"
+code "$bao_log"
+code "$(k -n "$MGMT" get pods -o wide | sed 's/  */ /g')"
 images_spire=$(k -n "$SPIRE_NS" get pods -o jsonpath='{.items[*].spec.containers[*].image} {.items[*].spec.initContainers[*].image}' | tr ' ' '\n' | grep . | sort -u | paste -sd, -)
 images_istio=$(k -n "$ISTIO_NS" get pods -o jsonpath='{.items[*].spec.containers[*].image} {.items[*].spec.initContainers[*].image}' | tr ' ' '\n' | grep . | sort -u | paste -sd, -)
 unpinned=$(tr ',' '\n' <<<"$images_spire,$images_istio" | grep -v '@sha256:[0-9a-f]\{64\}$' || true)
@@ -512,7 +521,7 @@ print(sum(1 for d in yaml.safe_load_all(sys.stdin) if d and d["kind"]=="ClusterS
 
 out=$(STEP_TIMEOUT=1s "$INSTALL" install 2>&1); rc=$?
 line=$(grep -m1 'FAILED' <<<"$out")
-[ $rc -ne 0 ] && grep -q 'step 1/7 FAILED: release ztd' <<<"$out" && ! grep -q 'step 2/7' <<<"$out"
+[ $rc -ne 0 ] && grep -q 'step 1/8 FAILED: release ztd' <<<"$out" && ! grep -q 'step 2/8' <<<"$out"
 check $? "a release that does not reach a ready state within its timeout (here 1 s) stops the installer at that step, non-zero, naming the release" "$line"
 st=$(h status ztd -n ztd-system -o json | jq -r .info.status)
 [ "$st" = deployed ]; check $? "the failed release was rolled back by the lifecycle step" "ztd: $st, $(h history ztd -n ztd-system --max 1 -o json | jq -r '.[0].description')"
@@ -541,7 +550,7 @@ mesh_td=$(k -n "$ISTIO_NS" get cm istio -o jsonpath='{.data.mesh}' | awk '/^trus
 
 # --------------------------------------------------------------------------------------------
 section "5. Stand-in pods"
-say 'From `scripts/verify-mesh-identity/fixtures/stand-ins.yaml`: in the data plane a meshed peer, a labelled caller with a Workload API client on the CSI socket, an unlabelled meshed pod, an unlabelled pod without proxy with a Workload API client, the matrix pair `pdp-adapter` and the cross-plane caller `data-plain`; in the management plane `tsa-policy-engine`, `openbao` and `mgmt-caller`; in both a proxy-less `probe` for raw TCP probes. All in the service account `stand-in` unless noted.' ''
+say 'From `scripts/verify-mesh-identity/fixtures/stand-ins.yaml`: in the data plane a meshed peer, a labelled caller with a Workload API client on the CSI socket, an unlabelled meshed pod, an unlabelled pod without proxy with a Workload API client, the matrix pair `pdp-adapter` and the cross-plane caller `data-plain`; in the management plane `tsa-policy-engine`, `openbao-standin` (a management-plane destination without a lane in the allow matrix, named apart from the real store, the release `ztd-openbao`) and `mgmt-caller`; in both a proxy-less `probe` for raw TCP probes. All in the service account `stand-in` unless noted.' ''
 sed -e "s/__DATA__/$DATA/g" -e "s/__MGMT__/$MGMT/g" fixtures/stand-ins.yaml >"$work/stand-ins.yaml"
 # The pin (participant cluster only): every pod the proof creates runs on istiod's node. The provider's
 # pod network masquerades pod traffic between nodes to the node address (see the preconditions), so a
@@ -551,7 +560,12 @@ if [ "$CLUSTER_KIND" = provider ]; then
   pin_detail=$PIN_NODE; [ -n "$PIN_NODE" ] || pin_detail="no istiod pod with a node in $ISTIO_NS: the proof's pods are pinned to the unmatched name $PIN_NONE and stay Pending"
   [ -n "$PIN_NODE" ]; check $? "istiod's node is read, to pin the proof's pods to it" "$pin_detail"
   PIN_NODE=${PIN_NODE:-$PIN_NONE}
-  say '' "The proof's pods are pinned to the node \`$PIN_NODE\`, the node istiod runs on (a required node affinity on \`kubernetes.io/hostname\`): the provider's pod network masquerades pod traffic between nodes to the node's address, so a meshed pod on another node reaches istiod on 15012 as \`remote-node\`, which no namespace- or label-keyed opening admits, and never starts. The mesh is proven node-locally on this cluster until the provider changes its pod network; nothing of the pin is in the chart, the policies or the zone file." ''
+  # The zone file pins the release ztd-openbao the same way (openbao.pinToMeshNode): its server and
+  # its job pods run on istiod's node.
+  bao_nodes=$(k -n "$MGMT" get pods -o json | jq -r '.items[] | select((.metadata.labels["app.kubernetes.io/name"] // "") as $n | ["openbao","ztd-openbao-bootstrap","ztd-verify-openbao"] | index($n)) | "\(.metadata.name)=\(.spec.nodeName // "none")"')
+  off=$(grep -v "=$PIN_NODE\$" <<<"$bao_nodes" || true)
+  [ -n "$bao_nodes" ] && [ -z "$off" ]; check $? "ztd-openbao: the server and its job pods run on istiod's node (the zone file's pin, applied by the installer)" "$(paste -sd' ' <<<"${bao_nodes:-no pod}")"
+  say '' "The proof's pods are pinned to the node \`$PIN_NODE\`, the node istiod runs on (a required node affinity on \`kubernetes.io/hostname\`): the provider's pod network masquerades pod traffic between nodes to the node's address, so a meshed pod on another node reaches istiod on 15012 as \`remote-node\`, which no namespace- or label-keyed opening admits, and never starts. The mesh is proven node-locally on this cluster until the provider changes its pod network; nothing of this pin is in the charts or the policies. The zone file pins one release the same way, \`ztd-openbao\` (\`openbao.pinToMeshNode\`, applied by the installer)." ''
 fi
 # The stand-ins that opt out of injection go apart: the capture rule refuses them (below).
 # Their refusal is asked with a server dry-run create of a copy under other names (suffix
@@ -620,7 +634,7 @@ check $rc_create "with the capture validation (index ${idx:-none}) lifted, the t
 diff <(jq -S .spec "$work/policy.json") <(k get validatingadmissionpolicy "$POLICY" -o json | jq -S .spec) >/dev/null && [ "$held" -ge 5 ]
 check $? "the policy is put back unchanged (its spec equals the one read before the lift) and refuses the three again, five times in a row a second apart (each API server replica takes up the change on its own)" "$(k get validatingadmissionpolicy "$POLICY" -o json | jq '.spec.validations | length') validations in force; refusals held $held of 5 in a row"
 k -n "$DATA" wait --for=condition=Ready pod/peer pod/caller pod/unregistered-svid pod/probe pod/pdp-adapter pod/data-plain --timeout=240s >/dev/null 2>&1; check $? "the labelled data-plane stand-ins are Ready"
-k -n "$MGMT" wait --for=condition=Ready pod/tsa-policy-engine pod/openbao pod/mgmt-caller pod/probe --timeout=240s >/dev/null 2>&1; check $? "the management-plane stand-ins are Ready"
+k -n "$MGMT" wait --for=condition=Ready pod/tsa-policy-engine pod/openbao-standin pod/mgmt-caller pod/probe --timeout=240s >/dev/null 2>&1; check $? "the management-plane stand-ins are Ready"
 # The per-node stand-ins are counted in section 6, node by node.
 [ ${#svid_pods[@]} -gt 0 ] && k -n "$SPIRE_NS" wait --for=condition=Ready "${svid_pods[@]}" --timeout=240s >/dev/null 2>&1
 sleep 10
@@ -942,17 +956,17 @@ for P in $(k -n "$ISTIO_NS" get pod -l k8s-app=istio-cni-node -o jsonpath='{.ite
   [[ "$plugins" == cilium-cni*istio-cni* ]]; check $? "the CNI configuration of node $NODE lists the Istio plugin after Cilium" "${conf#/host}: $plugins"
 done
 [ "$excl" = false ]; check $? "Cilium still runs with cni-exclusive=false" "cni-exclusive=$excl"
-r=$(http "$DATA" data-plain app "http://openbao.$MGMT.svc:8080/hostname")
-case $r in denied*) true;; *) false;; esac; check $? "data-plane pod → openbao (management): DENIED at the network layer with the proxies in place" "→ $r"
+r=$(http "$DATA" data-plain app "http://openbao-standin.$MGMT.svc:8080/hostname")
+case $r in denied*) true;; *) false;; esac; check $? "data-plane pod → openbao-standin (management): DENIED at the network layer with the proxies in place" "→ $r"
 r=$(http "$DATA" data-plain app "http://tsa-policy-engine.$MGMT.svc:8080/hostname")
 case $r in denied*) true;; *) false;; esac; check $? "data-plane pod → tsa-policy-engine (management): DENIED" "→ $r"
 r=$(http "$DATA" pdp-adapter app "http://tsa-policy-engine.$MGMT.svc:8080/hostname")
 [ "${r%% *}" = 200 ]; check $? "pdp-adapter → tsa-policy-engine: ALLOWED (matrix lane pdp-adapter-to-tsa), through the proxies" "→ $r"
-r=$(http "$DATA" pdp-adapter app "http://openbao.$MGMT.svc:8080/hostname")
-case $r in denied*) true;; *) false;; esac; check $? "pdp-adapter → openbao: DENIED (a lane is one pair, not a licence)" "→ $r"
+r=$(http "$DATA" pdp-adapter app "http://openbao-standin.$MGMT.svc:8080/hostname")
+case $r in denied*) true;; *) false;; esac; check $? "pdp-adapter → openbao-standin: DENIED (a lane is one pair, not a licence)" "→ $r"
 r=$(http "$MGMT" mgmt-caller app "http://peer.$DATA.svc:8080/hostname")
 case $r in denied*) true;; *) false;; esac; check $? "management pod → data plane: DENIED (the default deny is both directions)" "→ $r"
-r=$(k -n "$DATA" exec probe -c app -- nslookup "openbao.$MGMT.svc.cluster.local" 2>&1 | grep -A1 '^Name:' | tr '\n' ' ')
+r=$(k -n "$DATA" exec probe -c app -- nslookup "openbao-standin.$MGMT.svc.cluster.local" 2>&1 | grep -A1 '^Name:' | tr '\n' ' ')
 [ -n "$r" ]; check $? "DNS bypass: names still resolve" "$r"
 
 # --------------------------------------------------------------------------------------------
@@ -1004,7 +1018,7 @@ metrics_answer "the SPIRE controller-manager" controller_runtime_ 8082
 
 # --------------------------------------------------------------------------------------------
 section "13. A declared registration without its entry fails the release"
-say 'The registrations-reconciled check counts the running labelled pods of every plane namespace and compares them with what the controller-manager reconciled. To make one registration go unreconciled, the namespace `kube-public`, which the controller-manager is configured to ignore on every cluster (the default `ignoreNamespaces` of the SPIRE chart) and which holds no pod, is labelled as a plane for the duration of the step and gets a labelled pod; then zone-policy is upgraded through the lifecycle step with a 20 s check timeout. Afterwards the label and the pod are removed and the rollback restores the release.' ''
+say 'The registrations-reconciled check counts the labelled pods of every plane namespace past Pending (running, or finished as the completed job pods of the OpenBao release are) and compares them with what the controller-manager reconciled. To make one registration go unreconciled, the namespace `kube-public`, which the controller-manager is configured to ignore on every cluster (the default `ignoreNamespaces` of the SPIRE chart) and which holds no pod, is labelled as a plane for the duration of the step and gets a labelled pod; then zone-policy is upgraded through the lifecycle step with a 20 s check timeout. Afterwards the label and the pod are removed and the rollback restores the release.' ''
 k label ns kube-public ztd.facis.io/plane=data --overwrite >/dev/null
 pin_overrides=(); [ "$CLUSTER_KIND" = provider ] && pin_overrides=(--overrides "{\"apiVersion\":\"v1\",\"spec\":$(pin_affinity "$PIN_NODE")}")
 k -n kube-public run declared-not-reconciled --image=docker.io/curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b --labels=spiffe.io/spire-managed-identity=true "${pin_overrides[@]}" --command -- sleep 3600 >/dev/null
@@ -1143,6 +1157,7 @@ say("| SPIFFE ID | pod | plane namespace | identity label | certificate in use |
 say("|---|---|---|---|---|---|---|")
 uid_ids, uid_failed = {}, {}  # pod uid -> SPIFFE IDs its entries list (entries that passed, entries that failed)
 n = dict(matched=0, without=0, outside=0, rule=0)
+outcomes = {}  # pod key -> [(SPIFFE ID, outcome)] of its entries
 for e in ents:
     eid = f"spiffe://{e['spiffe_id']['trust_domain']}{e['spiffe_id']['path']}"
     sel, other = {}, []
@@ -1210,6 +1225,7 @@ for e in ents:
         elif all(c["status"] in ("none", "stopped") for c in pc): why = "the pod holds no certificate yet"
         else: why = "the certificate read carries another ID or does not chain to the SPIRE CA"
         outcome = f"entry without a certificate in use: {why}"; n["without"] += 1
+    if key: outcomes.setdefault(key, []).append((eid, outcome))
     say(f"| `{eid}` | {podtxt} | {yn(plane(ns))} ({ns or 'unknown'}) | {yn(p is not None and labelled(p)) if p else '-'} | {certtxt} | {outcome} | {fixture(key, p)} |")
 if not ents: say("| none | | | | | | |")
 say("")
@@ -1285,10 +1301,26 @@ if cp_pods:
 real = [p for p in work_pods if not fixture(p["metadata"]["namespace"] + "/" + p["metadata"]["name"], p)]
 say("")
 say(f"{len(work_pods)} plane pods without an identity in namespaces with the injection label, {len(real)} of them not fixtures.")
-bao = [p for p in real if (p["metadata"].get("labels") or {}).get("app.kubernetes.io/name") == "openbao"]
-if bao:
-    say("")
-    say(f"OpenBao ({', '.join('`' + p['metadata']['namespace'] + '/' + p['metadata']['name'] + '`' for p in bao)}) runs in a plane namespace without the identity label and without a proxy, because the first release (`ztd`) creates it before istiod exists; it holds no certificate, so it is no declared workload, and its move to a release of its own after `zone-policy` is a change of its own.")
+# The secret store, the release ztd-openbao: installed after zone-policy, its server pod is a matched
+# declared workload, and no pod of the release (server, bootstrap, verification) is a plane pod
+# without an identity. A finished job pod is gone to this reader: its entry, if still listed, is one
+# without a certificate in use.
+BAO = ("openbao", "ztd-openbao-bootstrap", "ztd-verify-openbao")
+bao_label = lambda p: (p["metadata"].get("labels") or {}).get("app.kubernetes.io/name")
+servers = [p for p in pods if bao_label(p) == "openbao" and (p["metadata"].get("labels") or {}).get("component") == "server"
+           and plane(p["metadata"]["namespace"]) and not gone(p)]
+say("")
+for p in servers:
+    key = p["metadata"]["namespace"] + "/" + p["metadata"]["name"]
+    oc = outcomes.get(key, [])
+    say(f"The OpenBao server `{key}` (release `ztd-openbao`): " + ("; ".join(f"`{i}` {o}" for i, o in oc) if oc else "no entry") + ".")
+if not servers: say("No OpenBao server pod runs in a plane namespace.")
+unmatched = [p["metadata"]["namespace"] + "/" + p["metadata"]["name"] for p in servers
+             if not any(o == "matched" for _, o in outcomes.get(p["metadata"]["namespace"] + "/" + p["metadata"]["name"], []))]
+check(bool(servers) and not unmatched, "registration-inventory: the OpenBao server is a matched declared workload (release ztd-openbao, created after the registration rule)",
+      (f"not matched: {', '.join(unmatched)}" if unmatched else f"{len(servers)} server pod(s) matched") if servers else "no OpenBao server pod in a plane namespace")
+stray = [p["metadata"]["namespace"] + "/" + p["metadata"]["name"] for p in work_pods if bao_label(p) in BAO]
+check(not stray, "registration-inventory: no OpenBao pod is a plane pod without an identity", f"without an identity: {', '.join(stray)}" if stray else "none")
 json.dump(checks, open(f"{d}/checks.json", "w"))
 print("\n".join(out))
 PY
@@ -1390,8 +1422,10 @@ else
   nodes_n=$(k get nodes -o name | grep -c .)
   rel=$(h list -A -o json | jq -r '.[] | "\(.name):\(.namespace) \(.status)"')
   n=0; for r in $RELEASES; do grep -qx "$r deployed" <<<"$rel" && n=$((n+1)); done
-  [ "$n" -eq 7 ]; check $? "the seven releases are installed with status deployed" "$n of 7 deployed"
+  [ "$n" -eq 8 ]; check $? "the eight releases are installed with status deployed" "$n of 8 deployed"
   code "$(h list -A -o json | jq -r '(["RELEASE","NAMESPACE","REVISION","STATUS","CHART"] | join(" ")), (.[] | [.name, .namespace, .revision, .status, .chart] | join(" "))')"
+  sts=$(k -n "$MGMT" get sts ztd-openbao -o jsonpath='{.status.readyReplicas}/{.spec.replicas}')
+  [ "${sts%/*}" = "${sts#*/}" ] && [ "${sts%/*}" -ge 1 ] 2>/dev/null; check $? "the OpenBao server StatefulSet is ready (unsealed)" "ztd-openbao ready $sts"
   sts=$(k -n "$SPIRE_NS" get sts spire-server -o jsonpath='{.status.readyReplicas}/{.spec.replicas}')
   [ "${sts%/*}" = "${sts#*/}" ] && [ "${sts%/*}" -ge 1 ] 2>/dev/null; check $? "the SPIRE server StatefulSet is ready" "spire-server ready $sts"
   cm=$(k -n "$SPIRE_NS" get pod spire-server-0 -o jsonpath='{.status.containerStatuses[?(@.name=="spire-controller-manager")].ready}')
@@ -1466,7 +1500,8 @@ if [ "$keep_zone" != 1 ]; then
   [ "$(wc -w <<<"$CRDS_KEEP")" = 3 ] && ! grep -q '=keep' <<<"$CRDS_KEEP"
   check $? "the three SPIRE CRDs carry no helm.sh/resource-policy keep, so the uninstall of spire-crds removes them through Helm alone (the installer deletes CRDs itself only for istio-base)" "$CRDS_KEEP"
   "$INSTALL" uninstall >"$work/uninstall.log" 2>&1; rc=$?
-  check $rc "the installer uninstalls the seven releases in reverse order" "$(grep -c 'done$' "$work/uninstall.log") releases removed"
+  head -1 "$work/uninstall.log" | grep -qx 'uninstall ztd-openbao: done' || rc=1
+  check $rc "the installer uninstalls the eight releases in reverse order, ztd-openbao first" "$(grep -c 'done$' "$work/uninstall.log") releases removed; first: $(head -1 "$work/uninstall.log")"
   code "$(cat "$work/uninstall.log")"
   # The umbrella's release namespace holds nothing once the umbrella is uninstalled; it goes last.
   k delete namespace ztd-system --ignore-not-found --wait=true >/dev/null 2>&1

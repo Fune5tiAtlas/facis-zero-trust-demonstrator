@@ -41,12 +41,14 @@ it is what it was before.
   `zone.kubernetesVersion`, the cluster's Cilium (image and version, `cni-exclusive=false`, the
   pod-to-pod routing as found) and the inotify limit on every node.
 - **1. Clean slate** and **2. `install-order-idempotent`**: the zone uninstalled, then installed
-  from the empty cluster as seven releases, twice, with identical manifests.
+  from the empty cluster as eight releases, twice, with identical manifests (the bootstrap Job of
+  `ztd-openbao` included); the store's bootstrap Secret in state `configured` and the verification
+  hook's log (each check, a hash of the fixture value, never a value).
 - **3.** the identity-band checks of `zone-policy` on the install; **4.** the layout of the control
   planes; **5.** the stand-in pods, with the capture rule's refusal of the three proxyless ones,
   the per-node SVID stand-ins (`svid-on-<node>` in `spire-system`, one per node with a SPIRE agent,
   unmeshed, placed by their own node affinity, never pinned), and on a participant cluster the pin
-  to istiod's node.
+  to istiod's node, with a check that the server and the job pods of `ztd-openbao` run there too.
 - **6.** to **12.** the checks of the table below: `svid-over-csi-socket` (with the SPIRE server's
   trust domain, the SVID's SPIFFE ID and the mesh's trust domain agreeing on the zone file's name,
   and, node by node, the SVID of the per-node stand-in in the zone's trust domain, chained to the
@@ -88,15 +90,17 @@ it is what it was before.
   a plane namespace**) or one that does not chain to the SPIRE CA is one failed check each. Last,
   **plane pods without an identity**: every pod of a plane namespace from which no certificate was
   read, with its labels, and the control planes' own pods (the namespaces without the injection
-  label) on one line; no failure. On the kind zone file OpenBao is listed there, with one sentence
-  saying why. Rows of the proof's own pods (service account `stand-in`, or a pod of
+  label) on one line; no failure. Then the OpenBao server of the release `ztd-openbao` with the
+  outcome of its entry: two checks, the server is a matched declared workload, and no pod of the
+  release (server, bootstrap, verification) is a plane pod without an identity; a finished job pod
+  is gone to the reader, its entry one without a certificate in use. Rows of the proof's own pods (service account `stand-in`, or a pod of
   `fixtures/stand-ins.yaml`) are marked `fixture`.
 - **15.** the render guards.
 - **16. Teardown** (kind, a participant cluster without the keep opt-in, or any failed check; 17
   when a check of the record of what remains failed):
   nothing of the zone left behind, then the cluster's CNI read again, unchanged.
 - **16. What remains installed** (participant cluster with the keep opt-in and every check passed):
-  the CNI read back unchanged, then the seven releases `deployed`, SPIRE ready on every node, one
+  the CNI read back unchanged, then the eight releases `deployed`, the OpenBao server ready, SPIRE ready on every node, one
   attested agent per node, the three metrics endpoints answering again (server 9988,
   controller-manager 8082, the agents on each node's loopback), nothing of the proof's fixtures left
   (no stand-in pod, Service or ServiceAccount in either plane or in `spire-system`, no `kube-public`
@@ -175,8 +179,10 @@ nodes to the node's address, so a meshed pod on another node would reach istiod 
 which no opening admits, and never start. A record says so in its header, the stand-ins section
 and the record of what remains: the mesh is proven node-locally there, and cross-node meshed traffic
 is not proven until the provider changes its pod network, after which the pin is removed. The pin
-lives in `verify.sh` alone (the chart, the policies and the zone files carry none of it), and on
-kind the scheduler places the pods as before. The one exception is the per-node SVID stand-ins
+of the proof's pods lives in `verify.sh` alone (the charts and the policies carry none of it), and on
+kind the scheduler places the pods as before. One release is pinned the same way by the zone file:
+`zones/zone-a.yaml` and `zone-b.yaml` set `openbao.pinToMeshNode`, so the installer pins the
+OpenBao server and its jobs to istiod's node (`docs/environments/osc.md`). The one exception is the per-node SVID stand-ins
 (`svid-on-<node>` in `spire-system`): each is placed on its own node by a required node affinity,
 one per node with a SPIRE agent, and never pinned, so the SVID is shown on every node of the
 cluster.
@@ -186,7 +192,7 @@ namespace-only cluster are refused like any other name, whatever `ZTD_CONFIRM_CL
 
 **The keep opt-in.** `ZTD_KEEP_ZONE` set to the context name leaves the zone installed on a
 participant cluster, and only when every check passed: the teardown section is replaced by "What
-remains installed", which records the seven releases `deployed`, the SPIRE server and the
+remains installed", which records the eight releases `deployed`, the OpenBao server ready, the SPIRE server and the
 controller-manager ready, the agent and CSI driver DaemonSets ready on every node, one attested
 agent per node, the metrics endpoints answering (server 9988, controller-manager 8082, the agents on
 each node's loopback), nothing of the proof's fixtures left in the zone, and the trust domain in use
@@ -224,7 +230,7 @@ in both cases before the cluster is touched.
 
 | Check | What it proves |
 |---|---|
-| `install-order-idempotent` | the seven releases install from an empty cluster with no manual step, every pod is Ready, every SPIRE and Istio image is pinned by digest, and a second run leaves every release's manifest identical |
+| `install-order-idempotent` | the eight releases install from an empty cluster with no manual step, every pod is Ready, every SPIRE and Istio image is pinned by digest, and a second run leaves every release's manifest identical |
 | `svid-over-csi-socket` | a labelled pod mounts `csi.spiffe.io` and gets over that socket the SVID of its service account in the zone's trust domain, chained to the SPIRE CA; an unlabelled pod gets no entry and no SVID; on every node with a SPIRE agent a per-node stand-in (`svid-on-<node>`, one per node, unmeshed, in `spire-system`, placed by its own node affinity and not pinned) is Ready and gets over its node's socket `spiffe://<trust domain>/ns/spire-system/sa/stand-in`, chained to the SPIRE CA, one check per node |
 | `native-sidecar-version` | the server is 1.33 or later; the proxy is an init container with `restartPolicy: Always` |
 | `mesh-identity-issued-by-spire` | read with `istioctl proxy-config secret`: the proxy's certificate has `O = SPIRE`, the SPIRE CA as issuer, the SVID's URI SAN; its `ROOTCA` bundle is the SPIRE CA, and istiod's CA did not issue it; a pod that chooses its injection templates, brings its own proxy without the SPIRE socket, or runs Istio's agent under another container name is refused at admission; so is, under the capture rule (`capture-at-injector-defaults`), a pod that excludes an application port from the capture, switches the capture off (`NONE`), moves the status port, overrides its proxy's configuration, opts out of injection, swaps its proxy's image or brings its own `istio-proxy` container, and, under the proxy rule, an `istio-proxy` of another image on the SPIRE socket, a second proxy under another name, and an `istio-proxy` of the injector's image with its own `postStart` hook or `NET_ADMIN` (next to the same pre-set status with nothing added, admitted), and, under the socket rule, an `istio-proxy` that mounts the SPIRE socket volume with a `subPath`, while a pod annotated `prometheus.io/scrape` and `prometheus.io/port` is admitted with the injector's `ISTIO_PROMETHEUS_ANNOTATIONS`, while an ordinary pod is admitted carrying the injector's status-port exclusion and `REDIRECT`, and the istiod and `istio-cni` pods, which opt out of injection, are admitted in `istio-system` (no injection label) and refused in the data plane; a label added to a running pod is admitted (an update is checked for what it changes), an added excluded port refused, the same through the `pods/status` subresource refused, a status update that changes no annotation admitted, and the removal of `sidecar.istio.io/status` from a running injected pod refused; outside the plane namespaces istiod's 15012 is not reachable; a certificate signed with istiod's CA key for the caller's SPIFFE ID is refused by the meshed peer, the caller's SPIRE SVID accepted |
