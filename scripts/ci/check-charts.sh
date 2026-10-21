@@ -154,9 +154,26 @@ for dir in "${charts[@]}"; do
 
   gate "$dir" "$name" ${values[@]+"${values[@]}"}
 
+  # Refusals: each ci/refused/<case>.yaml, layered over the baseline, must fail to render, and the
+  # error must name what its "# expect:" line says (the schema path or the value the chart refuses).
+  refused=not-run
+  if [ -d "$dir/ci/refused" ]; then
+    refused=passed
+    for case in "$dir"/ci/refused/*.yaml; do
+      want=$(sed -n 's/^# expect: *//p' "$case" | head -1)
+      # shellcheck disable=SC2016 # expanded by the inner shell
+      record "refuses $(basename "$case" .yaml)" sh -c '
+        want=$1; shift
+        if out=$(helm template "$@" 2>&1 >/dev/null); then echo "rendered, expected a refusal naming $want"; exit 1; fi
+        [ -z "$want" ] || printf "%s\n" "$out" | grep -qF -- "$want" || { printf "%s\n" "$out"; echo "the refusal does not name $want"; exit 1; }
+      ' _ "$want" check "$dir" ${values[@]+"${values[@]}"} -f "$case"
+      [ "$result" = passed ] || refused=failed
+    done
+  fi
+
   if [ -n "$evidence" ]; then
-    printf '{"chart":"%s","version":"%s","path":"%s","dependencies":"%s","lint":"%s","template":"%s","serverDryRun":"%s"}\n' \
-      "$name" "$version" "${dir#"$root"/}" "$deps" "$lint" "$template" "$dryrun" > "$evidence/$name.json"
+    printf '{"chart":"%s","version":"%s","path":"%s","dependencies":"%s","lint":"%s","template":"%s","refusals":"%s","serverDryRun":"%s"}\n' \
+      "$name" "$version" "${dir#"$root"/}" "$deps" "$lint" "$template" "$refused" "$dryrun" > "$evidence/$name.json"
   fi
 done
 

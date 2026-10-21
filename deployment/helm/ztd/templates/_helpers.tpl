@@ -11,15 +11,28 @@ ztd.facis.io/zone: {{ .Values.zone.name }}
 
 {{/*
 The plane namespaces as a JSON list of {name, plane, mesh}: the two fixed planes, then
-planes.extra. `mesh` is false only for an extra entry that sets `mesh: false` (the control-plane
+planes.extra; an empty list on the demonstrator cluster (zone.role demonstrator), which has no planes. `mesh` is false only for an extra entry that sets `mesh: false` (the control-plane
 namespaces), which then carries no mesh label. Read it back with fromJsonArray.
 */}}
 {{- define "ztd.planeNamespaces" -}}
-{{- $out := list (dict "name" .Values.planes.management.namespace "plane" "management" "mesh" true) (dict "name" .Values.planes.data.namespace "plane" "data" "mesh" true) -}}
+{{- $out := list -}}
+{{- if ne (include "ztd.role" .) "demonstrator" -}}
+{{- $out = list (dict "name" .Values.planes.management.namespace "plane" "management" "mesh" true) (dict "name" .Values.planes.data.namespace "plane" "data" "mesh" true) -}}
 {{- range .Values.planes.extra -}}
 {{- $out = append $out (dict "name" .name "plane" .plane "mesh" (ne (toString .mesh) "false")) -}}
 {{- end -}}
+{{- end -}}
 {{- toJson $out -}}
+{{- end }}
+
+{{/*
+The cluster's role (zone.role): participant (default) or demonstrator. The demonstrator cluster has
+no plane namespaces, no allow matrix and no control-plane openings: ztd.planeNamespaces is empty
+there, and the templates of the matrix and the openings render nothing. It gets the namespace of the
+central observability backends instead (observability.yaml).
+*/}}
+{{- define "ztd.role" -}}
+{{- .Values.zone.role | default "participant" -}}
 {{- end }}
 
 {{/*
