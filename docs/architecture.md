@@ -78,13 +78,16 @@ ZT-55 (SRS 3.3) requires the separation to be enforced at both the Kubernetes ne
 and the service mesh layer, so every row states its disposition at both. The enforcement column
 holds layers only: for each row it gives the NetworkPolicy disposition and the mesh
 AuthorizationPolicy disposition, and nothing else. A permitted path is permitted explicitly at both
-layers; a denied path is denied at both.
+layers; a denied path is denied at both. ZT-55 names the *Kubernetes network policy layer*, a
+layer and not a resource kind: in the zones it is enforced by Cilium, through Kubernetes
+`NetworkPolicy` objects and, where a source is not a pod, `CiliumNetworkPolicy` objects. In this
+section *NetworkPolicy* names that layer.
 
 On every permitted path the **mesh's L7 proxy** is the single L7 enforcement owner, and the
 NetworkPolicy layer is held to L3/L4 for that path. Which proxy that is follows the zone's
-`mesh.mode`: the waypoint under ambient mode, the current baseline
-([ADR-0001](adr/0001-service-mesh-mode-istio-ambient-with-cilium.md)), and the workload's sidecar
-proxy under sidecar mode. A zone whose `mesh.mode` is `none` has no mesh layer and so no L7 proxy;
+`mesh.mode`: the workload's sidecar proxy under sidecar mode, the current baseline
+([ADR-0009](adr/0009-service-mesh-mode-istio-sidecar-with-cilium.md)), and the waypoint under
+ambient mode. A zone whose `mesh.mode` is `none` has no mesh layer and so no L7 proxy;
 it does not meet ZT-55's rule that both layers enforce the separation, and is outside this matrix.
 Two L7 decision points on one path would make the fail-closed behaviour ZT-55 depends on
 non-deterministic, so each path has exactly one, in either mode. The place of record for the
@@ -259,6 +262,30 @@ not by the plane-separation test, so the table has no test column.
   resolution. DNS is cluster infrastructure and a declared bypass under ZT-26, in the sense defined
   above. The mesh cannot govern it because it is not mTLS traffic, so the NetworkPolicy rule
   limited to port 53 imposes the restriction.
+
+### Declared openings of the network baseline
+
+Beside the DNS bypass, the network baseline of a meshed zone has four declared openings for the two
+control planes: the identity control plane (`spire-system`) and the mesh control plane
+(`istio-system`), both management-plane namespaces under the default deny. They are entries of the
+**cluster-administration** class of the Zero Trust Connector bypass list (ZT-26: administrative
+APIs), each listed with its reason; they are not rows of the allow matrix, which governs paths from
+data-plane workloads into the management plane and whose catch-all denial still holds. In
+particular a data-plane workload reaches the SPIRE server on no port. Each opening is rendered by
+the umbrella chart only when the zone file enables it, and is proven by the named check of the
+[mesh identity evidence](evidences/mesh-identity/README.md):
+
+| Opening | Source | Destination | Port | Network policy layer | Proving check |
+|---|---|---|---|---|---|
+| `meshControlPlane` | pods of every plane namespace with the mesh label | istiod (`istio-system`) | 15012 (xDS) | egress in the source namespaces, ingress in `istio-system` (Kubernetes `NetworkPolicy`) | `control-planes-under-default-deny` (proxies SYNCED; no other istiod port reachable) |
+| `controlPlaneWebhooks` | the API server (entities `kube-apiserver`, `host`, `remote-node`) | istiod's webhook; the SPIRE controller-manager's webhook | 15017; 9443 | ingress in `istio-system` and `spire-system` (`CiliumNetworkPolicy`) | `control-planes-under-default-deny`, `install-order-idempotent` (injection and admission work) |
+| `identityServer` | the SPIRE agents on the host network (entities `host`, `remote-node`) | the SPIRE server | 8081 | ingress in `spire-system` (`CiliumNetworkPolicy`) | `control-planes-under-default-deny` (every agent attested) |
+| `kubeApi` | pods of the management-plane namespaces | the API server (entity `kube-apiserver`) | the API server's port | egress in each management-plane namespace (`CiliumNetworkPolicy`) | `install-order-idempotent` (the controllers reconcile) |
+
+The sources of the last three are not pods, so they are expressed as Cilium entities rather than
+addresses ([Workload identity](workload-identity.md#openings-under-the-default-deny)). The sidecar
+reaches its SPIRE agent over a mounted socket and the agent reaches the kubelet over the host's
+loopback, so neither needs an opening.
 
 ### Staleness matrix
 
