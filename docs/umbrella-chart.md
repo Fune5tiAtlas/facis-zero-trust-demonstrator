@@ -22,6 +22,13 @@ creates them, because the releases that install into them run through the lifecy
 never creates a namespace. Why both are in the management plane is in
 [Workload identity](workload-identity.md#where-the-control-planes-live).
 
+**The node collectors' namespace.** A participant zone lists `ztd-otel-node` in `planes.extra` with
+`mesh: false`: the management-plane namespace of the node collectors (release `otel-node`), which run
+on the host network and never receive a sidecar. It gets the plane label, the default deny and the
+baseline lanes like the control planes; a host-network pod is not subject to its pod policies, so the
+node collectors' egress is fixed by their configuration, which names the demonstrator cluster's entry
+as their only exporter ([ADR-0017](adr/0017-central-observability-backends.md)).
+
 **Default deny at the network layer.** Every plane namespace gets a `default-deny` NetworkPolicy in
 both directions. These openings follow, each declared in [Architecture §6](architecture.md), beside
 the DNS bypass, and each rendered only when the zone enables it:
@@ -34,6 +41,8 @@ the DNS bypass, and each rendered only when the zone enables it:
 | meshed plane namespaces → istiod (`meshControlPlane`) | `allow-mesh-control-plane-egress` in each namespace with the mesh label, `allow-mesh-control-plane-ingress` in `istio-system`, port 15012 | the sidecars fetch their configuration over xDS |
 | API server → webhooks (`controlPlaneWebhooks`) | `allow-control-plane-openings` in `istio-system` (istiod, 15017) and `spire-system` (controller-manager, 9443), a `CiliumNetworkPolicy` from the `kube-apiserver`, `host` and `remote-node` entities | injection and the admission of `PeerAuthentication` and `ClusterSPIFFEID` |
 | SPIRE agents → SPIRE server (`identityServer`) | in the same `allow-control-plane-openings` of `spire-system`, from the `host` and `remote-node` entities, port 8081 | the agents run on the host network and attest to the server |
+| zone gateway → SPIRE metrics (`observabilityScrape`) | `allow-observability-scrape-egress` in the management namespace (the gateway's pods, by `telemetryExport.gateway.podSelector`), `allow-observability-scrape-ingress` in `spire-system` (the server pod), ports 9988 and 8082 only; and the ClusterIP Service `spire-server-metrics` on those two ports | the zone gateway scrapes the SPIRE server and the controller-manager; a stopped server shows as a failed scrape (`up == 0`), not as a vanished target. A management-plane path, outside the allow matrix |
+| zone gateway → the demonstrator cluster's entry (`telemetryExport.entry`) | `allow-telemetry-export-egress` in the management namespace: the gateway's pods to the entry's address (`address`, a /32) on this zone's port, and no other external destination; on kind, where the entry is a pod of the same cluster, to its namespace and labels (`inCluster`) | the declared ZT-26 bypass of the observability export; rendered once the zone file names the entry. The address is the transport switch: the public entry during the contingency period, the CUG address after the move |
 
 The openings whose source is not a pod (the API server, the host-networked agents) are Cilium
 policies by entity, because a Kubernetes NetworkPolicy cannot name those sources; with a mesh and
@@ -72,6 +81,20 @@ The architecture names the mesh as the enforcing layer for these pairs. The netw
 L3/L4 lane; the mesh layer, installed later, decides on identity on top. Anything else from the data
 plane into the management plane is denied by both layers, which is the negative case the evidence
 script proves.
+
+**The demonstrator role.** With `zone.role: demonstrator` (the IONOS cluster,
+`deployment/helm/ztd/zones/ionos.yaml`; on kind `ci/demonstrator-values.yaml`) the chart renders no
+plane namespace, no allow matrix and no control-plane opening: the demonstrator cluster sits outside
+both trust domains. It renders the backends' namespace (`observabilityBackends.namespace`,
+`ztd-observability`), labelled `ztd.facis.io/role: observability-backends` and without plane or mesh
+label, with `default-deny`, `allow-dns-egress`, `allow-between-backends` (the entry to Prometheus and
+Jaeger, inside the namespace), and `allow-telemetry-entry-ingress`: the
+entry's pods, on the per-zone listener ports only, from the zones' egress addresses
+(`observabilityBackends.entry.sourceRanges`; on kind from the in-cluster sources). Prometheus
+and Jaeger get no opening from outside. The schema refuses a demonstrator with a mesh,
+and one without a zone listener; the installer refuses one with a LoadBalancer and no source ranges.
+The verification job checks the backends' namespace, its role label, no plane or mesh label, and its
+default deny. The release is named `ztd-demonstrator`, so on kind both roles share the cluster.
 
 ## The mesh mode is one label
 
@@ -178,6 +201,12 @@ lane; the schema refuses a meshed zone without either. In sidecar mode the chart
 `zone.kubernetesVersion` below 1.33, because native sidecar containers need it. The zone files live in
 `deployment/helm/ztd/zones/`; the CI chart job and the local kind cluster use
 `deployment/helm/ztd/ci/values.yaml`, filled the same way with what that cluster is.
+
+`zone.role` is `participant` (the default) or `demonstrator`; the schema refuses any other value, and
+`scripts/ci/check-charts.sh` renders each case under `deployment/helm/ztd/ci/refused/` and expects the
+refusal to name the value. A participant zone that installs the telemetry releases also states
+`telemetryExport.entry` (the entry's address and this zone's port) and
+`telemetryExport.revocationStatusListUrl`; the installer refuses those releases without them.
 
 ## Release namespace and teardown
 

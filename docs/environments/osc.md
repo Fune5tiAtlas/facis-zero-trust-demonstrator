@@ -244,7 +244,32 @@ reinstall pins the server to the new node while its volume stays on the old one,
 
 The pin is **temporary**: it falls when the provider's pod network keeps a pod's address between
 nodes, the same change that lets the proof run without its own pin; the zone files then drop the
-switch and the zones are reinstalled. The kind zone is not pinned.
+switch and the zones are reinstalled. The kind zone is not pinned. The zone gateway of the
+observability stack takes the same pin ([Observability](#observability)).
+
+### Observability
+
+The zone runs collectors only; the backends are on the demonstrator cluster
+([ADR-0017](../adr/0017-central-observability-backends.md)). Two releases, last in the zone's order:
+
+- `otel-node`, the node collectors: a host-network DaemonSet in `ztd-otel-node` (no mesh) that reads
+  every pod's log lines from `/var/log/pods` (read-only) and scrapes its node's SPIRE agent on the
+  loopback. It is not pinned: it runs on every node the SPIRE agents run on, and a node that joins the
+  zone gets one without any change to the zone file. It reaches the demonstrator cluster from the
+  host, so the provider's masquerading does not affect it.
+- `otel-gateway`, the zone gateway, in the management namespace, meshed: OTLP from the workloads and
+  the proxies, the SPIRE server and controller-manager scrapes, node readiness, the probe of the
+  revocation status list. It is pinned to istiod's node like OpenBao, because the workloads and the
+  proxies reach it under mTLS; the proof's trace check runs its pods on that node too.
+
+Both export to the demonstrator cluster's entry, whose address is a zone-file value
+(`telemetryExport.entry`): during the contingency period the public address of its `LoadBalancer`,
+reached over the zone's public egress; after the move, the CUG address. The zone's client certificate
+is copied in by the demonstrator side (`install.sh telemetry-client-certs`). Until the demonstrator
+role is installed, the entry's address and the status-list URL are empty in the zone files and the
+installer refuses these two releases; the zone's other releases are unaffected. The proof is
+`scripts/verify-observability/verify.sh` with `ZONE_CONTEXT` and `DEMONSTRATOR_CONTEXT`; its record
+names the transport in use.
 
 ## Proving steps 2 to 4: the mesh-identity proof
 
@@ -284,8 +309,8 @@ re-run of the proof on a kept zone starts from its clean slate, which uninstalls
 (and so regenerates the SPIRE root CA and every SVID).
 
 SPIRE's metrics endpoints are exposed on fixed ports (the server and the agents on 9988, the
-agents' bound to the node's loopback; the controller-manager on 8082) but nothing in the zone
-scrapes them yet: that belongs to the observability work.
+agents' bound to the node's loopback; the controller-manager on 8082). The zone's telemetry releases
+scrape them ([Observability](#observability), below).
 
 Each run writes its record (`evidence.md`, `environment.json`) to a run directory outside the
 repository, `ZTD_EVIDENCE_DIR` when set, else a new directory under
@@ -374,9 +399,10 @@ an acceptance scenario, not by eye.
 
 ## Operations
 
-- **Logs and traces** are collected by the OpenTelemetry Collector and read through the Prometheus
-  and Jaeger interfaces; there is no Grafana in this deployment, and
-  [why](../specifications.md#readings-and-additions) is recorded.
+- **Logs, metrics and traces** are collected in the zone by the OpenTelemetry Collector and stored on
+  the demonstrator cluster, read through the Prometheus and Jaeger interfaces; there is no Grafana in
+  this deployment, and [why](../specifications.md#readings-and-additions) is recorded. A store in
+  which the logs are queryable is still an open point.
 - **A refusal is diagnosed by its reason code**, not by grepping for stack traces — see
   [Troubleshooting](../troubleshooting.md).
 - **Certificate and key material** lives in OpenBao and is never written into a chart value or a

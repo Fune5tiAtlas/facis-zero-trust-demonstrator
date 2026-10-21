@@ -48,6 +48,7 @@ declared derogation of the preferred stack first (`docs/workload-identity.md`).
 | `zone.kubernetesVersion` | none, required | Server version recorded at stand-up; `scripts/verify-umbrella` asserts it |
 | `zone.storageClass` | none, required | Storage class the zone provides to persistent components |
 | `zone.loadBalancer.type` | none, required | `cloud`, `metallb` or `none` |
+| `zone.role` | `participant` | `participant` (a zone: planes, mesh, collectors) or `demonstrator` (the demonstrator cluster: the backends' namespace only, no planes, no mesh); `scripts/install-zone/install.sh` chooses the releases by it. Any other value is refused |
 | `zone.trustDomain` | none; required where `mesh.mode` is not `none` | The zone's SPIFFE trust domain: a name under the DNS zone delegated to the trust framework, one per zone (`kind.facis-ztd.local` on kind; `zone-a.trust.invalid` and `zone-b.trust.invalid`, interim, on the participant clusters). Read by the installer for SPIRE and the mesh; fixed at the first SPIRE install |
 | `planes.management.namespace` | `ztd-mgmt` | Management-plane namespace |
 | `planes.data.namespace` | `ztd-data` | Data-plane namespace |
@@ -64,6 +65,12 @@ declared derogation of the preferred stack first (`docs/workload-identity.md`).
 | `networkPolicy.controlPlaneWebhooks.*` | off; entities `kube-apiserver`, `host`, `remote-node`; no `fromEndpoints`; istiod 15017, controller-manager 9443 | Declared opening: the API server → the admission webhooks of both control planes (Cilium, by entity) |
 | `networkPolicy.controlPlaneWebhooks.fromEndpoints` | `[]` | Cilium endpoint selectors of the provider's pod that relays the API server's calls to in-cluster webhooks (Gardener: `vpn-shoot` in `kube-system`), admitted on the same webhook ports; a zone fact, never an address |
 | `networkPolicy.identityServer.*` | off; SPIRE server (`app.kubernetes.io/name: server`) in `spire-system`, 8081, entities `host`, `remote-node` | Declared opening: the host-networked SPIRE agents → the SPIRE server (Cilium, by entity) |
+| `networkPolicy.observabilityScrape.*` | off; SPIRE server (`app.kubernetes.io/name: server`) in `spire-system`, Service `spire-server-metrics`, ports 9988 and 8082 | Declared opening: the zone gateway → the SPIRE server's and the controller-manager's metrics ports (NetworkPolicy pair), and a ClusterIP Service on them |
+| `telemetryExport.entry.*` | no address; port 4317; server name `otel-entry.ztd-observability.svc`; transport `contingency-public-transit`; no `inCluster` | Participant role: the demonstrator cluster's entry (a /32 `address`, or `inCluster` on kind), this zone's listener `port`, the name in the entry's certificate, and the transport recorded in the export proof. Renders `allow-telemetry-export-egress` once an address is named |
+| `telemetryExport.gateway.podSelector` | the release `otel-gateway`'s labels | The zone gateway's pods: source of the export egress and of the SPIRE metrics lane |
+| `telemetryExport.revocationStatusListUrl` | `""` | The status list the zone gateway probes every 5 s; read by the installer, required with the telemetry releases |
+| `telemetryExport.clientSecret` | `ztd-telemetry-client` | The Secret holding the zone's client certificate, in `ztd-otel-node` and the management namespace; read by the installer |
+| `observabilityBackends.*` | `ztd-observability`; no zone; no source range; 30 d, 9 GB | Demonstrator role: the backends' namespace, the entry's per-zone listeners (`entry.zones`), its sources (`entry.sourceRanges`, or `entry.inClusterSources` on kind), Prometheus's retention, its size bound and the volume sizes |
 | `allowMatrix` | the lanes of architecture §6 | Data-plane → management-plane lanes, as data (see below) |
 | `verification.enabled` | `true` | Post-install job that reads the layout back and fails the release if it is wrong |
 | `verification.image` | `curlimages/curl` by digest | Image of the verification job |
@@ -89,6 +96,9 @@ only when enabled and each documented in `docs/architecture.md` (section 6) and
 | `meshControlPlane` | `allow-mesh-control-plane-egress` (NetworkPolicy) in each meshed plane namespace; `allow-mesh-control-plane-ingress` in `istio-system` |
 | `controlPlaneWebhooks`, `identityServer` | `allow-control-plane-openings` (CiliumNetworkPolicy) in `istio-system` and `spire-system`, one per pod selector |
 | `kubeApi` | `allow-kube-api-egress` in each management-plane namespace: a CiliumNetworkPolicy with Cilium, a NetworkPolicy without |
+| `observabilityScrape` | `allow-observability-scrape-egress` in the management namespace, `allow-observability-scrape-ingress` and the Service `spire-server-metrics` in `spire-system` |
+| `telemetryExport.entry` | `allow-telemetry-export-egress` in the management namespace (the declared ZT-26 observability export) |
+| demonstrator role | the backends' namespace with `default-deny`, `allow-dns-egress`, `allow-between-backends`, `allow-telemetry-entry-ingress`, and on kind `allow-telemetry-entry-from-nodes` (CiliumNetworkPolicy) |
 
 The Cilium rules set `enableDefaultDeny` false: they add their lane and leave the deny to
 `default-deny`. Nothing else opens toward the control planes.

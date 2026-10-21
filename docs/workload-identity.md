@@ -450,11 +450,26 @@ follow-up.
 ## Telemetry
 
 The `spire` release switches on the Prometheus endpoint of the server and of the agents. The ports
-are the contract with the observability collector of the management plane, which scrapes them; the
-collector, and its lane into `spire-system`, belong to the observability work and are not rendered
-by this change. The agents run on the host network, where no network policy reaches them, so their
-endpoint is bound to the node's loopback rather than the chart's `0.0.0.0`: it answers only a
-collector that runs on the node's host network, never a pod or another host.
+are the contract with the observability collectors of the zone
+([ADR-0017](adr/0017-central-observability-backends.md)), which scrape them every 5 s without widening
+any endpoint:
+
+- **The agents** run on the host network, where no network policy reaches them, so their endpoint is
+  bound to the node's loopback rather than the chart's `0.0.0.0`: it answers only a collector that
+  runs on the node's host network, never a pod or another host. The node collectors (release
+  `otel-node`, a DaemonSet on the host network in `ztd-otel-node`) are that collector: each scrapes
+  `127.0.0.1:9988` of its own node and labels the samples with the node. No path from another node or
+  from a pod address is opened, and the observability proof checks that a pod asking a node address on
+  9988 is refused (`agents-stay-on-loopback`).
+- **The server and the controller-manager** are scraped by the zone gateway (release `otel-gateway`,
+  meshed, in the management namespace) through the umbrella's declared lane `observabilityScrape`:
+  `spire-system` opens 9988 and 8082 to the gateway's pods and nothing else, and the ClusterIP
+  Service `spire-server-metrics` gives the scrape a stable address, so a stopped server shows as a
+  failed scrape (`up == 0`), not as a vanished target. The registration port 8081 stays closed to the
+  gateway (`spire-lane-is-narrow`).
+
+A missing target, an agent whose series vanish with its node collector and a silent zone each raise
+an alert within 30 seconds on the demonstrator cluster ([Troubleshooting](troubleshooting.md#observability-and-alerts)).
 
 | Component | Endpoint |
 |---|---|

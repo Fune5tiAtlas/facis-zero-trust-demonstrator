@@ -116,6 +116,7 @@ installer's uninstall removes the CRDs the release owned.
 |---|---|---|
 | `meshConfig.trustDomain` | zone fact | the mesh's trust domain equals SPIRE's; a mismatch fails silently at the first mTLS handshake |
 | `meshConfig.meshMTLS.minProtocolVersion` | `TLSV1_3` | the security baseline sets TLS 1.3 as the minimum (ADR 005, `docs/adr/tdr-decisions.md`) and Istio's default minimum for mesh mTLS is TLS 1.2; the CI render asserts the value in the rendered `istio` ConfigMap, and `scripts/verify-mesh-identity/verify.sh` shows a TLS 1.3 handshake accepted and one capped at TLS 1.2 refused. Only mesh mTLS is set: `tlsDefaults` governs traffic that is not `ISTIO_MUTUAL`, of which the zone has none |
+| `meshConfig.extensionProviders` | one `opentelemetry` provider, `ztd-otel-gateway`, at `otel-gateway.ztd-mgmt.svc.cluster.local:4317` | Envoy spans to the zone gateway (ADR-0017); enabled mesh-wide by the `Telemetry` resource of `zone-policy` (`tracing.provider`, the same name), so every proxy reports a span per request and propagates `traceparent` |
 | `pilot.env.ENABLE_NATIVE_SIDECARS` | `"true"` | the proxy is injected as an init container with `restartPolicy: Always` (Kubernetes 1.33 or later) |
 | `pilot.cni.enabled` | `true` | traffic redirection by the Istio CNI plugin (release `istio-cni`), so the injected pod has no privileged `istio-init` container |
 | `sidecarInjectorWebhook.templates.spire` | a patch of the pod's `workload-socket` volume into the `csi.spiffe.io` read-only volume | the default sidecar template mounts `workload-socket` into the proxy at `/var/run/secrets/workload-spiffe-uds`; with the SPIRE agent's socket there the proxy takes its certificate and bundle from SPIRE over SDS and never from istiod's CA |
@@ -152,3 +153,37 @@ facts, and never installs:
 scripts/install-zone/install.sh render            # all eight releases, no cluster
 scripts/install-zone/install.sh render spire      # one release
 ```
+
+## The observability releases
+
+`otel-node.yaml`, `otel-gateway.yaml`, `otel-entry.yaml`, `prometheus.yaml` and
+`jaeger.yaml` are the values of the observability stack ([ADR-0017](../../../docs/adr/0017-central-observability-backends.md)).
+Unlike the identity and mesh releases above, their charts **and images** are pinned in
+`scripts/tools/pins.env`, and the installer sets the images on the charts (values marked
+`installer:`), together with the values that follow from the zone file (the exporter's endpoint, the
+entry's per-zone listeners, the silent-zone rules, the volumes; see `scripts/install-zone/README.md`).
+Each file's header states what the release does; the choices that matter:
+
+| File | Value | Set to | Why |
+|---|---|---|---|
+| `otel-node.yaml` | `mode`, `hostNetwork`, `dnsPolicy` | DaemonSet, `true`, `ClusterFirstWithHostNet` | only a host-network collector reaches the SPIRE agent's loopback endpoint and every pod's log files |
+| `otel-node.yaml` | `extraVolumes` | `/var/log/pods` read-only (`hostPath`, nothing else of the host), an `emptyDir` for the queue and file offsets, the zone's client certificate | the least host access that reads the logs |
+| `otel-node.yaml` | `securityContext` | root, every capability dropped, no privilege escalation, read-only root file system | the kubelet writes the log files root-only readable |
+| `otel-node.yaml` | `ports.*`, `service.enabled` | all off | no listener on the host but the health check the kubelet probes on the node address (13133, status only); the collector's own metrics on the loopback |
+| `otel-node.yaml` | `config.receivers.filelog` | the container parser, a JSON parser into attributes for a line that starts with `{`, `ztd.if01: true` on a line with `run_id` and `seq`; a line that does not parse is kept | IF-01 fields queryable, no line dropped for being malformed |
+| `otel-node.yaml` | `config.exporters.otlp/entry.sending_queue` | file-backed, 2000 batches, retry window 30 min | buffering through an outage of the export path, bounded |
+| `otel-gateway.yaml` | `nameOverride`, `fullnameOverride` | `otel-collector`, `otel-gateway` | the label of the allow-matrix row `workloads-to-otel-collector`, and the Service the mesh's tracing provider names |
+| `otel-gateway.yaml` | `podLabels` | `spiffe.io/spire-managed-identity: "true"` | the gateway is registered and holds an SVID, so the allow-matrix row stays enforced by the mesh |
+| `otel-gateway.yaml` | `clusterRole.rules` | read-only on nodes and workloads | the `k8s_cluster` receiver: node readiness and the SPIRE agent DaemonSet's desired node count |
+| `otel-gateway.yaml` | `config.receivers.prometheus` | `spire-server-metrics.spire-system.svc` on 9988 and 8082, its own metrics with `collector: otel-gateway`, every 5 s | the server and controller-manager scrapes; the gateway's uptime is the silent-zone signal |
+| `otel-gateway.yaml` | `config.receivers.http_check/revocation` | every 5 s | ZT-51's availability monitoring of the revocation endpoint |
+| `otel-gateway.yaml`, `otel-entry.yaml` | `podSecurityContext.fsGroup`, Secret `defaultMode` | 10001, `0440` | the non-root collector reads the mounted certificate and key |
+| `otel-entry.yaml` | `service.*` | type and source ranges from the zone file, `externalTrafficPolicy: Local` | the only public listener of the demonstrator cluster, restricted to the zones' egress addresses, which the ingress policy then sees unchanged |
+| `otel-entry.yaml` | `config.exporters.debug` | `verbosity: detailed` | the stand-in for the log store, an open point: the records are printed, not stored |
+| `otel-entry.yaml` | `config.exporters.prometheus_remote_write.resource_to_telemetry_conversion` | enabled | `zone` and the Kubernetes attributes become labels |
+| `prometheus.yaml` | `server.extraFlags` | `web.enable-remote-write-receiver` | the metrics arrive by remote write; Prometheus scrapes no zone |
+| `prometheus.yaml` | `server.global.evaluation_interval`, rule groups `interval` | `5s` | the detection budget (23 to 25 s worst case, by alert) |
+| `prometheus.yaml` | `server.tsdb.out_of_order_time_window` | `1h` | telemetry buffered through an outage arrives late and possibly out of order |
+| `prometheus.yaml` | `scrapeConfigs.*`, subcharts, `rbac.create` | Prometheus's own job only; all subcharts off; no RBAC | no service discovery, no target in a zone |
+| `prometheus.yaml` | `serverFiles.alerting_rules.yml`, no `alerting` block, `alertmanager.enabled` | the rules; no alert sender; `false` | a rule in the `firing` state is the alert, read from `/api/v1/alerts` and the `ALERTS` series |
+| `jaeger.yaml` | `userconfig`, `extraObjects` | Jaeger v2 with Badger on a persistent volume, 30-day TTL | traces survive a restart |

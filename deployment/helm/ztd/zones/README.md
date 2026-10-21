@@ -8,8 +8,14 @@ ZONE_VALUES=deployment/helm/ztd/zones/<zone>.yaml KUBE_CONTEXT=<context> \
   scripts/install-zone/install.sh install
 ```
 
-The installer runs the eight releases in order (the umbrella, `spire-crds`, `spire`,
-`istio-base`, `istiod`, `istio-cni`, `zone-policy`, `ztd-openbao`; `scripts/install-zone/README.md`).
+For a participant zone the installer runs ten releases in order (the umbrella, `spire-crds`, `spire`,
+`istio-base`, `istiod`, `istio-cni`, `zone-policy`, `ztd-openbao`, `otel-node`, `otel-gateway`;
+`scripts/install-zone/README.md`). `ionos.yaml` sets `zone.role: demonstrator`: it installs the
+central observability backends instead (`observabilityBackends`), outside both trust domains
+(`docs/adr/0017-central-observability-backends.md`). The participant files name their listener on the
+demonstrator cluster's entry (`telemetryExport.entry.port`: zone A 4317, zone B 4417); the entry's
+address and the revocation status-list URL are recorded once the demonstrator role is installed, and
+until then the installer refuses the two telemetry releases and no other.
 The umbrella reads the whole file; the SPIRE, Istio, `zone-policy` and `ztd-openbao` releases read
 the zone facts they need from the umbrella's defaults with this file on top (the trust domain, the
 storage class, the management namespace, the Cilium switch), so they cannot disagree.

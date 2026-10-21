@@ -190,6 +190,7 @@ two proxy images or two status ports differ, and CI runs that check with every r
 | `registration.identityLabel` | `spiffe.io/spire-managed-identity: "true"` | The switch a workload carries to get an identity |
 | `registration.planeLabel` | `ztd.facis.io/plane` | The umbrella's plane label; namespaces that carry it are selected |
 | `peerAuthentication.mode` | `STRICT` | The only value accepted |
+| `tracing.enabled`, `tracing.provider`, `tracing.randomSamplingPercentage` | `true`, `ztd-otel-gateway`, `100` | A mesh-wide `Telemetry` resource in the mesh root namespace that enables istiod's OpenTelemetry provider (`deployment/helm/values/istiod.yaml`, same name): every proxy reports a span per request to the zone gateway and propagates `traceparent` |
 | `proxySocketPolicy.name` | `proxy-takes-spire-socket` | Name of the admission policy and its binding |
 | `proxySocketPolicy.volume`, `proxySocketPolicy.mountPath`, `proxySocketPolicy.driver` | `workload-socket`, `/var/run/secrets/workload-spiffe-uds`, `csi.spiffe.io` | The volume, mount path and CSI driver every mesh proxy must have; those of Istio's `sidecar` template and the istiod values file |
 | `proxySocketPolicy.statusPort` | `15020` | The proxy's status port, the one inbound port the capture rule lets the injector exclude; must equal the `istiod` release's `global.proxy.statusPort` (integer, required) |
