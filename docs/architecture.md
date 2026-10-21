@@ -268,13 +268,13 @@ not by the plane-separation test, so the table has no test column.
 
 | From data-plane workload → | Supporting service | Allowed? | Enforcement (NetworkPolicy; mesh AuthorizationPolicy) |
 |---|---|---|---|
-| workloads → DNS | name-resolution infrastructure | ALLOW (declared bypass, ZT-26) | NetworkPolicy: ALLOW, port 53 only; mesh: not applicable — DNS is not mTLS traffic, so the mesh cannot govern it |
+| workloads → DNS | name-resolution infrastructure | ALLOW (declared bypass, ZT-26) | NetworkPolicy: ALLOW, the resolver's port only (53; 8053 on the Gardener clusters); mesh: not applicable — DNS is not mTLS traffic, so the mesh cannot govern it |
 
 - **workloads → DNS — name-resolution infrastructure.** Data-plane workloads reach every
   destination permitted above by service name, so none of those paths works without name
   resolution. DNS is cluster infrastructure and a declared bypass under ZT-26, in the sense defined
   above. The mesh cannot govern it because it is not mTLS traffic, so the NetworkPolicy rule
-  limited to port 53 imposes the restriction.
+  limited to the resolver's port (53; 8053 on the Gardener clusters) imposes the restriction.
 
 ### Declared openings of the network baseline
 
@@ -296,15 +296,16 @@ the evidence. It is declared in [Specifications](specifications.md) as a propose
 with its approval pending; the row that disposes it, with istiod's client authentication pinned
 and proven, is left to a follow-up. istiod's CA answers on the same port and cannot be switched
 off; a certificate it issues is refused by every meshed peer, whose `ROOTCA` is SPIRE's bundle
-alone ([mesh identity evidence](evidences/mesh-identity/README.md)). The other three openings keep
+alone, as every run of the mesh identity proof shows (see `scripts/verify-mesh-identity/README.md`). The other three openings keep
 the catch-all denial whole: in particular a data-plane workload reaches the SPIRE server on no
 port. Each opening is rendered by the umbrella chart only when the zone file enables it, and is
-proven by the named check of the mesh identity evidence:
+proven by the named check of the mesh identity proof, which every run records (see
+`scripts/verify-mesh-identity/README.md`):
 
 | Opening | Source | Destination | Port | Network policy layer | Proving check |
 |---|---|---|---|---|---|
 | `meshControlPlane` | every pod of every plane namespace with the mesh label (`ztd-mgmt` among them by default) | istiod (`istio-system`) | 15012 (xDS) | egress in the source namespaces, ingress in `istio-system` (Kubernetes `NetworkPolicy`) | `control-planes-under-default-deny` (proxies SYNCED; no other istiod port reachable) |
-| `controlPlaneWebhooks` | the API server (entities `kube-apiserver`, `host`, `remote-node`) | istiod's webhook; the SPIRE controller-manager's webhook | 15017; 9443 | ingress in `istio-system` and `spire-system` (`CiliumNetworkPolicy`) | `control-planes-under-default-deny`, `install-order-idempotent` (injection and admission work) |
+| `controlPlaneWebhooks` | the API server (entities `kube-apiserver`, `host`, `remote-node`); where the zone names it, the provider's pod that relays the API server's calls (`fromEndpoints`; Gardener's `vpn-shoot` on zone A and zone B) | istiod's webhook; the SPIRE controller-manager's webhook | 15017; 9443 | ingress in `istio-system` and `spire-system` (`CiliumNetworkPolicy`) | `control-planes-under-default-deny`, `install-order-idempotent` (injection and admission work) |
 | `identityServer` | the SPIRE agents on the host network (entities `host`, `remote-node`) | the SPIRE server | 8081 | ingress in `spire-system` (`CiliumNetworkPolicy`) | `control-planes-under-default-deny` (every agent attested) |
 | `kubeApi` | pods of the management-plane namespaces | the API server (entity `kube-apiserver`) | the API server's port | egress in each management-plane namespace (`CiliumNetworkPolicy`) | `install-order-idempotent` (the controllers reconcile) |
 

@@ -244,8 +244,8 @@ the chart's `helm.sh/resource-policy: keep` in its values, so `helm uninstall` r
 Istio's `base` sets that policy in its files, so the zone installer deletes that release's CRDs
 after uninstalling it. The zone installer,
 `scripts/install-zone/install.sh`, runs the releases in order through the same lifecycle step this
-pack exercises, and its uninstall leaves no SPIRE or Istio CRD behind, as the
-[mesh identity evidence](evidences/mesh-identity/README.md) shows.
+pack exercises, and its uninstall leaves no SPIRE or Istio CRD behind, as the teardown section of
+every run of the mesh identity proof shows (see `scripts/verify-mesh-identity/README.md`).
 
 ### Evidence
 

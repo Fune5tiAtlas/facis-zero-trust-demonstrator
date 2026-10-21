@@ -45,8 +45,6 @@ nav:
   - Evidence:
       - "Mesh mode, upstream state: about": evidences/mesh-mode-upstream-state/README.md
       - "Mesh mode, upstream state: record": evidences/mesh-mode-upstream-state/upstream-state.md
-      - "Mesh identity: about": evidences/mesh-identity/README.md
-      - "Mesh identity: record": evidences/mesh-identity/evidence.md
   - Architecture decisions:
       - Overview: adr/index.md
       - TDR decisions ADR 001–006: adr/tdr-decisions.md

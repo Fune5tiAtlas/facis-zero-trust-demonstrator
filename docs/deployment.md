@@ -69,7 +69,7 @@ ZONE_VALUES=deployment/helm/ztd/zones/<zone>.yaml KUBE_CONTEXT=<context> \
 
 Teardown must leave no orphaned namespaces, CRDs or secrets. Every CRD leaves with the release that
 brought it; the installer removes the ones Istio's `base` chart marks to be kept by Helm. This is
-verified by the mesh identity evidence and by an acceptance scenario rather than by inspection.
+verified by the teardown section of every run of the mesh identity proof (`scripts/verify-mesh-identity/README.md`) and by an acceptance scenario rather than by inspection.
 
 ## Reproducibility
 
