@@ -119,6 +119,10 @@ issuance consumes it. The outcome is an object, never a boolean.
 - **Key selection.** The verifier holds a configured set of trusted issuers, each with its keys.
   `kid` selects one key; the payload's `iss` must be the issuer that key belongs to. An unknown
   `kid`, a key of another issuer, or a signature that does not verify → `CRED-OUTCOME-SIGNATURE`.
+  A header or payload that does not follow its schema (an unknown or differently cased member, a
+  `null` where a value is required, a malformed `uri` or `date-time`) is refused with the same code:
+  whoever signed it, it is not an outcome in the agreed form, so nothing in it is used
+  (`internal/if03`).
 - **Consumption.** An outcome is consumed only when all hold, otherwise the grant is refused with
   the code named:
     - `status` is `verified` → else `CRED-OUTCOME-NOT-VERIFIED`;
