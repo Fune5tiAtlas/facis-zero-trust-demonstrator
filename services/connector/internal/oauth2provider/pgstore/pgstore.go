@@ -2,7 +2,8 @@
 // authorization database (tables oauth2_client, oauth2_token, oauth2_dpop_nonce; schema owned by the
 // token store's migrations). Tokens are keyed by signature, so the database never holds a usable
 // credential, and client secrets are bcrypt hashes. Replay detection is not here: it is the shared
-// proof_jti table. Creates are insert-only: a second client, token or nonce under an existing key is
+// proof_jti table (internal/replay), which the stores use through the provider's replay interface.
+// Creates are insert-only: a second client, token or nonce under an existing key is
 // an error, never an overwrite.
 package pgstore
 
@@ -15,12 +16,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/replay"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/oauth2provider"
 )
 
 // New returns the PostgreSQL stores. Validity is evaluated against now, which defaults to time.Now
 // when nil, and passed to the database as a parameter, so tests move one clock for every store.
-// Stores.DPoPReplay is left for the caller.
+// Replay detection is the zone's shared proof_jti record, the one the token store and the guard use.
 func New(pool *pgxpool.Pool, now func() time.Time) oauth2provider.Stores {
 	if now == nil {
 		now = time.Now
@@ -31,7 +33,22 @@ func New(pool *pgxpool.Pool, now func() time.Time) oauth2provider.Stores {
 		AccessTokens:       &tokens{pool: pool, kind: "access"},
 		RegistrationTokens: &tokens{pool: pool, kind: "registration"},
 		DPoPNonces:         &nonces{pool: pool, now: now},
+		DPoPReplay:         replayStore{replay.NewPostgres(pool)},
 	}
+}
+
+// replayStore presents the shared replay record as the provider's replay store. The two say the
+// same thing the other way round: TryUse reports fresh, MarkUsed reports already used.
+type replayStore struct{ store replay.Store }
+
+func (s replayStore) MarkUsed(ctx context.Context, use oauth2provider.DPoPProofUse) (bool, error) {
+	fresh, err := s.store.TryUse(ctx, replay.Use{
+		JKT: use.Thumbprint, Method: use.Method, URI: use.URI, JTI: use.ID, NotAfter: use.NotAfter,
+	})
+	if err != nil {
+		return false, err
+	}
+	return !fresh, nil
 }
 
 type clients struct{ pool *pgxpool.Pool }

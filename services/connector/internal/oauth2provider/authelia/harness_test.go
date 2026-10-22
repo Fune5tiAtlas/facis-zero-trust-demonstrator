@@ -357,8 +357,8 @@ func (h *harness) boundToken(key *dpoptest.Key) string {
 
 // storeEnv selects the stores the conformance suite runs against: unset or "mem" for the in-memory
 // stores, "pg" for PostgreSQL (with pgtest.DatabaseEnv naming the server). CI runs the package once
-// per value, so every conformance test is a test of both. Replay detection stays in memory here
-// until the shared proof_jti store replaces it.
+// per value, so every conformance test is a test of both, replay detection included: on PostgreSQL it
+// is the zone's shared proof_jti record.
 const storeEnv = "CONNECTOR_TEST_STORE"
 
 func newStores(t *testing.T, now func() time.Time) (oauth2provider.Stores, *pgxpool.Pool) {
@@ -378,10 +378,7 @@ func newStores(t *testing.T, now func() time.Time) (oauth2provider.Stores, *pgxp
 		}
 		t.Cleanup(pool.Close)
 
-		stores := pgstore.New(pool, now)
-		stores.DPoPReplay = mem.DPoPReplay
-
-		return stores, pool
+		return pgstore.New(pool, now), pool
 	default:
 		t.Fatalf("%s=%q: want mem or pg", storeEnv, kind)
 

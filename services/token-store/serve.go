@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -36,6 +37,7 @@ func parseServe(args []string, env func(string) string, stderr io.Writer) (serve
 	fs.DurationVar(&opts.cfg.ReadinessTimeout, "readiness-timeout", 2*time.Second, "budget of one /readyz evaluation ($TOKEN_STORE_READINESS_TIMEOUT)")
 	fs.DurationVar(&opts.cfg.DrainDelay, "drain-delay", 5*time.Second, "time /readyz answers 503 before the listeners close on SIGTERM ($TOKEN_STORE_DRAIN_DELAY)")
 	fs.DurationVar(&opts.cfg.ShutdownTimeout, "shutdown-timeout", 10*time.Second, "drain of the listeners on SIGTERM ($TOKEN_STORE_SHUTDOWN_TIMEOUT)")
+	replayCallers := fs.String("replay-callers", "", "comma-separated SPIFFE IDs allowed to call /internal/replay-check ($TOKEN_STORE_REPLAY_CALLERS)")
 	level := fs.String("log-level", "info", "debug, info, warn or error ($TOKEN_STORE_LOG_LEVEL)")
 	if err := fs.Parse(args); err != nil {
 		return opts, err
@@ -57,6 +59,12 @@ func parseServe(args []string, env func(string) string, stderr io.Writer) (serve
 	fromEnv("database-url", "TOKEN_STORE_DATABASE_URL", &opts.cfg.DatabaseURL)
 	fromEnv("openbao-url", "TOKEN_STORE_OPENBAO_URL", &opts.cfg.OpenBaoURL)
 	fromEnv("log-level", "TOKEN_STORE_LOG_LEVEL", level)
+	fromEnv("replay-callers", "TOKEN_STORE_REPLAY_CALLERS", replayCallers)
+	for _, id := range strings.Split(*replayCallers, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			opts.cfg.ReplayCallers = append(opts.cfg.ReplayCallers, id)
+		}
+	}
 	for _, d := range []struct {
 		name, variable string
 		dst            *time.Duration

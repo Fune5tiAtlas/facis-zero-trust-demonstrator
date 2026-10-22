@@ -65,8 +65,8 @@ since only the build that applied a migration knows how to revert it.
 ## The service
 
 `token-store serve` runs the service from the same binary: two plain-HTTP listeners, a liveness
-and a readiness answer, and JSON records on stdout. It serves the contract's `/healthz` and
-`/readyz` and nothing else yet; the endpoints follow. It never waits for its dependencies at
+and a readiness answer, and JSON records on stdout. It serves the contract's `/healthz`, `/readyz`
+and `/internal/replay-check`; substitution follows. It never waits for its dependencies at
 start: a store that starts before its database or its key-value store still starts, listens, and
 says it is not ready until they are there.
 
@@ -85,6 +85,7 @@ wins. Neither URL is ever logged.
 | `--drain-delay` | `TOKEN_STORE_DRAIN_DELAY` | `5s` | On SIGTERM, how long `/readyz` answers 503 while the listeners stay open |
 | `--shutdown-timeout` | `TOKEN_STORE_SHUTDOWN_TIMEOUT` | `10s` | Drain of the listeners after that delay |
 | `--log-level` | `TOKEN_STORE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
+| `--replay-callers` | `TOKEN_STORE_REPLAY_CALLERS` | none | Comma-separated SPIFFE IDs allowed to call `/internal/replay-check` (the connector's, the guard's); with none, every call is refused |
 
 The environment fills in after the command line is parsed, never as a flag's default, so a
 malformed variable only matters when its flag is absent and no value, the connection URL above
@@ -160,7 +161,7 @@ mode proposed to supersede it): the listeners are plain HTTP inside the pod, the
 traffic as mTLS, and the pod mounts no ServiceAccount token, since the SVID comes from the SPIFFE
 CSI driver. The contract's "client certificate whose URI SAN is on the store's allow-list" is
 therefore checked on the mesh-verified identity of the caller, an authorization policy on
-principals and the forwarded client certificate in the handler, when the endpoints land; the
+principals and the forwarded client certificate in the handler (see the replay check below); the
 connector token store's decision record, still to be written, is where this reading belongs.
 
 ## Deployment
@@ -220,9 +221,43 @@ its chart or the pinned images:
   summary; nothing is committed. Locally, the script writes to the git-ignored
   `.dev/token-store-evidence/`.
 
+### Replay check
+
+`POST /internal/replay-check` records a DPoP proof's `(jkt, htm, htu, jti)` and answers `fresh`, or
+409 `TOK-REPLAY` when it was seen before; of concurrent identical calls exactly one is fresh. The
+caller's window applies when it sends `not_after` (at most `iat` + 90 s, not in the past), the
+contract's default otherwise (`now` - 60 s <= `iat` <= `now` + 30 s, kept until `iat` + 90 s);
+anything else is 422 `TOK-PROOF-INVALID`, and a database it cannot write is 503
+`TOK-STORE-UNAVAILABLE`. The connector uses the same table directly through the same code
+(`internal/replay`), so a proof seen by either is seen by both. Refusals carry the reason code and
+the correlation id and nothing the caller sent.
+
+**Caller.** The caller is authenticated before the body is read. The store takes its identity from
+the `X-Forwarded-Client-Cert` its own sidecar sets from the client certificate it verified, and
+admits it only if its SPIFFE ID is on `--replay-callers`; otherwise 403 `TOK-CALLER-DENIED`. That is
+sound only under two deployment prerequisites, which the chart owes when the endpoints are
+deployed: the store's sidecar replaces any such header a client sent (pod annotation
+`proxy.istio.io/config: {"proxyHeaders":{"forwardedClientCert":"SANITIZE_SET"}}`, and no
+ProxyConfig overriding it), and the API port is reachable only through the sidecar (STRICT mTLS and
+a NetworkPolicy). As a second line the store accepts exactly one certificate element across every
+header field: a client-supplied element next to the sidecar's, which the default `APPEND_FORWARD`
+would produce, is refused.
+
+**Lost replay state.** `proof_jti` is unlogged, so crash recovery empties it, and a proof can then
+be replayed once inside its acceptance window: `iat` may lie 30 s ahead and the proof stays
+acceptable 90 s after it, so 120 s. The store detects this with an unlogged sentinel,
+`replay_epoch` (migration 2), which crash recovery empties together with `proof_jti`. It checks the
+sentinel at start, every 10 s and whenever the pool opens a new connection; a missing row is
+written back and logged once as a warning naming the window. A missing row also means a first start
+on a new database, so the warning says "may have been lost". The postmaster's start time is not a
+substitute: a backend crash recovers the cluster without restarting the postmaster. Checked by hand
+on PostgreSQL 16.10 (the pinned image): with one row in each table, `kill -9` of a backend made the
+postmaster reinitialise and recover, both tables came back empty, and `pg_postmaster_start_time()`
+was unchanged. Expired records are swept every minute.
+
 ## What follows
 
 Key custody against the key-value store, which is when "every active key reference resolves"
-joins readiness; the endpoints of the API with the allow-list of their callers on the mesh
-identity; and the lane from the guard to the store across the planes, each building on the
-tables, the queries and the service above.
+joins readiness; substitution with the allow-list of its callers and routes; and the lane from the
+guard to the store across the planes, each building on the tables, the queries and the service
+above.

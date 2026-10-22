@@ -14,7 +14,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/replay"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/caller"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/openbao"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/schema"
@@ -33,6 +37,11 @@ type Server struct {
 	api, ops   *http.Server
 	apiLn      net.Listener
 	opsLn      net.Listener
+
+	replay      *replay.Postgres
+	callers     caller.Authenticator
+	reconnected chan struct{} // signalled when the pool opens a connection, so the replay epoch is rechecked
+	now         func() time.Time
 }
 
 // New validates cfg, prepares the connection pool (no connection is opened: a store that starts
@@ -55,17 +64,36 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*Server, error) {
 	poolCfg.MinConns = 0
 	poolCfg.MaxConnIdleTime = 5 * time.Minute
 	poolCfg.HealthCheckPeriod = 30 * time.Second
+	reconnected := make(chan struct{}, 1)
+	poolCfg.AfterConnect = func(context.Context, *pgx.Conn) error {
+		select {
+		case reconnected <- struct{}{}:
+		default:
+		}
+		return nil
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		return nil, fmt.Errorf("database pool: %w", err)
 	}
+	callers := cfg.Callers
+	if callers == nil {
+		if callers, err = caller.NewXFCC(cfg.ReplayCallers); err != nil {
+			pool.Close()
+			return nil, err
+		}
+	}
 	s := &Server{
-		cfg:        cfg,
-		log:        log,
-		pool:       pool,
-		migrations: migrations,
-		client:     openbao.NewClient(),
-		openBaoURL: strings.TrimRight(cfg.OpenBaoURL, "/"),
+		cfg:         cfg,
+		log:         log,
+		pool:        pool,
+		migrations:  migrations,
+		client:      openbao.NewClient(),
+		openBaoURL:  strings.TrimRight(cfg.OpenBaoURL, "/"),
+		replay:      replay.NewPostgres(pool),
+		callers:     callers,
+		reconnected: reconnected,
+		now:         time.Now,
 	}
 	s.ready = &readiness{timeout: cfg.ReadinessTimeout, postgres: s.checkPostgres, openbao: s.checkOpenBao}
 
@@ -100,12 +128,13 @@ func (s *Server) opsRoutes() http.Handler {
 	return s.correlate(mux)
 }
 
-// apiRoutes is the contract on the published port: its health paths now, its endpoints as they
+// apiRoutes is the contract on the published port: its health paths and its endpoints as they
 // land. Nothing registered here is reachable on the ops port.
 func (s *Server) apiRoutes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
+	mux.HandleFunc("POST /internal/replay-check", s.handleReplayCheck)
 	return s.correlate(mux)
 }
 
@@ -127,6 +156,9 @@ func (s *Server) httpServer(h http.Handler) *http.Server {
 // it drains both listeners at once, each within the shutdown timeout, and closes the pool. It
 // returns nil after a clean stop.
 func (s *Server) Serve(ctx context.Context) error {
+	maintainCtx, stopMaintaining := context.WithCancel(context.Background())
+	maintained := make(chan struct{})
+	go func() { defer close(maintained); s.maintainReplay(maintainCtx) }()
 	results := make(chan error, 2)
 	go func() { results <- s.api.Serve(s.apiLn) }()
 	go func() { results <- s.ops.Serve(s.opsLn) }()
@@ -160,6 +192,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	for _, srv := range []*http.Server{s.api, s.ops} {
 		drains.Go(func() {
 			if err := srv.Shutdown(shutdownCtx); err != nil {
+				// The drain ran out: close what is still open, so no handler keeps a pooled
+				// connection and the pool below can close.
+				_ = srv.Close()
 				drainMu.Lock()
 				if drainErr == nil {
 					drainErr = err
@@ -182,6 +217,8 @@ func (s *Server) Serve(ctx context.Context) error {
 			pending = 0
 		}
 	}
+	stopMaintaining()
+	<-maintained
 	s.pool.Close()
 	return cause
 }

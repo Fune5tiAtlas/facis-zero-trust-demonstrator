@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/caller"
 )
 
 // Config is the service's configuration surface. The command line and the environment fill it;
@@ -26,6 +28,12 @@ type Config struct {
 	DrainDelay time.Duration
 	// ShutdownTimeout is how long a stopping service then drains its listeners before it exits.
 	ShutdownTimeout time.Duration
+	// ReplayCallers are the SPIFFE IDs allowed to call /internal/replay-check (the connector and
+	// the guard). With none, every call to it is refused.
+	ReplayCallers []string
+	// Callers authenticates the store's internal callers. Nil means the forwarded client certificate
+	// (caller.XFCC) checked against the allow-lists above; tests inject their own.
+	Callers caller.Authenticator
 }
 
 // Validate reports the first thing the service cannot run with.
@@ -50,6 +58,9 @@ func (c Config) Validate() error {
 	}
 	if c.ShutdownTimeout <= 0 {
 		return errors.New("the shutdown timeout must be longer than 0")
+	}
+	if _, err := caller.NewXFCC(c.ReplayCallers); err != nil {
+		return errors.New("the replay-check callers must be spiffe:// IDs")
 	}
 	return nil
 }
