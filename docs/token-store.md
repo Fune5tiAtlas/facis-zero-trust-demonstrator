@@ -15,9 +15,10 @@ verified; the service's endpoints are documented as they land.
 
 | Tables | Owner | What they hold |
 |---|---|---|
-| `oauth2_client`, `oauth2_token`, `oauth2_dpop_nonce` | the connector's OAuth2 surface | dynamically registered clients (secret as a bcrypt hash, the RFC 7591 metadata document as registered), issued access and registration tokens keyed by signature, server-issued DPoP nonces |
+| `oauth2_client`, `oauth2_token`, `oauth2_dpop_nonce` | the connector's OAuth2 surface | dynamically registered clients (secret as a bcrypt hash, the RFC 7591 metadata document as registered), issued access and registration tokens keyed by signature (a verified-presentation token with its unique `outcome_id`), server-issued DPoP nonces |
+| `oauth2_challenge` | the connector's OAuth2 surface | single-use challenges of the verified-presentation grant, bound to a client and one audience, valid 120 s; a consumed one is never reset or deleted (migration 3) |
 | `signing_key` | the token store | references to the store's outbound signing keys in the key-value store, with their thumbprints; never key material |
-| `verified_outcome` | the token store | verification outcomes received over IF-03, consumed at most once |
+| `verified_outcome` | the token store; in the issuing zone, the connector | verification outcomes received over IF-03, consumed at most once. The connector records each outcome its verified-presentation grant consumes here, in the transaction that issues the token |
 | `upstream_token` | the token store | the upstream tokens held per route `(peer_zone, audience, tenant)`, as references into the key-value store, with state and the single-flight renewal claim |
 | `proof_jti` | the token store, on behalf of the connector and the guard | one-time DPoP proof identifiers, keyed `(jkt, htm, htu, jti)` and kept until `not_after`; the replay check of the store's API |
 | `audit_event` | both | registration decisions, outcome consumption and refusal, every renewal attempt with its reason; append-only |
@@ -27,7 +28,8 @@ Three properties are the schema's own, not the services' good conduct:
 - **An outcome is consumed exactly once.** The upstream token's reference to its outcome is unique,
   so a second token row for one outcome is refused by the database even on a path that skipped the
   consumption check. The intended path marks the outcome consumed and inserts the token in one
-  transaction.
+  transaction. The same holds for the connector's tokens: `oauth2_token.outcome_id` is unique and
+  references the outcome, and only an access token may carry one.
 - **A replayed proof is refused by the primary key.** The replay check is one insert; a conflict is a
   replay, and of any number of concurrent identical proofs exactly one is admitted. The table is
   unlogged on purpose: after a crash it is empty, so a proof can be replayed at most once inside its
