@@ -268,6 +268,12 @@ verified-presentation grant ([IF-02 v1.1](api-docs.md#if-02-connector-authorizat
 on demand and `Acquirer.Replace(ctx, route, fence)` what renewal calls, and there is no HTTP endpoint
 for either.
 
+The calls to the Connector (the challenge, the grant with its DPoP proof and one nonce retry, and the
+response checks below) are the shared client `internal/connectorclient`, which the Participant also
+uses with its own key; acquire maps its errors to the reason codes below. The fixture outcome signer
+is `internal/if03/if03fixture`, and the zone-B harness of the tests is `internal/connectortest`
+(`acquiretest` configures it for the store's route).
+
 **Order.** For one route `(peer_zone, audience, tenant)`:
 
 1. `POST /oauth2/challenge` at the peer Connector with the route's client credentials

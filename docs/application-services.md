@@ -1,12 +1,12 @@
 # Participant and Protected Resource services
 
-Two Go sample services for application deployment and HTTP integration. They do not implement the Connector/guard authorization path, Keycloak login, workload identity, attestation or real API replacement. A sample `denied` result is deliberately selected test data, not a security decision. In sample mode the responses are marked `source: sample` and `mode: sample`; health reports `liveMode: unavailable`.
+Two Go sample services for application deployment and HTTP integration. They do not implement the guard, Keycloak login, workload identity, attestation or real API replacement. A sample `denied` result is deliberately selected test data, not a security decision. In sample mode the responses are marked `source: sample` and `mode: sample`; health reports `liveMode: unavailable`.
 
-Both services also have a token mode, built against interfaces only (see [Modes](#modes)). The binaries cannot select it yet: the token verifier and the Participant bootstrap are wired in later, so a deployed process always runs in sample mode.
+Both services also have a token mode (see [Modes](#modes) and [Token mode](#token-mode)): the Participant obtains a DPoP-bound access token from the Connector through the verified-presentation grant and calls the Resource with it and a fresh proof per call; the Resource verifies both with `internal/tokenverify` and answers by the token's scope. `PARTICIPANT_ADAPTER_MODE=token` and `PROTECTED_RESOURCE_MODE=token` select it; without them both binaries run in sample mode exactly as before.
 
 ## Source and build
 
-Use the repository root as the build context and retain its `go.mod` and `go.sum`. The services use the standard library only and add no module dependencies.
+Use the repository root as the build context and retain its `go.mod` and `go.sum`. The services use the standard library and the repository's `internal/` packages (token path: `connectorclient`, `dpopproof`, `if03`, `jose`, `replay`, `tokenverify`) and add no module dependencies; both images therefore copy `internal/`.
 
 | Service | Entry point | Package | Default TCP port | Endpoints |
 | --- | --- | --- | --- | --- |
@@ -45,9 +45,20 @@ The processes read environment variables; they do not load `.env` files automati
 | --- | --- | --- |
 | `PARTICIPANT_ADDRESS` | `:8085` | HTTP listener; use `:8085` in a container and `127.0.0.1:8085` for a host-only local test. |
 | `PARTICIPANT_REQUEST_TIMEOUT` | `5s` | Positive Go duration bounding each adapter call. |
-| `PARTICIPANT_ADAPTER_MODE` | `sample` | `sample` handles the result internally. `http-sample` calls Protected Resource over HTTP(S). |
-| `PARTICIPANT_RESOURCE_URL` | Empty | Required for `http-sample`; base URL without `/demo`, credentials, query or fragment. The adapter appends `/demo`. |
+| `PARTICIPANT_ADAPTER_MODE` | `sample` | `sample` handles the result internally. `http-sample` calls Protected Resource over HTTP(S). `token` selects [token mode](#token-mode). |
+| `PARTICIPANT_RESOURCE_URL` | Empty | Required for `http-sample` and `token`; base URL without `/demo`, credentials, query or fragment. The adapter appends `/demo`. In token mode it must be the Resource's public base URL, since the proof's `htu` is built from it. |
 | `PARTICIPANT_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
+
+Token mode only; each is required there except the entitlement, and none is read otherwise:
+
+| Variable | Meaning |
+| --- | --- |
+| `PARTICIPANT_CONNECTOR_URL` | The Connector's base URL; `/oauth2/challenge` and `/oauth2/token` are called below it. |
+| `PARTICIPANT_CREDENTIALS_FILE` | Mounted file with the provisioned client, `{"client_id": "...", "client_secret": "..."}` and no other member; read at every bootstrap run, never logged. |
+| `PARTICIPANT_AUDIENCE` | The audience the token is requested for: the Resource's `PROTECTED_RESOURCE_AUDIENCE`, registered for the client. |
+| `PARTICIPANT_OUTCOME_ISSUER`, `PARTICIPANT_OUTCOME_KID` | `iss` and `kid` of the fixture IF-03 outcomes; the Connector's trusted-issuers file must hold this issuer and key id. |
+| `PARTICIPANT_OUTCOME_KEY_FILE` | PEM P-256 private key (`EC PRIVATE KEY` or `PRIVATE KEY`) the fixture signs outcomes with; read at start. |
+| `PARTICIPANT_OUTCOME_ROLE`, `PARTICIPANT_OUTCOME_ENTITLEMENT` | The outcome's claims; the Connector's scope map turns them into the token's scopes. The entitlement is optional. |
 
 `configs/participant.env.example` enables the two-process local HTTP route. `configs/participant.osc.env.example` shows the separate-service deployment shape. It matches the Service the application-service chart (`deployment/helm/application-service`) creates. `127.0.0.1` cannot address a different pod.
 
@@ -58,22 +69,59 @@ The processes read environment variables; they do not load `.env` files automati
 | `PROTECTED_RESOURCE_ADDRESS` | `:8086` | HTTP listener; use `:8086` in a container and loopback for a host-only test. |
 | `PROTECTED_RESOURCE_REQUEST_TIMEOUT` | `5s` | Positive duration bounding each resource request. |
 | `PROTECTED_RESOURCE_SLOW_DELAY` | `2s` | Positive simulated delay; must be shorter than the Resource request timeout. |
-| `PROTECTED_RESOURCE_MODE` | `sample` | Only `sample` is supported. |
+| `PROTECTED_RESOURCE_MODE` | `sample` | `sample`, or `token` for [token mode](#token-mode). |
 | `PROTECTED_RESOURCE_ADAPTER_MODE` | `sample` | `sample` or `sample-alternative`; both are deterministic sample data. |
 | `PROTECTED_RESOURCE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 
-The current sample services require no application secrets, database, persistent volume or Keycloak client secret. Registry credentials and ingress TLS secrets belong to deployment configuration; secret values must not enter this repository. The applications serve plain HTTP; HTTPS routes require the approved ingress configuration. Do not disable certificate verification for outbound HTTPS calls.
+Token mode only, all required there:
+
+| Variable | Meaning |
+| --- | --- |
+| `PROTECTED_RESOURCE_TOKEN_ISSUER` | Required `iss` of the access tokens: the Connector's `--issuer`. |
+| `PROTECTED_RESOURCE_JWKS_URL` | The Connector's key set, `<connector>/.well-known/jwks.json`; the only place keys come from. |
+| `PROTECTED_RESOURCE_AUDIENCE` | The audience a token must carry. |
+| `PROTECTED_RESOURCE_PUBLIC_BASE_URL` | The Resource's base URL as callers reach it; a proof's `htu` must be this plus the request path. `Host` and forwarded headers are ignored. |
+
+In sample mode the services require no application secrets, database, persistent volume or Keycloak client secret. In token mode the Participant needs two mounted secrets, the client credentials file and the outcome signer's key; the Resource needs none. Registry credentials and ingress TLS secrets belong to deployment configuration; secret values must not enter this repository. The applications serve plain HTTP; HTTPS routes require the approved ingress configuration. Do not disable certificate verification for outbound HTTPS calls.
 
 ## Modes
 
-Each service has two modes. The mode is derived from what the caller injects into `Config`, never from an environment variable, and is reported as `mode` in `/health`, in every `/demo` response and, for the Participant, in `/state`.
+Each service has two modes. The package derives the mode from `Config` (a verifier or a bootstrapper set), and is reported as `mode` in `/health`, in every `/demo` response and, for the Participant, in `/state`.
 
 | Service | `sample` (default) | `token` |
 | --- | --- | --- |
 | Protected Resource | No `Config.Verifier`. `/demo` is unauthenticated and the `scenario` field selects the result, as described below. | `Config.Verifier` (a `tokenverify.RequestVerifier`) is set. `/demo` runs behind its `Middleware`; the response is chosen by the caller's token scopes ([scope table](#scope-table)). A `scenario` field that is non-empty after trimming whitespace is rejected; an empty or whitespace-only one counts as absent. |
 | Participant | No `Config.Bootstrapper`. The `sample` or `http-sample` adapter (or one injected through `NewServerWithAdapter`) is used, as before. | `Config.Bootstrapper` is set. The lifecycle runs it at start and the request adapter calls the Resource with credentials from the resulting `TokenSession`. An adapter injected through `NewServerWithAdapter` is ignored in this mode. |
 
-`LoadConfig` never sets a verifier or a bootstrapper, so both binaries start in sample mode with the existing settings and no new required variable. What is implemented in this repository today: the token-mode code paths, tested with fake verifiers, bootstrappers and sessions. What is not: the concrete token verifier, DPoP proofs, token acquisition and their wiring into `cmd/`; those arrive with the token path.
+`LoadConfig` sets them only when the mode variable says `token`: the Participant's to a `ConnectorBootstrap`, the Resource's to a `tokenverify.Verifier`. Without it both binaries start in sample mode with the existing settings and no new required variable. A token-mode setting that is missing or invalid stops the process at start; it never falls back to sample mode.
+
+### Token mode
+
+**Participant.** `ConnectorBootstrap` (`services/participant/connector.go`) is the `Bootstrapper` (design D12). Its DPoP key is a P-256 key generated in the process when it starts: a Participant is a workload, not the token store, so it has no transit key, and the key never leaves the process or survives a restart. The client is provisioned (its credentials come from the mounted file), so the `registering` step is skipped and a run starts at `presenting`:
+
+1. `presenting` / `step_started`; read the credentials file.
+2. `POST /oauth2/challenge` with `client_secret_basic` and the audience.
+3. The fixture `OutcomeSource` (`internal/if03/if03fixture`) signs an IF-03 outcome for that challenge.
+4. `acquiring_token` / `step_started`; the grant with a proof of the Participant's key, retried once with the Connector's nonce (`internal/connectorclient`, shared with the token store).
+5. The token must be `token_type` DPoP, `cnf.jkt` the Participant key's thumbprint, `aud` the audience, `exp` in the future; then `ready` / `step_completed`.
+
+| Failure | State / reason |
+| --- | --- |
+| Credentials file missing or malformed | `failed_registration` / `bootstrap_error` |
+| Connector answers 401 (client unknown or secret wrong) | `failed_registration` / `registration_rejected` |
+| No answer, 5xx, or the grant's answer lost | `failed_connector_unreachable` / `connector_unreachable` (retried by the lifecycle, bounded, with backoff; each retry starts again with a fresh challenge and outcome) |
+| Challenge refused or malformed; outcome source failed | `failed_presentation` / `presentation_rejected` or `upstream_error` |
+| Grant refused with a `CRED-OUTCOME-*` code | `failed_presentation` / `presentation_rejected` |
+| Nonce demanded again after the one retry | `failed_token` / `nonce_retry_exhausted` |
+| Grant refused otherwise; the token fails a check | `failed_token` / `token_rejected` |
+
+`TokenSession.Authorize` returns `DPoP <token>` and a fresh proof per call (`htm`, `htu`, `ath` of the token, a new `jti`). Once three quarters of the token's lifetime have passed, the next `Authorize` runs the grant again (challenge, outcome, grant, checks) before answering; one lock covers every grant, so concurrent calls wait for one renewal and never start two. If the renewal fails, the current token is used until it expires and the grant is tried again at most every 5 s; past expiry `Authorize` fails and `/demo` answers `TOKEN_AUTHORIZE_FAILED`. A renewal failure does not change `/state`.
+
+**Protected Resource.** The verifier requires no scope itself; the [scope table](#scope-table) decides, so a token with neither scope is answered 403 `RESOURCE_SCOPE_INSUFFICIENT`. Its replay record is its own, in memory (`replay.Memory`), not the zone's shared `proof_jti` table: a proof names this Resource in `htu`, so only this Resource can be presented with it and nothing else needs to see the record, and the Resource needs no database. A restart empties the record, which re-opens at most one proof window (120 s: lifespan plus twice the skew) for proofs captured before it; replicas do not share it, so run one replica, or give replicas the shared Postgres record instead.
+
+**What the demo needs.** A Connector with the verified-presentation grant on: its trusted-issuers file holds the fixture issuer's public key under `PARTICIPANT_OUTCOME_KID`, its scope map maps the outcome's role (and entitlement) to `report:read` or `report:summary`, and the registrar may delegate those scopes and name the Resource's audience. The Participant's client is registered through the registrar's DCR for the grant, DPoP-bound, with that scope and audience, and its credentials are mounted as the credentials file. The Resource points at the Connector's issuer and key set. Two Participants with different roles show the two answers of the scope table.
+
+The end-to-end test `services/participant/tokenpath_test.go` does exactly this against the real `connector` binary (`internal/connectortest`), PostgreSQL and OpenBao, and skips without `TOKEN_STORE_TEST_DATABASE_URL`, `TRANSIT_TEST_ADDR` and `TRANSIT_TEST_TOKEN`. It drives `/demo` on two Participants and checks the `/state` path, the answer per scope, the identity in the Resource's log, the refusal of a request without a proof, with a replayed proof and with a token for another audience, and that no token, proof or secret reaches a log or a body.
 
 ### Scope table
 
@@ -112,7 +160,7 @@ The bodies of 401, 403 and 503 answers are not read into the result. For every o
 
 In token mode `Start` runs the injected `Bootstrapper` in the background. Every state transition is recorded with a timestamp and a reason from a fixed vocabulary; a reason the bootstrapper passes that is not in the vocabulary is recorded as `unspecified`, so no upstream text reaches `/state`.
 
-States: `idle`, `registering`, `presenting`, `acquiring_token`, `ready`, `failed_registration`, `failed_presentation`, `failed_token`, `failed_connector_unreachable`.
+States: `idle`, `registering`, `presenting`, `acquiring_token`, `ready`, `failed_registration`, `failed_presentation`, `failed_token`, `failed_connector_unreachable`. `ConnectorBootstrap` never reports `registering`: its client is provisioned ([Token mode](#token-mode)).
 
 Reasons: `step_started`, `step_completed`, `connector_unreachable`, `registration_rejected`, `presentation_rejected`, `token_rejected`, `nonce_retry_exhausted`, `upstream_error`, `timeout`, `bootstrap_error`, `retry_scheduled`, `retries_exhausted`, `reset`, `unspecified`.
 
@@ -121,7 +169,7 @@ If a run ends in an error without a `failed_*` state, the lifecycle records the 
 `GET /state` returns:
 
 ```json
-{"mode":"token","state":"ready","attempt":1,"lastErrorCode":"","history":[{"state":"registering","reason":"step_started","at":"2026-10-21T09:00:00Z"}]}
+{"mode":"token","state":"ready","attempt":1,"lastErrorCode":"","history":[{"state":"presenting","reason":"step_started","at":"2026-10-21T09:00:00Z"},{"state":"acquiring_token","reason":"step_started","at":"2026-10-21T09:00:00Z"},{"state":"ready","reason":"step_completed","at":"2026-10-21T09:00:01Z"}]}
 ```
 
 `lastErrorCode` is the reason of the most recent failure. In sample mode `/state` reports `mode: sample` and `state: idle`; the history is empty until the first `/reset`, after which it holds the `idle` / `reset` entry.
@@ -132,7 +180,7 @@ If a run ends in an error without a `failed_*` state, the lifecycle records the 
 
 `POST /reset` on the Protected Resource returns 200 with `status: reset`, `mode` and `seedVersion`. Its demo data is the read-only seed, so there is nothing to rebuild.
 
-Neither reset touches token, replay, consumption or key state; neither service holds any. Both reset endpoints are unauthenticated demo controls: expose them on restricted routes only.
+Neither reset touches replay, consumption or key state. The Participant's reset drops its session, so the new run acquires a new token with a fresh challenge and outcome; its DPoP key stays. The Resource's reset leaves its replay record as it is. Both reset endpoints are unauthenticated demo controls: expose them on restricted routes only.
 
 ### Seed data
 
