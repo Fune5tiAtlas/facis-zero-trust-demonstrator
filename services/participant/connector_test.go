@@ -394,7 +394,9 @@ func TestResetWaitsForARunningRenewal(t *testing.T) {
 	session := l.currentSession()
 
 	entered, release := make(chan struct{}), make(chan struct{})
-	var once sync.Once
+	var once, releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock) // a failing test must not leave the handler blocked
 	f.token = func(w http.ResponseWriter, jkt string) bool {
 		once.Do(func() { close(entered) })
 		<-release
@@ -431,7 +433,7 @@ func TestResetWaitsForARunningRenewal(t *testing.T) {
 		t.Fatal("reset did not wait for the renewal")
 	case <-time.After(100 * time.Millisecond):
 	}
-	close(release)
+	unblock()
 	if err := <-renewed; err != nil {
 		t.Fatalf("renewal: %v", err)
 	}
