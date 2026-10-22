@@ -56,6 +56,17 @@ func (s *signedStrategy) GenerateAccessToken(ctx context.Context, request oauth2
 		return "", "", fmt.Errorf("signed access tokens need a JWT session, got %T", request.GetSession())
 	}
 
+	// A signed token is validated without the connector, from its own claims, so every token
+	// carries cnf.jkt (D6) and aud (RFC 9068 section 2.2). Without DPoP enforcement an unbound
+	// client may reach this point without a proof; it is refused rather than given a bearer token.
+	if session.GetDPoPJWKThumbprint() == "" {
+		return "", "", oauth2.ErrInvalidDPoPProof.WithHint("Signed access tokens are issued only with a DPoP proof.")
+	}
+
+	if len(request.GetGrantedAudience()) == 0 {
+		return "", "", oauth2.ErrInvalidRequest.WithHint("Signed access tokens are issued only for a requested audience.")
+	}
+
 	subject := request.GetClient().GetID()
 	session.Subject = subject
 	session.JWTClaims = &jwt.JWTClaims{Subject: subject}

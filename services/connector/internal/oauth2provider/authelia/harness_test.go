@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -52,6 +53,14 @@ type harness struct {
 
 	// clockOffset shifts the stores' clock forward, in nanoseconds.
 	clockOffset atomic.Int64
+
+	// signed is true when the provider issues signed access tokens, which it does only to a DPoP
+	// proof and for an audience.
+	signed bool
+
+	// defaultAudience is what a token request names when the test names no audience, and what
+	// every seeded client is allowed: nothing for opaque tokens, resourceAudience for signed ones.
+	defaultAudience string
 
 	tokenURL    string
 	registerURL string
@@ -104,6 +113,11 @@ func newHarness(t *testing.T, configure func(*oauth2provider.Config)) *harness {
 	}
 
 	h.cfg = cfg
+	h.signed = cfg.AccessTokenSigner != nil
+
+	if h.signed {
+		h.defaultAudience = resourceAudience
+	}
 	h.stores, h.pool = newStores(t, func() time.Time {
 		return time.Now().Add(time.Duration(h.clockOffset.Load()))
 	})
@@ -193,6 +207,14 @@ func (h *harness) serveResource(w http.ResponseWriter, r *http.Request) {
 
 func (h *harness) advanceClock(d time.Duration) { h.clockOffset.Add(int64(d)) }
 
+func (h *harness) withDefaultAudience(audience []string) []string {
+	if h.defaultAudience == "" || slices.Contains(audience, h.defaultAudience) {
+		return audience
+	}
+
+	return append(slices.Clone(audience), h.defaultAudience)
+}
+
 // seedClient provisions a client directly, as an operator would.
 func (h *harness) seedClient(id string, dpopBound bool, scopes, audience []string) {
 	h.t.Helper()
@@ -207,7 +229,7 @@ func (h *harness) seedClient(id string, dpopBound bool, scopes, audience []strin
 		SecretHash: hash,
 		GrantTypes: []string{"client_credentials"},
 		Scopes:     scopes,
-		Audience:   audience,
+		Audience:   h.withDefaultAudience(audience),
 		DPoPBound:  dpopBound,
 	})
 	if err != nil {
@@ -266,6 +288,10 @@ func (h *harness) token(clientID, proof string, scopes []string, audience string
 	form := url.Values{"grant_type": {"client_credentials"}}
 	if len(scopes) != 0 {
 		form.Set("scope", strings.Join(scopes, " "))
+	}
+
+	if audience == "" {
+		audience = h.defaultAudience
 	}
 
 	if audience != "" {

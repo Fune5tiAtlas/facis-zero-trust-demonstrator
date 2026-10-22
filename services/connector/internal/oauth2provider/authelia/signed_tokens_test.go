@@ -163,9 +163,9 @@ func TestSignedTokens_SignerGetsRequestContext(t *testing.T) {
 	recorder := &contextSigner{TokenSigner: newTestSigner(t)}
 	h := signedHarness(t, recorder)
 	key := dpoptest.NewKey(t)
-	h.seedClient("participant", true, []string{resourceScope}, nil)
+	h.seedClient("participant", true, []string{resourceScope}, []string{resourceAudience})
 
-	form := url.Values{"grant_type": {"client_credentials"}, "scope": {resourceScope}}
+	form := url.Values{"grant_type": {"client_credentials"}, "scope": {resourceScope}, "audience": {resourceAudience}}
 	request := httptest.NewRequest(http.MethodPost, h.tokenURL, strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("DPoP", h.tokenProof(key))
@@ -182,6 +182,50 @@ func TestSignedTokens_SignerGetsRequestContext(t *testing.T) {
 	ctx := recorder.last.Load()
 	if ctx == nil || (*ctx).Value(ctxKey{}) != "this request" {
 		t.Fatal("the signer was not called with the request's context")
+	}
+}
+
+// Every signed token carries cnf.jkt: with DPoP enforcement off, an unbound client that presents no
+// proof is refused with a DPoP error instead of being given an unbound token. With a proof it is
+// served.
+func TestSignedTokens_RequireAProof(t *testing.T) {
+	h := newHarness(t, func(c *oauth2provider.Config) {
+		c.DPoP.Enforce = false
+		c.Issuer = "https://connector.example"
+		c.AccessTokenSigner = newTestSigner(t)
+	})
+	h.seedClient("plain", false, []string{resourceScope}, []string{resourceAudience})
+
+	refused := h.token("plain", "", []string{resourceScope}, resourceAudience)
+	if refused.status != http.StatusBadRequest || refused.reason() != oauth2provider.CodeDPoPInvalidProof {
+		t.Errorf("no proof: status %d reason %q, want 400 %q", refused.status, refused.reason(), oauth2provider.CodeDPoPInvalidProof)
+	}
+
+	issued := h.token("plain", h.tokenProof(dpoptest.NewKey(t)), []string{resourceScope}, resourceAudience)
+	if issued.status != http.StatusOK || issued.str("token_type") != "DPoP" {
+		t.Errorf("with a proof: status %d body %v, want 200 DPoP", issued.status, issued.body)
+	}
+}
+
+// Every signed token carries aud: a request naming no audience, or an empty one, is refused rather
+// than given a token without one.
+func TestSignedTokens_RequireAnAudience(t *testing.T) {
+	h := signedHarness(t, newTestSigner(t))
+	h.seedClient("participant", true, []string{resourceScope}, []string{resourceAudience})
+
+	for name, form := range map[string]url.Values{
+		"no audience":    {"grant_type": {"client_credentials"}, "scope": {resourceScope}},
+		"empty audience": {"grant_type": {"client_credentials"}, "scope": {resourceScope}, "audience": {""}},
+	} {
+		key := dpoptest.NewKey(t)
+		if got := h.tokenWithSecret("participant", testSecret, h.tokenProof(key), form); got.status != http.StatusBadRequest || got.reason() != oauth2provider.CodeInvalidRequest {
+			t.Errorf("%s: status %d reason %q, want 400 %q", name, got.status, got.reason(), oauth2provider.CodeInvalidRequest)
+		}
+	}
+
+	form := url.Values{"grant_type": {"client_credentials"}, "scope": {resourceScope}, "audience": {resourceAudience}}
+	if got := h.tokenWithSecret("participant", testSecret, h.tokenProof(dpoptest.NewKey(t)), form); got.status != http.StatusOK {
+		t.Errorf("with an audience: status %d body %v, want 200", got.status, got.body)
 	}
 }
 
