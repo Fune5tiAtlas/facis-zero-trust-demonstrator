@@ -209,7 +209,8 @@ func (l *lifecycle) recordLocked(state State, reason string) {
 // skips any pending retry, clears the lifecycle and starts a fresh bootstrap. It returns the state as it
 // was right after the reset, before the new run can change it. It touches no token, replay or key state:
 // the lifecycle holds none beyond the TokenSession reference it drops. A reset whose ctx ends while it
-// is queued or waiting returns ctx.Err() without clearing anything.
+// is queued or waiting returns ctx.Err() without clearing anything. A session that renews its own
+// token (retirable) is retired first, and a renewal in flight is waited for in the same way.
 func (l *lifecycle) reset(ctx context.Context, mode string) (StateSnapshot, error) {
 	select {
 	case l.resetSlot <- struct{}{}:
@@ -237,6 +238,15 @@ func (l *lifecycle) reset(ctx context.Context, mode string) (StateSnapshot, erro
 	if err := ctx.Err(); err != nil {
 		return StateSnapshot{}, err
 	}
+	// A ready session may be renewing its token outside the run: let it finish, and start no other.
+	l.mu.Lock()
+	session := l.session
+	l.mu.Unlock()
+	if r, ok := session.(retirable); ok {
+		if err := r.retire(ctx); err != nil {
+			return StateSnapshot{}, err
+		}
+	}
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -248,6 +258,13 @@ func (l *lifecycle) reset(ctx context.Context, mode string) (StateSnapshot, erro
 		l.launchLocked()
 	}
 	return snapshot, nil
+}
+
+// retirable is a TokenSession that acquires tokens itself after the bootstrap (ConnectorBootstrap's
+// renewals). reset retires it before dropping it: no renewal starts after that, and a running one is
+// waited for.
+type retirable interface {
+	retire(ctx context.Context) error
 }
 
 func (l *lifecycle) currentSession() TokenSession {

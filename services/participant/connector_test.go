@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -374,4 +375,82 @@ func TestConnectorSessionJudgesAFailedRenewalAfterIt(t *testing.T) {
 			t.Fatalf("renewal retried %d grants before renewRetry passed since the failure: %v", f.grants.Load(), err)
 		}
 	})
+}
+
+// /reset waits for a renewal running outside the bootstrap, or changes nothing when its context ends
+// first; after it, the dropped session starts no renewal.
+func TestResetWaitsForARunningRenewal(t *testing.T) {
+	clock := &fakeClock{t: time.Now()}
+	f := newFakeConnector(t, clock.Now)
+	l := newLifecycle(newBootstrap(t, f, clock, goodCredentials, nil), 1, time.Millisecond, time.Now, slog.New(slog.DiscardHandler))
+	l.start(t.Context())
+	deadline := time.Now().Add(5 * time.Second)
+	for l.currentSession() == nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("not ready: %+v", l.snapshot(ModeToken))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	session := l.currentSession()
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	f.token = func(w http.ResponseWriter, jkt string) bool {
+		once.Do(func() { close(entered) })
+		<-release
+		return false // then a good token
+	}
+	clock.Advance(226 * time.Second)
+	renewed := make(chan error, 1)
+	go func() {
+		_, _, err := session.Authorize(context.Background(), http.MethodPost, "https://resource.test/demo")
+		renewed <- err
+	}()
+	<-entered
+
+	before := l.snapshot(ModeToken)
+	short, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := l.reset(short, ModeToken); err == nil {
+		t.Fatal("reset returned while a renewal was running")
+	}
+	if after := l.snapshot(ModeToken); after.State != before.State || len(after.History) != len(before.History) || l.currentSession() != session {
+		t.Fatalf("a timed-out reset changed the state: %+v", after)
+	}
+
+	done := make(chan StateSnapshot, 1)
+	go func() {
+		snap, err := l.reset(t.Context(), ModeToken)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- snap
+	}()
+	select {
+	case <-done:
+		t.Fatal("reset did not wait for the renewal")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-renewed; err != nil {
+		t.Fatalf("renewal: %v", err)
+	}
+	if snap := <-done; snap.State != StateIdle {
+		t.Fatalf("reset: %+v", snap)
+	}
+
+	// The dropped session is retired: due again, it does not start a grant. The bootstrap the reset
+	// started is let finish first, so its own grant is not counted.
+	for l.currentSession() == nil || l.currentSession() == session {
+		if time.Now().After(deadline.Add(5 * time.Second)) {
+			t.Fatalf("no new session after reset: %+v", l.snapshot(ModeToken))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	grants := f.grants.Load()
+	clock.Advance(226 * time.Second)
+	_, _, _ = session.Authorize(t.Context(), http.MethodPost, "https://resource.test/demo")
+	if f.grants.Load() != grants {
+		t.Fatal("a retired session renewed")
+	}
 }

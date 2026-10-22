@@ -96,11 +96,58 @@ type connectorSession struct {
 	b      *ConnectorBootstrap
 	client *connectorclient.Client
 
-	mu      sync.Mutex
+	mu      sync.Mutex // serialises renewals and guards the token fields
 	token   string
 	expires time.Time
 	renewAt time.Time
 	retryAt time.Time
+
+	gate    sync.Mutex    // guards retired and active, never held across the network
+	retired bool          // set by retire: no new renewal starts
+	active  chan struct{} // closed when the running renewal ends; nil when none runs
+}
+
+var _ retirable = (*connectorSession)(nil)
+
+// retire admits no new renewal and waits for a running one to end (it is never cancelled, so no
+// acquisition is cut short). If ctx ends first, the session is admitted to renew again and ctx.Err()
+// is returned, so a failed reset changes nothing.
+func (s *connectorSession) retire(ctx context.Context) error {
+	s.gate.Lock()
+	s.retired = true
+	active := s.active
+	s.gate.Unlock()
+	if active == nil {
+		return nil
+	}
+	select {
+	case <-active:
+		return nil
+	case <-ctx.Done():
+		s.gate.Lock()
+		s.retired = false
+		s.gate.Unlock()
+		return ctx.Err()
+	}
+}
+
+// renew runs one renewal unless the session is retired.
+func (s *connectorSession) renew(ctx context.Context) error {
+	s.gate.Lock()
+	if s.retired {
+		s.gate.Unlock()
+		return errors.New("participant: session retired")
+	}
+	active := make(chan struct{})
+	s.active = active
+	s.gate.Unlock()
+	defer func() {
+		s.gate.Lock()
+		s.active = nil
+		close(active)
+		s.gate.Unlock()
+	}()
+	return s.acquire(ctx, nil)
 }
 
 // Authorize returns "DPoP <token>" and a fresh proof for method and target, signed by the Participant
@@ -133,7 +180,7 @@ func (s *connectorSession) current(ctx context.Context) (string, time.Time, erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if now := s.b.now(); !now.Before(s.renewAt) && !now.Before(s.retryAt) {
-		if err := s.acquire(ctx, nil); err != nil {
+		if err := s.renew(ctx); err != nil {
 			s.retryAt = s.b.now().Add(renewRetry)
 		}
 	}
