@@ -78,6 +78,14 @@ func (a *HTTPSampleAdapter) Request(ctx context.Context, request AdapterRequest)
 // decodeResourceResponse validates a Resource answer against the documented contract for mode and
 // rebuilds the result from known fields only.
 func decodeResourceResponse(response *http.Response, request AdapterRequest, mode string) (*AdapterResult, error) {
+	raw, err := readResourceBody(response)
+	if err != nil {
+		return nil, err
+	}
+	return decodeResourceBody(response.StatusCode, raw, request, mode)
+}
+
+func readResourceBody(response *http.Response) ([]byte, error) {
 	if response.StatusCode >= 300 && response.StatusCode < 400 {
 		return nil, ErrInvalidUpstreamResponse
 	}
@@ -89,6 +97,10 @@ func decodeResourceResponse(response *http.Response, request AdapterRequest, mod
 	if len(raw) == 0 || len(raw) > maxUpstreamResponseBytes {
 		return nil, ErrInvalidUpstreamResponse
 	}
+	return raw, nil
+}
+
+func decodeResourceBody(status int, raw []byte, request AdapterRequest, mode string) (*AdapterResult, error) {
 
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
@@ -99,7 +111,7 @@ func decodeResourceResponse(response *http.Response, request AdapterRequest, mod
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return nil, ErrInvalidUpstreamResponse
 	}
-	if !validProtectedResourceResponse(response.StatusCode, request, upstream, mode) {
+	if !validProtectedResourceResponse(status, request, upstream, mode) {
 		return nil, ErrInvalidUpstreamResponse
 	}
 

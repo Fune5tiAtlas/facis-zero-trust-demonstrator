@@ -36,15 +36,12 @@ type healthResponse struct {
 }
 
 func NewServer(config Config, logger *slog.Logger) *Server {
-	server := NewServerWithAdapter(config, logger, nil)
-	if config.Bootstrapper != nil {
-		server.adapter = NewTokenAdapter(config.ResourceURL, nil, server.lifecycle.currentSession)
-	} else {
-		server.adapter = NewRequestAdapter(config)
-	}
-	return server
+	return NewServerWithAdapter(config, logger, NewRequestAdapter(config))
 }
 
+// NewServerWithAdapter uses adapter in sample mode only. In token mode (config.Bootstrapper set) the
+// injected adapter is ignored and the TokenAdapter is always used, so a sample adapter can never answer
+// for a token-mode Participant.
 func NewServerWithAdapter(config Config, logger *slog.Logger, adapter RequestAdapter) *Server {
 	if logger == nil {
 		logger = slog.Default()
@@ -59,6 +56,9 @@ func NewServerWithAdapter(config Config, logger *slog.Logger, adapter RequestAda
 	}
 	server.lifecycle = newLifecycle(config.Bootstrapper, config.BootstrapAttempts, config.BootstrapBackoff,
 		func() time.Time { return server.now() }, logger)
+	if config.Bootstrapper != nil {
+		server.adapter = NewTokenAdapter(config.ResourceURL, nil, server.lifecycle.currentSession)
+	}
 	server.router.HandleFunc("/health", server.handleHealth)
 	server.router.HandleFunc("/demo", server.handleDemo)
 	server.router.HandleFunc("/state", server.handleState)
@@ -123,11 +123,12 @@ func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.config.RequestTimeout)
 	defer cancel()
-	if err := s.lifecycle.reset(ctx); err != nil {
+	snapshot, err := s.lifecycle.reset(ctx, s.config.ServingMode())
+	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "error", "reason": "reset_wait_timeout"})
 		return
 	}
-	writeJSON(w, http.StatusOK, s.lifecycle.snapshot(s.config.ServingMode()))
+	writeJSON(w, http.StatusOK, snapshot)
 }
 
 func (s *Server) handleDemo(w http.ResponseWriter, r *http.Request) {

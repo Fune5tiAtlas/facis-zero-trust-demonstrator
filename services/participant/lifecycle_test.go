@@ -279,6 +279,10 @@ func TestResetWaitsForInFlightBootstrapAndRestarts(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("POST /reset = %d %s", response.Code, response.Body.String())
 	}
+	var resetBody StateSnapshot
+	if err := json.Unmarshal(response.Body.Bytes(), &resetBody); err != nil || resetBody.State != StateIdle || historyOf(resetBody) != "idle/reset" {
+		t.Fatalf("reset response = %s, want the post-reset idle state only", response.Body.String())
+	}
 	waitBootstrap(t, server)
 	snapshot, _ := getState(t, server.Handler())
 	want := "idle/reset registering/step_started presenting/step_started acquiring_token/step_started ready/step_completed"
@@ -291,14 +295,17 @@ func TestResetTimesOutWhileBootstrapStillRuns(t *testing.T) {
 	t.Parallel()
 
 	release := make(chan struct{})
+	entered := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	boot := &fakeBootstrapper{runs: []runFunc{func(context.Context, func(State, string)) (TokenSession, error) {
+		close(entered)
 		<-release
 		return nil, errors.New("stopped")
 	}}}
 	config := tokenConfig("http://127.0.0.1:1", boot)
 	config.RequestTimeout = 20 * time.Millisecond
 	server := newTokenParticipant(t, config, io.Discard)
+	<-entered
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/reset", nil))
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "reset_wait_timeout") {
@@ -493,5 +500,215 @@ func assertDemoResultMode(t *testing.T, result DemoResponse, gotStatus, wantStat
 	}
 	if result.RequestID == "" || result.Explanation == "" || result.Timestamp.IsZero() || result.SafeData == nil {
 		t.Fatalf("response contract incomplete: %+v", result)
+	}
+}
+
+func TestTokenModeIgnoresInjectedSampleAdapter(t *testing.T) {
+	t.Parallel()
+
+	resource := newTokenResource(t, fakeVerifier{scopes: []string{protectedresource.ScopeReportRead}})
+	session := &countingSession{}
+	config := tokenConfig(resource.URL, &fakeBootstrapper{runs: []runFunc{succeed(session, true)}})
+	server := NewServerWithAdapter(config, slog.New(slog.NewJSONHandler(io.Discard, nil)), NewSampleAdapter())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	server.Start(ctx)
+	waitBootstrap(t, server)
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+
+	for i, body := range []string{
+		`{"resource":"sample-report","action":"read","scenario":"success"}`,
+		`{"resource":"sample-report","action":"read"}`,
+	} {
+		result, status := postDemo(t, httpServer, body)
+		if result.ReasonCode == ReasonSampleGranted || result.Mode != ModeToken {
+			t.Fatalf("token-mode Participant answered from the sample adapter: %d %+v", status, result)
+		}
+		assertDemoResultMode(t, result, status, http.StatusOK, OutcomeSuccess, protectedresource.ReasonReportReturned, ModeToken)
+		if got := session.calls.Load(); got != int32(i+1) {
+			t.Fatalf("Authorize calls = %d after %d requests", got, i+1)
+		}
+	}
+}
+
+// echoResource answers with a contract-shaped token-mode body whose text fields come from echo, which
+// sees the request's own credential headers.
+func echoResource(t *testing.T, status int, outcome Outcome, reason string, echo func(*http.Request) (explanation, content string)) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var input DemoRequest
+		_ = json.NewDecoder(r.Body).Decode(&input)
+		explanation, content := echo(r)
+		safeData := map[string]any{}
+		if outcome == OutcomeSuccess {
+			safeData = map[string]any{"resource": "sample-report", "action": "read",
+				"report": map[string]any{"id": "FACIS-SAMPLE-REPORT-001", "title": "Sample report", "content": content}}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"requestId": input.RequestID, "correlationId": input.CorrelationID, "source": "sample", "mode": "token",
+			"outcome": outcome, "reasonCode": reason, "explanation": explanation,
+			"timestamp": "2026-10-21T09:00:00Z", "safeData": safeData,
+		})
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+func TestTokenAdapterDiscardsEchoedCredentialsAndUpstreamText(t *testing.T) {
+	t.Parallel()
+
+	const upstreamText = "upstream-detail-must-not-be-forwarded"
+	bareToken := func(r *http.Request) string {
+		_, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
+		return token
+	}
+	tests := []struct {
+		name       string
+		url        string
+		status     int
+		outcome    Outcome
+		reasonCode string
+	}{
+		{name: "400 echoing the Authorization value", url: echoResource(t, 400, OutcomeError, "SAMPLE_INVALID_REQUEST", func(r *http.Request) (string, string) {
+			return "bad request for " + r.Header.Get("Authorization"), ""
+		}), status: 502, outcome: OutcomeError, reasonCode: ReasonTokenCredentialEchoed},
+		{name: "500 echoing the DPoP proof", url: echoResource(t, 500, OutcomeError, "SAMPLE_ADAPTER_FAILURE", func(r *http.Request) (string, string) {
+			return "failed with proof " + r.Header.Get("DPoP"), ""
+		}), status: 502, outcome: OutcomeError, reasonCode: ReasonTokenCredentialEchoed},
+		{name: "200 echoing the bare token in report data", url: echoResource(t, 200, OutcomeSuccess, "RESOURCE_REPORT_RETURNED", func(r *http.Request) (string, string) {
+			return "ok", "token was " + bareToken(r)
+		}), status: 502, outcome: OutcomeError, reasonCode: ReasonTokenCredentialEchoed},
+		{name: "200 hiding the token behind a JSON escape", url: echoResource(t, 200, OutcomeSuccess, "RESOURCE_REPORT_RETURNED", func(r *http.Request) (string, string) {
+			return "ok", "<" + bareToken(r) + ">" // encoding/json writes < as \u003c, so only decoded strings show the token
+		}), status: 502, outcome: OutcomeError, reasonCode: ReasonTokenCredentialEchoed},
+		{name: "400 upstream explanation is replaced locally", url: echoResource(t, 400, OutcomeError, "SAMPLE_INVALID_REQUEST", func(*http.Request) (string, string) {
+			return upstreamText, ""
+		}), status: 502, outcome: OutcomeError, reasonCode: "SAMPLE_INVALID_REQUEST"},
+		{name: "200 upstream explanation is replaced locally", url: echoResource(t, 200, OutcomeSuccess, "RESOURCE_REPORT_RETURNED", func(*http.Request) (string, string) {
+			return upstreamText, "Local sample data."
+		}), status: 200, outcome: OutcomeSuccess, reasonCode: "RESOURCE_REPORT_RETURNED"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var logs bytes.Buffer
+			participant := readyParticipant(t, test.url, &countingSession{}, &logs)
+			result, status := postDemo(t, participant, `{"resource":"sample-report","action":"read","requestId":"req-echo"}`)
+			assertDemoResultMode(t, result, status, test.status, test.outcome, test.reasonCode, ModeToken)
+			raw, _ := json.Marshal(result)
+			for _, leak := range []string{canaryToken, "proof-POST", upstreamText} {
+				if strings.Contains(string(raw), leak) || strings.Contains(logs.String(), leak) {
+					t.Fatalf("%q forwarded; body %s logs %s", leak, raw, logs.String())
+				}
+			}
+		})
+	}
+}
+
+func TestCancelledResetReturnsWithoutMutating(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	session := &countingSession{}
+	boot := &fakeBootstrapper{runs: []runFunc{
+		func(_ context.Context, report func(State, string)) (TokenSession, error) {
+			report(StateRegistering, TransitionStepStarted)
+			close(entered)
+			<-release
+			return session, nil
+		},
+		succeed(session, true),
+	}}
+	server := newTokenParticipant(t, tokenConfig("http://127.0.0.1:1", boot), io.Discard)
+	<-entered
+	before := server.lifecycle.snapshot(ModeToken)
+
+	// Already cancelled, uncontended: no state is cleared and the running bootstrap keeps its retries.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := server.lifecycle.reset(cancelled, ModeToken); err == nil {
+		t.Fatal("cancelled reset succeeded")
+	}
+	server.lifecycle.mu.Lock()
+	stopIntact := server.lifecycle.stop != nil
+	server.lifecycle.mu.Unlock()
+	if !stopIntact {
+		t.Fatal("cancelled reset stopped the bootstrap")
+	}
+
+	// A first reset waits on the in-flight run and holds the slot; a second one queues behind it.
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := server.lifecycle.reset(context.Background(), ModeToken)
+		firstDone <- err
+	}()
+	for {
+		server.lifecycle.mu.Lock()
+		closed := server.lifecycle.stop == nil
+		server.lifecycle.mu.Unlock()
+		if closed {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	queued, cancelQueued := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancelQueued()
+	start := time.Now()
+	if _, err := server.lifecycle.reset(queued, ModeToken); err == nil {
+		t.Fatal("queued reset succeeded while another held the slot")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("queued reset took %s after cancellation", elapsed)
+	}
+	if after := server.lifecycle.snapshot(ModeToken); historyOf(after) != historyOf(before) {
+		t.Fatalf("cancelled resets changed history: %s -> %s", historyOf(before), historyOf(after))
+	}
+
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first reset: %v", err)
+	}
+	waitBootstrap(t, server)
+	if got := historyOf(server.lifecycle.snapshot(ModeToken)); !strings.HasPrefix(got, "idle/reset ") {
+		t.Fatalf("history after the admitted reset = %s", got)
+	}
+}
+
+func TestResetAtRetryBoundaryNeverStartsExtraRun(t *testing.T) {
+	t.Parallel()
+
+	// The reset's stop signal arrives while a connector-unreachable Run is in flight. When that Run
+	// returns, a retry is due after 1ns, so the elapsed timer and the closed stop are both ready; the
+	// lifecycle must still not start a second Run. Repeated because a select between ready channels is
+	// random.
+	for i := 0; i < 50; i++ {
+		var l *lifecycle
+		boot := &fakeBootstrapper{runs: []runFunc{func(_ context.Context, report func(State, string)) (TokenSession, error) {
+			l.mu.Lock()
+			if l.stop != nil {
+				close(l.stop) // exactly what reset does, under the same lock
+				l.stop = nil
+			}
+			l.mu.Unlock()
+			report(StateFailedConnector, TransitionConnectorUnreachable)
+			return nil, errors.New("unreachable")
+		}}}
+		l = newLifecycle(boot, 1000, time.Nanosecond, time.Now, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+		l.start(context.Background())
+		l.mu.Lock()
+		done := l.done
+		l.mu.Unlock()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("lifecycle kept retrying after stop")
+		}
+		if calls := boot.callCount(); calls != 1 {
+			t.Fatalf("iteration %d: %d Runs, want 1", i, calls)
+		}
 	}
 }

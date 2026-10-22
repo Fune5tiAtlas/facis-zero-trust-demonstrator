@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // Token mode reasons. 401, 403 and 503 from the Resource each have their own name; the body of those
@@ -16,7 +17,18 @@ const (
 	ReasonTokenRejected            = "TOKEN_REJECTED"
 	ReasonTokenForbidden           = "TOKEN_FORBIDDEN"
 	ReasonTokenResourceUnavailable = "TOKEN_RESOURCE_UNAVAILABLE"
+	ReasonTokenCredentialEchoed    = "TOKEN_CREDENTIAL_ECHOED"
 )
+
+// tokenExplanations replaces every Resource explanation in token mode: upstream text is never forwarded.
+var tokenExplanations = map[string]string{
+	"RESOURCE_REPORT_RETURNED":      "The Resource returned the report for the token's scopes.",
+	"RESOURCE_SUMMARY_RETURNED":     "The Resource returned the report summary for the token's scopes.",
+	"RESOURCE_SCENARIO_NOT_ALLOWED": "The Resource refused a sample scenario in token mode.",
+	"RESOURCE_IDENTITY_MISSING":     "The Resource could not read the verified caller identity.",
+}
+
+const tokenFallbackExplanation = "The Resource answered with the documented result named by reasonCode."
 
 // TokenAdapter calls the Resource with credentials from the lifecycle's TokenSession. It asks the
 // session for a fresh Authorization and DPoP pair on every call and keeps neither.
@@ -69,7 +81,63 @@ func (a *TokenAdapter) Request(ctx context.Context, request AdapterRequest) (*Ad
 	case http.StatusServiceUnavailable:
 		return tokenResult(OutcomeUnavailable, ReasonTokenResourceUnavailable, "The Resource could not verify tokens or was unavailable."), nil
 	}
-	return decodeResourceResponse(response, request, ModeToken)
+	raw, err := readResourceBody(response)
+	if err != nil {
+		return nil, err
+	}
+	if echoesCredential(raw, authorization, proof) {
+		return tokenResult(OutcomeError, ReasonTokenCredentialEchoed, "The Resource answer contained this request's credentials and was discarded."), nil
+	}
+	result, err := decodeResourceBody(response.StatusCode, raw, request, ModeToken)
+	if err != nil {
+		return nil, err
+	}
+	result.Explanation = tokenFallbackExplanation
+	if text, ok := tokenExplanations[result.ReasonCode]; ok {
+		result.Explanation = text
+	}
+	return result, nil
+}
+
+// echoesCredential reports whether the answer carries the Authorization value, the bare token or the
+// DPoP proof, either raw or inside any JSON string (which may hide it behind escapes).
+func echoesCredential(raw []byte, authorization, proof string) bool {
+	secrets := []string{authorization, proof}
+	if _, token, ok := strings.Cut(authorization, " "); ok {
+		secrets = append(secrets, token)
+	}
+	texts := []string{string(raw)}
+	var decoded any
+	if json.Unmarshal(raw, &decoded) == nil {
+		texts = appendStrings(texts, decoded)
+	}
+	for _, secret := range secrets {
+		if secret == "" {
+			continue
+		}
+		for _, text := range texts {
+			if strings.Contains(text, secret) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func appendStrings(out []string, value any) []string {
+	switch v := value.(type) {
+	case string:
+		out = append(out, v)
+	case []any:
+		for _, item := range v {
+			out = appendStrings(out, item)
+		}
+	case map[string]any:
+		for key, item := range v {
+			out = appendStrings(append(out, key), item)
+		}
+	}
+	return out
 }
 
 func tokenResult(outcome Outcome, reason, explanation string) *AdapterResult {

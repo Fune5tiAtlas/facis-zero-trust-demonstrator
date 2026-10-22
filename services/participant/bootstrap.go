@@ -79,7 +79,7 @@ type lifecycle struct {
 	now      func() time.Time
 	logger   *slog.Logger
 
-	resetMu sync.Mutex // serialises resets
+	resetSlot chan struct{} // 1-slot semaphore serialising resets; acquiring it honours the request context
 
 	mu        sync.Mutex
 	base      context.Context
@@ -100,7 +100,10 @@ func newLifecycle(boot Bootstrapper, attempts int, backoff time.Duration, now fu
 	if backoff <= 0 {
 		backoff = defaultBootstrapBackoff
 	}
-	return &lifecycle{boot: boot, attempts: attempts, backoff: backoff, now: now, logger: logger, state: StateIdle, history: []Transition{}}
+	return &lifecycle{
+		boot: boot, attempts: attempts, backoff: backoff, now: now, logger: logger,
+		resetSlot: make(chan struct{}, 1), state: StateIdle, history: []Transition{},
+	}
 }
 
 // start begins the first bootstrap. ctx bounds every later run too (the process lifetime).
@@ -123,7 +126,13 @@ func (l *lifecycle) launchLocked() {
 func (l *lifecycle) run(ctx context.Context, done, stop chan struct{}) {
 	defer close(done)
 	for attempt := 1; ; attempt++ {
+		// reset closes stop under l.mu, so deciding here under l.mu means a Run either started before the
+		// reset (and reset waits for it) or never starts.
 		l.mu.Lock()
+		if stopped(stop) || ctx.Err() != nil {
+			l.mu.Unlock()
+			return
+		}
 		l.attempt, l.progress = attempt, StateIdle
 		l.mu.Unlock()
 
@@ -166,6 +175,15 @@ func (l *lifecycle) run(ctx context.Context, done, stop chan struct{}) {
 }
 
 // report is the callback handed to the Bootstrapper.
+func stopped(stop chan struct{}) bool {
+	select {
+	case <-stop:
+		return true
+	default:
+		return false
+	}
+}
+
 func (l *lifecycle) report(state State, reason string) {
 	if !knownStates[state] || state == StateIdle {
 		return
@@ -188,25 +206,36 @@ func (l *lifecycle) recordLocked(state State, reason string) {
 }
 
 // reset waits for an in-flight Run to return (it is never cancelled, so no acquisition is cut short),
-// skips any pending retry, clears the lifecycle and starts a fresh bootstrap. It touches no token,
-// replay or key state: the lifecycle holds none beyond the TokenSession reference it drops.
-func (l *lifecycle) reset(ctx context.Context) error {
-	l.resetMu.Lock()
-	defer l.resetMu.Unlock()
+// skips any pending retry, clears the lifecycle and starts a fresh bootstrap. It returns the state as it
+// was right after the reset, before the new run can change it. It touches no token, replay or key state:
+// the lifecycle holds none beyond the TokenSession reference it drops. A reset whose ctx ends while it
+// is queued or waiting returns ctx.Err() without clearing anything.
+func (l *lifecycle) reset(ctx context.Context, mode string) (StateSnapshot, error) {
+	select {
+	case l.resetSlot <- struct{}{}:
+	case <-ctx.Done():
+		return StateSnapshot{}, ctx.Err()
+	}
+	defer func() { <-l.resetSlot }()
+	if err := ctx.Err(); err != nil {
+		return StateSnapshot{}, err
+	}
 
 	l.mu.Lock()
 	done, stop := l.done, l.stop
-	l.stop = nil
-	l.mu.Unlock()
 	if stop != nil {
 		close(stop)
+		l.stop = nil
 	}
+	l.mu.Unlock()
 	if done != nil {
 		select {
 		case <-done:
 		case <-ctx.Done():
-			return ctx.Err()
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return StateSnapshot{}, err
 	}
 
 	l.mu.Lock()
@@ -214,10 +243,11 @@ func (l *lifecycle) reset(ctx context.Context) error {
 	l.session, l.lastError, l.attempt = nil, "", 0
 	l.history = []Transition{}
 	l.recordLocked(StateIdle, TransitionReset)
+	snapshot := l.snapshotLocked(mode)
 	if done != nil {
 		l.launchLocked()
 	}
-	return nil
+	return snapshot, nil
 }
 
 func (l *lifecycle) currentSession() TokenSession {
@@ -229,6 +259,10 @@ func (l *lifecycle) currentSession() TokenSession {
 func (l *lifecycle) snapshot(mode string) StateSnapshot {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	return l.snapshotLocked(mode)
+}
+
+func (l *lifecycle) snapshotLocked(mode string) StateSnapshot {
 	return StateSnapshot{
 		Mode: mode, State: l.state, Attempt: l.attempt, LastErrorCode: l.lastError,
 		History: append([]Transition{}, l.history...),
