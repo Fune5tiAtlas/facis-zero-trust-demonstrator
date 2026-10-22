@@ -21,7 +21,10 @@ type Server struct {
 	logger  *slog.Logger
 	adapter RequestAdapter
 	router  *http.ServeMux
-	now     func() time.Time
+	// now and newID are test-only hooks for deterministic output; no configuration reaches them.
+	now       func() time.Time
+	newID     func() string
+	lifecycle *lifecycle
 }
 
 type healthResponse struct {
@@ -33,7 +36,13 @@ type healthResponse struct {
 }
 
 func NewServer(config Config, logger *slog.Logger) *Server {
-	return NewServerWithAdapter(config, logger, NewRequestAdapter(config))
+	server := NewServerWithAdapter(config, logger, nil)
+	if config.Bootstrapper != nil {
+		server.adapter = NewTokenAdapter(config.ResourceURL, nil, server.lifecycle.currentSession)
+	} else {
+		server.adapter = NewRequestAdapter(config)
+	}
+	return server
 }
 
 func NewServerWithAdapter(config Config, logger *slog.Logger, adapter RequestAdapter) *Server {
@@ -46,10 +55,23 @@ func NewServerWithAdapter(config Config, logger *slog.Logger, adapter RequestAda
 		adapter: adapter,
 		router:  http.NewServeMux(),
 		now:     func() time.Time { return time.Now().UTC() },
+		newID:   newIdentifier,
 	}
+	server.lifecycle = newLifecycle(config.Bootstrapper, config.BootstrapAttempts, config.BootstrapBackoff,
+		func() time.Time { return server.now() }, logger)
 	server.router.HandleFunc("/health", server.handleHealth)
 	server.router.HandleFunc("/demo", server.handleDemo)
+	server.router.HandleFunc("/state", server.handleState)
+	server.router.HandleFunc("/reset", server.handleReset)
 	return server
+}
+
+// Start runs the bootstrap in the background when a Bootstrapper is configured; in sample mode it does
+// nothing. ctx bounds every bootstrap run, including those started by /reset.
+func (s *Server) Start(ctx context.Context) {
+	if s.config.Bootstrapper != nil {
+		s.lifecycle.start(ctx)
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -76,10 +98,36 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, healthResponse{
 		Status:         "ok",
 		Service:        "facis-participant",
-		Mode:           "sample",
+		Mode:           s.config.ServingMode(),
 		LiveMode:       "unavailable",
 		RequestTimeout: s.config.RequestTimeout.String(),
 	})
+}
+
+func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"status": "error", "reason": "method_not_allowed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.lifecycle.snapshot(s.config.ServingMode()))
+}
+
+// handleReset restores the lifecycle to idle and re-runs the bootstrap, after waiting for one in flight.
+// The Participant keeps no other demo data.
+func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"status": "error", "reason": "method_not_allowed"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), s.config.RequestTimeout)
+	defer cancel()
+	if err := s.lifecycle.reset(ctx); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "error", "reason": "reset_wait_timeout"})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.lifecycle.snapshot(s.config.ServingMode()))
 }
 
 func (s *Server) handleDemo(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +135,7 @@ func (s *Server) handleDemo(w http.ResponseWriter, r *http.Request) {
 	headerCorrelationID := cleanIdentifier(r.Header.Get("X-Correlation-ID"))
 	requestID := headerRequestID
 	if requestID == "" {
-		requestID = newIdentifier()
+		requestID = s.newID()
 	}
 	correlationID := headerCorrelationID
 	if correlationID == "" {
@@ -198,7 +246,7 @@ func (s *Server) writeDemoResult(w http.ResponseWriter, status int, requestID, c
 	}
 	response := DemoResponse{
 		RequestID: requestID, CorrelationID: correlationID,
-		Source: "sample", Mode: "sample", Outcome: result.Outcome,
+		Source: "sample", Mode: s.config.ServingMode(), Outcome: result.Outcome,
 		ReasonCode: result.ReasonCode, Explanation: result.Explanation,
 		Timestamp: s.now(), SafeData: result.SafeData,
 	}

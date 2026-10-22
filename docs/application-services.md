@@ -1,6 +1,8 @@
 # Participant and Protected Resource services
 
-Two Go sample services for application deployment and HTTP integration. It does not implement the Connector/guard authorization path, Keycloak login, workload identity, attestation or real API replacement. A sample `denied` result is deliberately selected test data, not a security decision. The responses remain marked `source: sample` and `mode: sample`; health reports `liveMode: unavailable`.
+Two Go sample services for application deployment and HTTP integration. They do not implement the Connector/guard authorization path, Keycloak login, workload identity, attestation or real API replacement. A sample `denied` result is deliberately selected test data, not a security decision. In sample mode the responses are marked `source: sample` and `mode: sample`; health reports `liveMode: unavailable`.
+
+Both services also have a token mode, built against interfaces only (see [Modes](#modes)). The binaries cannot select it yet: the token verifier and the Participant bootstrap are wired in later, so a deployed process always runs in sample mode.
 
 ## Source and build
 
@@ -8,8 +10,8 @@ Use the repository root as the build context and retain its `go.mod` and `go.sum
 
 | Service | Entry point | Package | Default TCP port | Endpoints |
 | --- | --- | --- | --- | --- |
-| Participant | `cmd/participant` | `services/participant` | 8085 | `GET /health`, `POST /demo` |
-| Protected Resource | `cmd/protected-resource` | `services/protectedresource` | 8086 | `GET /health`, `POST /demo` |
+| Participant | `cmd/participant` | `services/participant` | 8085 | `GET /health`, `POST /demo`, `GET /state`, `POST /reset` |
+| Protected Resource | `cmd/protected-resource` | `services/protectedresource` | 8086 | `GET /health`, `POST /demo`, `POST /reset` |
 
 From the repository root:
 
@@ -62,6 +64,78 @@ The processes read environment variables; they do not load `.env` files automati
 
 The current sample services require no application secrets, database, persistent volume or Keycloak client secret. Registry credentials and ingress TLS secrets belong to deployment configuration; secret values must not enter this repository. The applications serve plain HTTP; HTTPS routes require the approved ingress configuration. Do not disable certificate verification for outbound HTTPS calls.
 
+## Modes
+
+Each service has two modes. The mode is derived from what the caller injects into `Config`, never from an environment variable, and is reported as `mode` in `/health`, in every `/demo` response and, for the Participant, in `/state`.
+
+| Service | `sample` (default) | `token` |
+| --- | --- | --- |
+| Protected Resource | No `Config.Verifier`. `/demo` is unauthenticated and the `scenario` field selects the result, as described below. | `Config.Verifier` (a `tokenverify.RequestVerifier`) is set. `/demo` runs behind its `Middleware`; the response is chosen by the caller's token scopes ([scope table](#scope-table)). A `scenario` field is rejected. |
+| Participant | No `Config.Bootstrapper`. The `sample` or `http-sample` adapter is used, as before. | `Config.Bootstrapper` is set. The lifecycle runs it at start and the request adapter calls the Resource with credentials from the resulting `TokenSession`. |
+
+`LoadConfig` never sets a verifier or a bootstrapper, so both binaries start in sample mode with the existing settings and no new required variable. What is implemented in this repository today: the token-mode code paths, tested with fake verifiers, bootstrappers and sessions. What is not: the concrete token verifier, DPoP proofs, token acquisition and their wiring into `cmd/`; those arrive with the token path.
+
+### Scope table
+
+In token mode the Protected Resource answers `POST /demo` for `sample-report` / `read` as follows. The verifier has already accepted the token and its DPoP proof; refusals by the verifier (401, 403, 503 with `WWW-Authenticate`) never reach this table.
+
+| Token scopes | HTTP | Outcome | Reason | `safeData` |
+| --- | --- | --- | --- | --- |
+| includes `report:read` | 200 | `success` | `RESOURCE_REPORT_RETURNED` | `{resource, action, report: {id, title, content}}` |
+| includes `report:summary`, not `report:read` | 200 | `success` | `RESOURCE_SUMMARY_RETURNED` | `{resource, action, summary: {id, title, summary}}` |
+| neither | 403 | `denied` | `RESOURCE_SCOPE_INSUFFICIENT` | `{}` |
+
+Other token-mode answers: an uncatalogued resource or action is 404 `SAMPLE_RESOURCE_NOT_FOUND`; a `scenario` field is 400 `RESOURCE_SCENARIO_NOT_ALLOWED`. Every request log line in token mode carries `client_id`, `sub` and `jkt` from the verified identity. A request the verifier refused is logged as `protected resource request refused` with its HTTP status and IDs only. Neither service logs or returns a token, a DPoP proof, a token ID or any request header.
+
+### Participant token adapter
+
+For each `/demo` call in token mode the adapter calls `TokenSession.Authorize(ctx, "POST", <resource>/demo)` and sends the returned `Authorization` and `DPoP` headers. Nothing is cached: every call gets a fresh pair. The `scenario` field is not forwarded. The Resource answer maps as follows:
+
+| Situation | Participant HTTP | Outcome | Reason |
+| --- | --- | --- | --- |
+| Lifecycle not `ready` (no session) | 503 | `unavailable` | `TOKEN_SESSION_NOT_READY` |
+| `Authorize` fails (the error text is discarded) | 502 | `error` | `TOKEN_AUTHORIZE_FAILED` |
+| Resource 401 | 403 | `denied` | `TOKEN_REJECTED` |
+| Resource 403 | 403 | `denied` | `TOKEN_FORBIDDEN` |
+| Resource 503 | 503 | `unavailable` | `TOKEN_RESOURCE_UNAVAILABLE` |
+| Resource 200 | 200 | `success` | the Resource's scope-table reason, after the same contract validation as `http-sample` |
+
+The bodies of 401, 403 and 503 answers are not read into the result.
+
+### Participant lifecycle and `GET /state`
+
+In token mode `Start` runs the injected `Bootstrapper` in the background. Every state transition is recorded with a timestamp and a reason from a fixed vocabulary; a reason the bootstrapper passes that is not in the vocabulary is recorded as `unspecified`, so no upstream text reaches `/state`.
+
+States: `idle`, `registering`, `presenting`, `acquiring_token`, `ready`, `failed_registration`, `failed_presentation`, `failed_token`, `failed_connector_unreachable`.
+
+Reasons: `step_started`, `step_completed`, `connector_unreachable`, `registration_rejected`, `presentation_rejected`, `token_rejected`, `nonce_retry_exhausted`, `upstream_error`, `timeout`, `bootstrap_error`, `retry_scheduled`, `retries_exhausted`, `reset`, `unspecified`.
+
+If a run ends in an error without a `failed_*` state, the lifecycle records the failure state of the step in progress with reason `bootstrap_error`. Only `failed_connector_unreachable` is retried: up to `Config.BootstrapAttempts` runs (default 3), waiting `Config.BootstrapBackoff` (default 500 ms) doubled per retry, each wait recorded as `retry_scheduled`. After the bound the state stays `failed_connector_unreachable` with `retries_exhausted`. Every other failure is final until `/reset`.
+
+`GET /state` returns:
+
+```json
+{"mode":"token","state":"ready","attempt":1,"lastErrorCode":"","history":[{"state":"registering","reason":"step_started","at":"2026-10-21T09:00:00Z"}]}
+```
+
+`lastErrorCode` is the reason of the most recent failure. In sample mode `/state` reports `mode: sample`, `state: idle` and an empty history.
+
+### `POST /reset`
+
+`POST /reset` on the Participant waits for an in-flight bootstrap run to return (it is not cancelled, so a token acquisition is never cut short), skips any pending retry, clears the history, `lastErrorCode` and the session reference, records `idle` / `reset` and starts a new bootstrap. It returns 200 with the `/state` body. If the run does not finish within `PARTICIPANT_REQUEST_TIMEOUT`, it returns 503 `{"reason":"reset_wait_timeout"}` and the pending retries stay cancelled; a later reset restarts. In sample mode it only records the reset.
+
+`POST /reset` on the Protected Resource returns 200 with `status: reset`, `mode` and `seedVersion`. Its demo data is the read-only seed, so there is nothing to rebuild.
+
+Neither reset touches token, replay, consumption or key state; neither service holds any. Both reset endpoints are unauthenticated demo controls: expose them on restricted routes only.
+
+### Seed data
+
+The Resource's report data is in `services/protectedresource/seed/v1.json`, embedded at build time. It holds a `version` (now `v1`), the standard report, the alternative report and the summary. `/health` reports it as `seedVersion`. A change to the data is a new file with a new version, not an edit of `v1.json`.
+
+### Deterministic runs
+
+Request and correlation IDs and timestamps can be fixed only through unexported test hooks (`Server.now`, `Server.newID`) set from `_test.go` files. No environment variable or configuration field reaches them. With the hooks fixed, the tests check that two identical runs of `/health`, `/state`, `/demo` and `/reset` produce byte-identical responses on both services.
+
 ## How the services communicate
 
 ```text
@@ -72,7 +146,7 @@ Test caller / future journey runtime
   <- sample JSON result, matched requestId and correlationId
 ```
 
-Only Participant makes an outbound application call. Resource has no callback to Participant or other outbound application dependency. Participant forwards the documented JSON fields, with `Content-Type` and `Accept` set to `application/json`. It does not forward bearer tokens, passwords or cookies, does not retry, and refuses redirects. The server-controlled Resource URL is not accepted as a request-body input.
+Only Participant makes an outbound application call. Resource has no callback to Participant or other outbound application dependency. Participant forwards the documented JSON fields, with `Content-Type` and `Accept` set to `application/json`. In sample mode it does not forward bearer tokens, passwords or cookies; in token mode it sends only the `Authorization` and `DPoP` headers from its own `TokenSession`, never ones received from its caller. It does not retry requests and refuses redirects. The server-controlled Resource URL is not accepted as a request-body input.
 
 Both demo endpoints accept one JSON object, at most 64 KiB, with these fields:
 
@@ -145,7 +219,7 @@ Then run the dependency-free Node.js 22+ checker from another terminal:
 node scripts/smoke-application-services.mjs
 ```
 
-It checks both health endpoints, all five standard scenarios directly and through Participant, ID propagation, sample labels, reasons and safe-data shape. It exits nonzero on failure. Use `--participant-url` and `--resource-url` for explicitly approved test endpoints; it does not create deployments or configure credentials. Health only establishes that the service is running; Participant health does not probe Resource. The sample endpoint has no built-in authentication: use approved restricted routes, not an unrestricted public endpoint.
+It covers sample mode only. It checks both health endpoints, all five standard scenarios directly and through Participant, ID propagation, sample labels, reasons and safe-data shape. It exits nonzero on failure. Use `--participant-url` and `--resource-url` for explicitly approved test endpoints; it does not create deployments or configure credentials. Health only establishes that the service is running; Participant health does not probe Resource. The sample endpoint has no built-in authentication: use approved restricted routes, not an unrestricted public endpoint.
 
 ## Deployment and returned evidence
 

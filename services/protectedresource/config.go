@@ -5,12 +5,19 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/tokenverify"
 )
 
 const (
 	defaultAddress        = ":8086"
 	defaultRequestTimeout = 5 * time.Second
 	serverTimeoutMargin   = 5 * time.Second
+
+	// ModeSample serves the scenario-driven sample without authentication; ModeToken serves /demo behind
+	// the injected RequestVerifier and picks the response by token scope.
+	ModeSample = "sample"
+	ModeToken  = "token"
 )
 
 type Config struct {
@@ -20,6 +27,17 @@ type Config struct {
 	Mode           string
 	AdapterMode    string
 	LogLevel       string
+	// Verifier, when set, selects token mode. It is injected by the caller, never built from environment
+	// variables here; LoadConfig leaves it nil, so the binary starts in sample mode.
+	Verifier tokenverify.RequestVerifier
+}
+
+// ServingMode is ModeToken when a Verifier is configured and ModeSample otherwise.
+func (c Config) ServingMode() string {
+	if c.Verifier != nil {
+		return ModeToken
+	}
+	return ModeSample
 }
 
 func (c Config) ServerReadTimeout() time.Duration {

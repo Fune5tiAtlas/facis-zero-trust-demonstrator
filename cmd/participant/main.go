@@ -21,10 +21,13 @@ func main() {
 	}
 
 	logger := newLogger(config.LogLevel)
-	server := participant.NewServer(config, logger).HTTPServer()
+	app := participant.NewServer(config, logger)
+	server := app.HTTPServer()
 
 	shutdownSignal, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// No Bootstrapper is wired yet, so this is a no-op and the process runs in sample mode.
+	app.Start(shutdownSignal)
 
 	shutdownDone := make(chan error, 1)
 	go func() {
@@ -35,7 +38,7 @@ func main() {
 		close(shutdownDone)
 	}()
 
-	logger.Info("participant starting", "address", config.Address, "mode", config.AdapterMode)
+	logger.Info("participant starting", "address", config.Address, "mode", config.ServingMode(), "adapter", config.AdapterMode)
 	serveErr := server.ListenAndServe()
 	if errors.Is(serveErr, http.ErrServerClosed) {
 		if shutdownErr := <-shutdownDone; shutdownErr != nil {

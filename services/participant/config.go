@@ -15,6 +15,11 @@ const (
 	// than the outbound request deadline, so a timed-out upstream call can
 	// still be reported to the caller as an "unavailable" result.
 	serverTimeoutMargin = 5 * time.Second
+
+	// ModeSample keeps the scenario-driven sample adapters; ModeToken runs the injected Bootstrapper and
+	// calls the Resource with the TokenSession's Authorization and DPoP headers.
+	ModeSample = "sample"
+	ModeToken  = "token"
 )
 
 // ServerReadTimeout bounds reading an inbound demo request.
@@ -34,6 +39,22 @@ type Config struct {
 	AdapterMode    string
 	ResourceURL    string
 	LogLevel       string
+
+	// Bootstrapper, when set, selects token mode (ResourceURL is then the Resource base URL). It is
+	// injected by the caller, never built from environment variables here; LoadConfig leaves it nil.
+	Bootstrapper Bootstrapper
+	// BootstrapAttempts bounds retries of a connector-unreachable bootstrap (default 3);
+	// BootstrapBackoff is the first wait, doubled per retry (default 500ms).
+	BootstrapAttempts int
+	BootstrapBackoff  time.Duration
+}
+
+// ServingMode is ModeToken when a Bootstrapper is configured and ModeSample otherwise.
+func (c Config) ServingMode() string {
+	if c.Bootstrapper != nil {
+		return ModeToken
+	}
+	return ModeSample
 }
 
 func LoadConfig() (Config, error) {
