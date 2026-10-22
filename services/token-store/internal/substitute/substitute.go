@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +28,12 @@ import (
 // OpTimeout bounds every single database, key-value store and transit operation of a substitution.
 // An on-demand acquisition is bounded by the caller's deadline instead.
 const OpTimeout = 2 * time.Second
+
+// MaxAcquiring is how many on-demand acquisitions, over all routes, run at once in one process.
+// Each holds at most two pooled connections (its route lock and one acquisition statement or
+// transaction), so the pool keeps capacity for the replay check, readiness, lookups and renewal
+// whatever the number of cold routes; the pool is sized for it (internal/server).
+const MaxAcquiring = 2
 
 var (
 	ErrNoUpstream  = errors.New("TOK-NO-UPSTREAM")
@@ -60,9 +67,10 @@ type Service struct {
 	Log      *slog.Logger
 	Now      func() time.Time
 
-	mu    sync.Mutex
-	gates map[string]chan struct{} // one per route: in-process single flight of on-demand acquisition
-	keys  map[string]*acquire.Key  // by key_ref; a version's public key never changes
+	mu        sync.Mutex
+	gates     map[string]chan struct{} // one per route: in-process single flight of on-demand acquisition
+	acquiring chan struct{}            // MaxAcquiring slots over all routes
+	keys      map[string]*acquire.Key  // by key_ref; a version's public key never changes
 }
 
 // tokenPattern is the contract's authorization value without its scheme: a value from the key-value
@@ -140,7 +148,9 @@ func (s *Service) lookup(ctx context.Context, q querier, req Request) (live, err
 // acquireOnDemand acquires the route's token when it has no live one, once for all concurrent
 // callers: in this process they queue on the route's gate, across replicas on a transaction-scoped
 // advisory lock on the route, and whoever gets the lock first looks again before acquiring. The wait
-// and the acquisition are bounded by ctx, the caller's deadline.
+// and the acquisition are bounded by ctx, the caller's deadline. Before it takes a connection a
+// route also takes one of MaxAcquiring process-wide slots, so cold routes cannot hold every pooled
+// connection with their locks while their acquisitions wait for one.
 func (s *Service) acquireOnDemand(ctx context.Context, req Request) (live, error) {
 	route, ok := s.Routes.For(req.PeerZone, req.Audience, req.Tenant)
 	if !ok || s.Acquirer == nil {
@@ -151,12 +161,28 @@ func (s *Service) acquireOnDemand(ctx context.Context, req Request) (live, error
 		return live{}, s.unavailable(ctx, "on-demand acquisition: deadline reached waiting for the route")
 	}
 	defer release()
+	s.mu.Lock()
+	if s.acquiring == nil {
+		s.acquiring = make(chan struct{}, MaxAcquiring)
+	}
+	slots := s.acquiring
+	s.mu.Unlock()
+	select {
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
+	case <-ctx.Done():
+		return live{}, s.unavailable(ctx, "on-demand acquisition: deadline reached waiting for a slot")
+	}
 
 	tx, err := s.DB.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return live{}, s.unavailable(ctx, "on-demand acquisition: no transaction")
 	}
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	defer func() {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), OpTimeout)
+		defer cancel()
+		_ = tx.Rollback(rctx)
+	}()
 	wait := 10 * time.Second
 	if d, ok := ctx.Deadline(); ok {
 		wait = time.Until(d)
@@ -176,13 +202,7 @@ func (s *Service) acquireOnDemand(ctx context.Context, req Request) (live, error
 		return tok, err
 	}
 	if _, err := s.Acquirer.Acquire(ctx, route); err != nil {
-		var e *acquire.Error
-		code := acquire.CodeStore
-		if errors.As(err, &e) {
-			code = e.Code
-		}
-		s.log().WarnContext(ctx, "no upstream token: on-demand acquisition failed", "route", route.Name, "reason_code", code)
-		return live{}, ErrNoUpstream
+		return live{}, s.acquisitionFailed(ctx, route.Name, err)
 	}
 	tok, err = s.lookup(ctx, tx, req)
 	switch {
@@ -193,6 +213,33 @@ func (s *Service) acquireOnDemand(ctx context.Context, req Request) (live, error
 	}
 	_ = tx.Commit(ctx)
 	return tok, nil
+}
+
+// acquisitionFailed maps a failed acquisition to the contract: TOK-NO-UPSTREAM when the peer side
+// definitively gave no token (it refused the grant or the outcome, issued none it would answer for,
+// could not be reached, or the outcome source had none), TOK-STORE-UNAVAILABLE when the store's own
+// dependencies failed (database, transit, KV, activation) or the caller's deadline ended it, and for
+// anything not known to be the peer's answer.
+func (s *Service) acquisitionFailed(ctx context.Context, route string, err error) error {
+	code := ""
+	var e *acquire.Error
+	if errors.As(err, &e) {
+		code = e.Code
+	}
+	peer := strings.HasPrefix(code, "CRED-")
+	switch code {
+	case acquire.CodeChallenge, acquire.CodeOutcomeSource, acquire.CodePeerRefused, acquire.CodePeerLost, acquire.CodeTokenInvalid:
+		peer = true
+	}
+	if peer && ctx.Err() == nil {
+		s.log().WarnContext(ctx, "no upstream token: on-demand acquisition refused or failed at the peer", "route", route, "reason_code", code)
+		return ErrNoUpstream
+	}
+	if code == "" {
+		code = acquire.CodeStore
+	}
+	s.log().WarnContext(ctx, "on-demand acquisition failed in the store", "route", route, "reason_code", code)
+	return ErrUnavailable
 }
 
 // routeLock is the route's advisory lock key text, length-prefixed so no two routes share it.

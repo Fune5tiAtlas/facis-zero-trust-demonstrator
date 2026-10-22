@@ -57,6 +57,10 @@ const (
 	settleWait       = 30 * time.Second
 	OrphanAge        = 10 * time.Minute
 	maxBody          = 64 << 10
+	// cleanupTimeout bounds each step that must still run after the caller's context ended: a
+	// rollback, the deletion of a value whose transaction confirmed rolled back, a failure's audit
+	// row. A step that does not finish in time leaves its value to the orphan sweep.
+	cleanupTimeout = 2 * time.Second
 )
 
 // Reason codes of acquisition, on audit rows and errors. The CRED-OUTCOME-* codes of IF-03 are
@@ -201,7 +205,7 @@ func (at *attempt) run(ctx context.Context) (Token, error) {
 	}
 	secret, err := readSecret(r.ClientSecretFile)
 	if err != nil {
-		return Token{}, fail(CodeChallenge, "client secret unreadable")
+		return Token{}, fail(CodeStore, "client secret unreadable")
 	}
 	if r.Outcomes == nil {
 		return Token{}, fail(CodeOutcomeSource, "route has no outcome source")
@@ -413,7 +417,7 @@ func (at *attempt) activate(ctx context.Context, key *Key, path string, tok issu
 	}
 	if code, err := at.stage(ctx, tx, key, path, tok); err != nil {
 		// COMMIT was never sent: the transaction did not commit.
-		_ = tx.Rollback(context.WithoutCancel(ctx))
+		rollback(ctx, tx)
 		return at.rolledBack(ctx, path, code)
 	}
 	commit := a.commit
@@ -431,6 +435,11 @@ func (at *attempt) activate(ctx context.Context, key *Key, path string, tok issu
 		// Any other answer, a server error included, does not prove a rollback: a FATAL
 		// termination can arrive after the commit took effect. The row decides, once the
 		// transaction has settled; a COMMIT refused with an error leaves no row and lands there too.
+		// A caller whose context has ended does not wait for that: the value stays for the orphan
+		// sweep, which applies the same rule.
+		if ctx.Err() != nil {
+			return Token{}, fail(CodeCommitUnknown, "activation outcome unknown and the caller gone; value kept for the orphan sweep")
+		}
 		return at.reconcile(ctx, path, tok)
 	}
 }
@@ -501,10 +510,10 @@ func (at *attempt) rolledBack(ctx context.Context, path, code string) (Token, er
 
 // reconcile waits for the activation transaction to end (its advisory lock is free once it
 // committed or aborted; the server's timeouts bound how long that takes), then reads the row by
-// token_id. Only a missing row lets the value go; if the wait or the read fails, the value stays for
-// the orphan sweep, which applies the same rule.
+// token_id. Only a missing row lets the value go; if the wait or the read fails, or the caller's
+// deadline comes first, the value stays for the orphan sweep, which applies the same rule.
 func (at *attempt) reconcile(ctx context.Context, path string, tok issued) (Token, error) {
-	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleWait+5*time.Second)
+	rctx, cancel := context.WithTimeout(ctx, settleWait+5*time.Second)
 	defer cancel()
 	deleted, err := at.a.deleteIfNoRow(rctx, at.tokenID, path)
 	switch {
@@ -528,7 +537,7 @@ func (a *Acquirer) deleteIfNoRow(ctx context.Context, tokenID, path string) (del
 	if err != nil {
 		return false, err
 	}
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	defer rollback(ctx, tx)
 	if _, err := tx.Exec(ctx, `SELECT set_config('lock_timeout', $1, true)`, ms(settleWait)); err != nil {
 		return false, err
 	}
@@ -550,8 +559,16 @@ func (a *Acquirer) deleteIfNoRow(ctx context.Context, tokenID, path string) (del
 
 func ms(d time.Duration) string { return strconv.FormatInt(d.Milliseconds(), 10) }
 
+// rollback ends tx even when ctx has ended, within cleanupTimeout; a connection that cannot is
+// closed by pgx, which ends the transaction and its locks on the server.
+func rollback(ctx context.Context, tx pgx.Tx) {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+	defer cancel()
+	_ = tx.Rollback(rctx)
+}
+
 func (at *attempt) deleteValue(ctx context.Context, path string) {
-	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
 	if err := at.a.Secrets.Delete(dctx, path); err != nil {
 		// Left for the orphan sweep: it has no row.
@@ -576,7 +593,7 @@ func (at *attempt) auditDetail() []byte {
 
 // audit writes a refusal or failure row outside any transaction, best effort.
 func (at *attempt) audit(ctx context.Context, kind, code, tokenID string) {
-	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
 	if _, err := at.a.DB.Exec(actx, auditSQL, kind, at.id, at.r.ClientID, nullable(at.outcomeID), nullable(tokenID), code, at.auditDetail()); err != nil {
 		at.a.log().ErrorContext(ctx, "audit row not written", "attempt", at.id, "reason_code", code)

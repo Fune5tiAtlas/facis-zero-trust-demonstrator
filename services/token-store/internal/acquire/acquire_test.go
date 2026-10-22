@@ -864,3 +864,34 @@ func TestOrphanSweepKeepsAValueWhoseActivationCommitsMeanwhile(t *testing.T) {
 		t.Fatalf("the committed token's value was deleted: %v", err)
 	}
 }
+
+// TestAnUnknownCommitDoesNotOutliveTheCallersDeadline: COMMIT never reaches the server (the
+// transaction stays open until the server's idle timeout), and the caller has a deadline far shorter
+// than that wait, or is already gone. The acquisition returns by the deadline with
+// ACQ-COMMIT-UNKNOWN and leaves the value for the orphan sweep instead of reconciling past it.
+func TestAnUnknownCommitDoesNotOutliveTheCallersDeadline(t *testing.T) {
+	for name, gone := range map[string]bool{"deadline during reconciliation": false, "caller gone at COMMIT": true} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			ctx, cancel := context.WithTimeout(e.ctx, 3*time.Second)
+			defer cancel()
+			e.a.commit = func(_ context.Context, tx pgx.Tx) error {
+				// Handed back after the deadline; the open transaction holds the token's lock until then.
+				time.AfterFunc(6*time.Second, func() { _ = tx.Rollback(context.Background()) })
+				if gone {
+					cancel()
+				}
+				return errors.New("connection reset by peer")
+			}
+			begin := time.Now()
+			_, err := e.a.Acquire(ctx, e.route)
+			if took := time.Since(begin); took > 3*time.Second+cleanupTimeout {
+				t.Errorf("returned after %v; the deadline was 3 s", took)
+			}
+			e.wantCode(err, CodeCommitUnknown)
+			if _, err := e.kv.Read(e.ctx, e.secrets.created[0]); err != nil {
+				t.Errorf("the value of an unknown commit was not kept for the sweep: %v", err)
+			}
+		})
+	}
+}

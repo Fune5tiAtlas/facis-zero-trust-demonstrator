@@ -8,6 +8,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -40,14 +42,32 @@ const (
 	target  = acquiretest.Audience + "/v1/items"
 )
 
-// countingBao counts every OpenBao call the store makes.
+// countingBao counts every OpenBao call the store makes, and fails or stalls transit signing or KV
+// writes on demand: fault is "", "fail-sign", "hang-sign", "fail-create" or "hang-create". A
+// stalled call returns only when its context ends.
 type countingBao struct {
 	*transit.Client
 	calls atomic.Int64
+	fault atomic.Value
+}
+
+func (c *countingBao) faulty(ctx context.Context, op string) error {
+	f, _ := c.fault.Load().(string)
+	switch f {
+	case "fail-" + op:
+		return errors.New("injected " + op + " failure")
+	case "hang-" + op:
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return nil
 }
 
 func (c *countingBao) Sign(ctx context.Context, k transit.KeyVersion, in []byte) ([]byte, error) {
 	c.calls.Add(1)
+	if err := c.faulty(ctx, "sign"); err != nil {
+		return nil, err
+	}
 	return c.Client.Sign(ctx, k, in)
 }
 
@@ -68,6 +88,9 @@ func (c *countingBao) Read(ctx context.Context, path string) ([]byte, error) {
 
 func (c *countingBao) Create(ctx context.Context, path string, v []byte) error {
 	c.calls.Add(1)
+	if err := c.faulty(ctx, "create"); err != nil {
+		return err
+	}
 	return c.Client.Create(ctx, path, v)
 }
 
@@ -120,22 +143,33 @@ func newSubEnv(t *testing.T, withB bool) *subEnv {
 		e.b = acquiretest.StartConnector(t, dsnB, addr, token, &issuer.PublicKey)
 		connector, clientID, secret = e.b.Base, e.b.ClientID, e.b.ClientSecret
 	}
-	routes, err := caller.NewRoutes([]caller.Route{{Callers: []string{guardID}, PeerZone: "zone-b",
-		Audience: acquiretest.Audience, Methods: []string{"GET", "POST"}, TargetPrefix: acquiretest.Audience + "/v1"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	// The route without a tenant, and seven tenant routes to the same peer: eight distinct routes.
 	e.loaded = acquire.Loaded{
 		SigningKey: "sub-a-" + acquiretest.RandHex(6),
 		Trusted:    if03.Issuers{acquiretest.VPIssuer: {acquiretest.VPKid: &issuer.PublicKey}},
-		Routes: map[string]acquire.Route{"zone-b-api": {Name: "zone-b-api", PeerZone: "zone-b", Audience: acquiretest.Audience,
-			ConnectorURL: connector, ClientID: clientID, ClientSecretFile: acquiretest.WriteFile(t, "secret", secret+"\n"),
+		Routes:     map[string]acquire.Route{},
+	}
+	secretFile := acquiretest.WriteFile(t, "secret", secret+"\n")
+	var subs []caller.Route
+	for _, tenant := range tenants {
+		name := "zone-b-api"
+		if tenant != "" {
+			name += "-" + tenant
+		}
+		e.loaded.Routes[name] = acquire.Route{Name: name, PeerZone: "zone-b", Audience: acquiretest.Audience, Tenant: tenant,
+			ConnectorURL: connector, ClientID: clientID, ClientSecretFile: secretFile,
 			Outcomes: acquire.Fixture{Issuer: acquiretest.VPIssuer, Kid: acquiretest.VPKid, Key: issuer,
-				Claims: if03.Claims{Role: acquiretest.VPRole, Entitlement: acquiretest.VPEntitle}}}},
-		Substitution: routes,
+				Claims: if03.Claims{Role: acquiretest.VPRole, Entitlement: acquiretest.VPEntitle}}}
+		subs = append(subs, caller.Route{Callers: []string{guardID}, PeerZone: "zone-b", Audience: acquiretest.Audience,
+			Tenant: tenant, Methods: []string{"GET", "POST"}, TargetPrefix: acquiretest.Audience + "/v1"})
+	}
+	if e.loaded.Substitution, err = caller.NewRoutes(subs); err != nil {
+		t.Fatal(err)
 	}
 	return e
 }
+
+var tenants = []string{"", "t1", "t2", "t3", "t4", "t5", "t6", "t7"}
 
 // server starts one more store on zone A's database, without its renewal worker.
 func (e *subEnv) server() (*Server, string) {
@@ -147,6 +181,7 @@ func (e *subEnv) serverWith(renewal bool) (*Server, string) {
 	e.t.Helper()
 	cfg := localConfig(e.dsnA, fakeOpenBao(e.t).URL)
 	cfg.Callers = headerCaller{}
+	cfg.ReplayCallers = []string{connectorID}
 	cfg.Acquisition = &e.loaded
 	cfg.OpenBao = e.bao
 	s, err := New(context.Background(), cfg, testLogger(e.logs))
@@ -382,7 +417,7 @@ func TestSubstitute_DeniesCallersAndRoutesBeforeAnyRead(t *testing.T) {
 		"target escaping prefix":  subRequest(map[string]any{"target_uri": acquiretest.Audience + "/v1/../admin"}),
 		"wrong peer zone":         subRequest(map[string]any{"peer_zone": "zone-c"}),
 		"wrong audience":          subRequest(map[string]any{"audience": "https://other.zone-b.test"}),
-		"wrong tenant":            subRequest(map[string]any{"tenant": "t1"}),
+		"wrong tenant":            subRequest(map[string]any{"tenant": "t9"}),
 		"unknown field":           subRequest(map[string]any{"extra": 1}),
 		"no correlation id":       subRequest(map[string]any{"correlation_id": nil}),
 		"method outside the enum": subRequest(map[string]any{"method": "TRACE"}),
@@ -481,5 +516,164 @@ func TestServe_RunsRenewal(t *testing.T) {
 	}
 	if n := e.count(e.poolA, `SELECT count(*) FROM upstream_token WHERE state = 'retired'`); n != 1 {
 		t.Errorf("%d retired rows; want 1", n)
+	}
+}
+
+// TestSubstitute_ColdRoutesDoNotStarveThePool: eight different routes without a token, substituted
+// at once, each acquire their own token within the deadline, while the replay check keeps answering
+// promptly: the cold routes never hold every pooled connection.
+func TestSubstitute_ColdRoutesDoNotStarveThePool(t *testing.T) {
+	e := newSubEnv(t, true)
+	s, url := e.server()
+	replayURL := "http://" + s.Addr().String() + "/internal/replay-check"
+	answers := make([]subAnswer, len(tenants))
+	elapsed := make([]time.Duration, len(tenants))
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i, tenant := range tenants {
+		wg.Go(func() {
+			<-start
+			begin := time.Now()
+			answers[i] = e.post(url, guardID, subRequest(map[string]any{"tenant": tenant}))
+			elapsed[i] = time.Since(begin)
+		})
+	}
+	done := make(chan struct{})
+	var slowest time.Duration
+	var replayFailures int
+	go func() {
+		defer close(done)
+		<-start
+		for i := 0; ; i++ {
+			select {
+			case <-time.After(20 * time.Millisecond):
+			}
+			begin := time.Now()
+			status, _ := postReplay(t, replayURL, connectorID, proofUse(fmt.Sprintf("cold-%d", i), time.Now()))
+			slowest = max(slowest, time.Since(begin))
+			if status != http.StatusOK {
+				replayFailures++
+			}
+			if e.count(e.poolA, `SELECT count(*) FROM upstream_token`) == len(tenants) || i > 500 {
+				return
+			}
+		}
+	}()
+	close(start)
+	wg.Wait()
+	<-done
+	for i, a := range answers {
+		if a.status != http.StatusOK || elapsed[i] > substituteTimeout {
+			t.Errorf("route %q: %d after %v: %s", tenants[i], a.status, elapsed[i], a.raw)
+		}
+	}
+	if replayFailures != 0 || slowest > time.Second {
+		t.Errorf("the replay check during the cold start: %d failures, slowest %v", replayFailures, slowest)
+	}
+	if n := e.acquisitions(); n != len(tenants) {
+		t.Errorf("%d acquisitions; want %d, one per route", n, len(tenants))
+	}
+}
+
+// TestSubstitute_TheDeadlineBoundsAnOnDemandAcquisition: a KV write or a transit signature that
+// hangs, or an activation blocked in the database, ends with the request's deadline: 503, no live
+// row, no value, no advisory lock left behind, and the route acquires normally once the fault is gone.
+func TestSubstitute_TheDeadlineBoundsAnOnDemandAcquisition(t *testing.T) {
+	for _, fault := range []string{"hang-create", "hang-sign", "activation blocked"} {
+		t.Run(fault, func(t *testing.T) {
+			e := newSubEnv(t, true)
+			s, url := e.server()
+			s.subTimeout = 2 * time.Second
+			var unblock func()
+			if fault == "activation blocked" {
+				tx, err := e.poolA.Begin(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.Exec(t.Context(), `LOCK TABLE upstream_token IN EXCLUSIVE MODE`); err != nil {
+					t.Fatal(err)
+				}
+				unblock = func() { _ = tx.Rollback(context.Background()) }
+				defer unblock()
+			} else {
+				e.bao.fault.Store(fault)
+			}
+			begin := time.Now()
+			a := e.post(url, guardID, subRequest(nil))
+			took := time.Since(begin)
+			if a.status != http.StatusServiceUnavailable || a.body["reason_code"] != "TOK-STORE-UNAVAILABLE" {
+				t.Errorf("%d %s; want 503 TOK-STORE-UNAVAILABLE", a.status, a.raw)
+			}
+			if took > s.subTimeout+time.Second {
+				t.Errorf("answered after %v; the deadline is %v", took, s.subTimeout)
+			}
+			if unblock != nil {
+				unblock()
+			}
+			e.bao.fault.Store("")
+			if n := e.count(e.poolA, `SELECT count(*) FROM upstream_token WHERE state IN ('active', 'renewing')`); n != 0 {
+				t.Errorf("%d live rows after the failed acquisition", n)
+			}
+			if vals, err := e.bao.Client.List(t.Context(), e.prefix); err != nil || len(vals) != 0 {
+				t.Errorf("values left: %v %v", vals, err)
+			}
+			locks := -1
+			for range 50 {
+				if locks = e.count(e.poolA, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`); locks == 0 {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			if locks != 0 {
+				t.Errorf("%d advisory locks left behind", locks)
+			}
+			if a := e.post(url, guardID, subRequest(nil)); a.status != http.StatusOK {
+				t.Errorf("after the fault: %d %s", a.status, a.raw)
+			}
+		})
+	}
+}
+
+// TestSubstitute_StoreFailuresAre503AndAPeerRefusalIs409: a failing database, transit or KV during
+// an on-demand acquisition is the store's unavailability, not an absent token; the peer refusing the
+// grant is.
+func TestSubstitute_StoreFailuresAre503AndAPeerRefusalIs409(t *testing.T) {
+	e := newSubEnv(t, true)
+	_, url := e.server()
+	for name, inject := range map[string]func() func(){
+		"transit": func() func() { e.bao.fault.Store("fail-sign"); return func() { e.bao.fault.Store("") } },
+		"KV":      func() func() { e.bao.fault.Store("fail-create"); return func() { e.bao.fault.Store("") } },
+		"database": func() func() {
+			if _, err := e.poolA.Exec(t.Context(), `CREATE FUNCTION refuse() RETURNS trigger LANGUAGE plpgsql AS
+				$$BEGIN RAISE EXCEPTION 'injected database failure'; END$$;
+				CREATE TRIGGER refuse BEFORE INSERT ON verified_outcome FOR EACH ROW EXECUTE FUNCTION refuse()`); err != nil {
+				t.Fatal(err)
+			}
+			return func() {
+				if _, err := e.poolA.Exec(t.Context(), `DROP TRIGGER refuse ON verified_outcome; DROP FUNCTION refuse()`); err != nil {
+					t.Fatal(err)
+				}
+			}
+		},
+	} {
+		undo := inject()
+		if a := e.post(url, guardID, subRequest(nil)); a.status != http.StatusServiceUnavailable || a.body["reason_code"] != "TOK-STORE-UNAVAILABLE" {
+			t.Errorf("%s failure: %d %s; want 503 TOK-STORE-UNAVAILABLE", name, a.status, a.raw)
+		}
+		undo()
+	}
+	// The peer refuses the outcome: signed by a key the store trusts and the peer does not.
+	other, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	e.loaded.Trusted[acquiretest.VPIssuer]["other"] = &other.PublicKey
+	r := e.loaded.Routes["zone-b-api"]
+	f := r.Outcomes.(acquire.Fixture)
+	f.Kid, f.Key = "other", other
+	r.Outcomes = f
+	e.loaded.Routes["zone-b-api"] = r
+	if a := e.post(url, guardID, subRequest(nil)); a.status != http.StatusConflict || a.body["reason_code"] != "TOK-NO-UPSTREAM" {
+		t.Errorf("peer refusal: %d %s; want 409 TOK-NO-UPSTREAM", a.status, a.raw)
+	}
+	if !strings.Contains(e.logs.String(), "CRED-OUTCOME-SIGNATURE") {
+		t.Error("the peer's refusal reason was not logged")
 	}
 }

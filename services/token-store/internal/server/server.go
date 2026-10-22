@@ -49,6 +49,7 @@ type Server struct {
 	routes      caller.Routes       // substitution's router; empty refuses every caller
 	substitute  *substitute.Service // nil without an acquisition config
 	renewal     *renew.Worker       // nil without an acquisition config
+	subTimeout  time.Duration       // the deadline of one substitution; substituteTimeout
 	reconnected chan struct{}       // signalled when the pool opens a connection, so the replay epoch is rechecked
 	now         func() time.Time
 }
@@ -69,9 +70,10 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*Server, error) {
 		// pgx redacts the password of a URL it cannot parse.
 		return nil, fmt.Errorf("database URL: %w", err)
 	}
-	// Two connections more than the replay check and readiness need: an on-demand acquisition holds
-	// one for its route lock while it uses another.
-	poolCfg.MaxConns = 6
+	// On-demand acquisitions hold at most two connections each (a route lock and one acquisition
+	// statement) and at most substitute.MaxAcquiring run at once; four more stay for the replay
+	// check, readiness, lookups and renewal, so cold routes never starve them.
+	poolCfg.MaxConns = int32(2*substitute.MaxAcquiring + 4)
 	poolCfg.MinConns = 0
 	poolCfg.MaxConnIdleTime = 5 * time.Minute
 	poolCfg.HealthCheckPeriod = 30 * time.Second
@@ -108,6 +110,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*Server, error) {
 		replay:      replay.NewPostgres(pool),
 		callers:     callers,
 		routes:      routes,
+		subTimeout:  substituteTimeout,
 		reconnected: reconnected,
 		now:         time.Now,
 	}

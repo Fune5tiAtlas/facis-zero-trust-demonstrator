@@ -308,7 +308,7 @@ caller's context; no private key enters the process.
 | The issued token fails a check of step 5 | Audit `upstream.refused` `ACQ-TOKEN-INVALID` with the failed check (`token_type`, `cnf.jkt`, `aud`, `exp`, `format`); nothing written |
 | The KV write fails | Nothing activated (`ACQ-KV-WRITE`). A value written despite the error has no row and is swept |
 | The transaction is confirmed rolled back: an error before COMMIT was sent, the receipt no longer consumable (`ACQ-ACTIVATION-REFUSED`), or COMMIT answered `ROLLBACK` because the transaction had already failed (`ACQ-ACTIVATION-FAILED`) | The KV value is deleted; audit `upstream.failed` |
-| COMMIT was sent and any other answer came back: none, a transport error, or a server error. A server error is not proof of a rollback: a FATAL termination can arrive after the commit took effect | The value is kept until reconciliation decides. It waits until the transaction has ended (the transaction holds an advisory lock on `token_id` from its first statement; `statement_timeout` 5 s and `idle_in_transaction_session_timeout` 10 s bound it), then, in an explicit READ COMMITTED transaction and in a statement after the wait, reads `upstream_token` by `token_id`: a row means the token is active; no row means the value is deleted, while the lock is still held (`ACQ-ACTIVATION-FAILED`). A COMMIT refused with a deferred-constraint violation or a serialization failure ends here with no row. If it cannot tell, the value stays (`ACQ-COMMIT-UNKNOWN`) for the sweep |
+| COMMIT was sent and any other answer came back: none, a transport error, or a server error. A server error is not proof of a rollback: a FATAL termination can arrive after the commit took effect | The value is kept until reconciliation decides. It waits until the transaction has ended (the transaction holds an advisory lock on `token_id` from its first statement; `statement_timeout` 5 s and `idle_in_transaction_session_timeout` 10 s bound it), then, in an explicit READ COMMITTED transaction and in a statement after the wait, reads `upstream_token` by `token_id`: a row means the token is active; no row means the value is deleted, while the lock is still held (`ACQ-ACTIVATION-FAILED`). A COMMIT refused with a deferred-constraint violation or a serialization failure ends here with no row. If it cannot tell, or the caller's context ends first (reconciliation runs under it; a caller already gone does not reconcile at all), the value stays (`ACQ-COMMIT-UNKNOWN`) for the sweep |
 | A KV value under the prefix has no row | The orphan sweep first checks the value's age by its KV `created_time` (more than 10 minutes, longer than any transaction can stay open), then takes the same advisory lock in READ COMMITTED, checks again that no row exists, and deletes the value before releasing the lock, so an activation that committed after the sweep first looked keeps its value. A value with a row, in any state, is never touched (`upstream.orphan_deleted`, `ACQ-ORPHAN-DELETED`) |
 
 Only a committed `active` row permits substitution. Audit rows carry the route, the peer zone, the
@@ -407,17 +407,27 @@ the request is authorized:
    once for all concurrent callers. In one process they queue on the route's gate, so waiters hold
    no database connection; across replicas the first takes a transaction-scoped advisory lock on the
    route (`lock_timeout` the caller's remaining deadline), looks again, and only then acquires; the
-   others find the committed row when they get the lock. A failed acquisition, or a route without an
-   outcome source, is 409 `TOK-NO-UPSTREAM` (the acquisition's reason code is logged and audited by
-   acquisition).
+   others find the committed row when they get the lock. Before it takes a connection, a route also
+   takes one of two process-wide acquisition slots: an acquisition holds at most two pooled
+   connections (its route lock and one acquisition statement), the pool has eight, so however many
+   routes are cold at once, four connections stay for the replay check, readiness, lookups and
+   renewal. A route without an outcome source, or an acquisition the peer side definitively answered
+   without a token (a `CRED-OUTCOME-*` refusal, another refusal, no challenge, a lost or unreadable
+   answer, an issued token that failed the store's checks, an outcome source that failed), is 409
+   `TOK-NO-UPSTREAM`; an acquisition that failed in the store's own dependencies (database, transit,
+   KV, activation, an unknown commit) or ran out of the caller's deadline is 503
+   `TOK-STORE-UNAVAILABLE`. The reason code is logged, and audited by acquisition.
 6. The token is read from the key-value store by `token_ref` and must have the contract's
    `authorization` form; the store key version named by `key_ref` is checked against its recorded
    thumbprint (cached per version); the proof carries `htm` the method, `htu` the target without
    query, `ath` the token's hash, `nonce` the `upstream_nonce` when given, and a new random `jti`.
 
 Every database, key-value store and transit operation is bounded (2 s each) and the whole call by
-10 s, the on-demand acquisition included; a dependency that fails is 503 `TOK-STORE-UNAVAILABLE`,
-fail closed. Records name the route and the `token_id`, never the token, the proof or the
+10 s, the on-demand acquisition included: acquisition runs under the caller's deadline, a commit
+whose outcome is unknown when the caller is gone is not reconciled synchronously (its value stays for
+the orphan sweep, the D10 rule), and only the cleanup that must survive the deadline (a rollback,
+deleting the value of a transaction confirmed rolled back, the failure's audit row) runs on, at most
+2 s per step. A dependency that fails is 503 `TOK-STORE-UNAVAILABLE`, fail closed. Records name the route and the `token_id`, never the token, the proof or the
 `authorization` value; refusals carry the reason code and the correlation id and nothing the caller
 sent.
 
@@ -431,7 +441,12 @@ OpenBao counting its calls, every caller refusal is 403 `TOK-CALLER-DENIED` and 
 target (a dot-segment escape included), peer zone, audience, tenant or malformed body is 403
 `TOK-ROUTE-DENIED`, with no OpenBao call, while an authorized request answers 503; twelve concurrent
 callers on two store replicas sharing the database, with only an expired row, cause exactly one
-acquisition at B, all get that token, the expired row is retired and one live row remains; the
+acquisition at B, all get that token, the expired row is retired and one live row remains; eight
+cold routes substituted at once each acquire within the deadline while the replay check keeps
+answering within a second; a hanging KV write, a hanging transit signature and an activation blocked
+by a table lock each answer 503 within the deadline (2 s in the test) with no live row, no value
+and no advisory lock left, and the route acquires once the fault is gone; injected database, transit
+and KV failures answer 503 and a peer refusing the outcome 409; the
 `no-store` header; and a canary that no token, proof or client secret reaches a record or a refusal.
 `internal/caller` tests the router and the canonical-target rule on their own.
 

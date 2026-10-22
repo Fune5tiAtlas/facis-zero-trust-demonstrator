@@ -68,7 +68,7 @@ func (s *Server) handleSubstitute(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, http.StatusServiceUnavailable, "TOK-STORE-UNAVAILABLE")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), substituteTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), s.subTimeout)
 	defer cancel()
 	sreq := substitute.Request{PeerZone: creq.PeerZone, Audience: creq.Audience, Tenant: creq.Tenant,
 		Method: creq.Method, TargetURI: creq.TargetURI}
