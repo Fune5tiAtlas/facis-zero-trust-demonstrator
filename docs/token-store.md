@@ -439,6 +439,9 @@ the request is authorized:
    `authorization` form; the store key version named by `key_ref` is checked against its recorded
    thumbprint (cached per version); the proof carries `htm` the method, `htu` the target without
    query, `ath` the token's hash, `nonce` the `upstream_nonce` when given, and a new random `jti`.
+7. The clock is read again before the answer leaves. A token that has expired since the lookup, or
+   expires within 1 s, is discarded: 409 `TOK-NO-UPSTREAM`, with no credential in the body. It is
+   not reacquired in the same call; the caller's retry finds no live row and acquires.
 
 Every database, key-value store and transit operation is bounded (2 s each) and the whole call by
 10 s, the on-demand acquisition included: acquisition runs under the caller's deadline, a commit
@@ -453,7 +456,9 @@ sent.
 runs substitution through the service against zone A's database, OpenBao and the real `connector`
 binary as zone B: a valid token yields `DPoP <token>` and a proof by the store key for the target
 (method, `htu` without the query, `ath`, nonce), two calls give two distinct `jti`s, and B's
-`internal/tokenverify` accepts the token with each proof; with zone B stopped, an expired-only, a
+`internal/tokenverify` accepts the token with each proof; a token whose expiry the store's clock
+passes, or comes within 1 s of, while the proof is signed answers 409 `TOK-NO-UPSTREAM` with no
+credential and no new acquisition; with zone B stopped, an expired-only, a
 failed-only and a retired-only route answer 409 `TOK-NO-UPSTREAM`; with the database pool closed and
 OpenBao counting its calls, every caller refusal is 403 `TOK-CALLER-DENIED` and every wrong method,
 target (a dot-segment escape included), peer zone, audience, tenant or malformed body is 403

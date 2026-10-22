@@ -48,8 +48,9 @@ const (
 // stalled call returns only when its context ends.
 type countingBao struct {
 	*transit.Client
-	calls atomic.Int64
-	fault atomic.Value
+	calls  atomic.Int64
+	fault  atomic.Value
+	onSign atomic.Value // func(), called before every transit signature when set
 }
 
 func (c *countingBao) faulty(ctx context.Context, op string) error {
@@ -66,6 +67,9 @@ func (c *countingBao) faulty(ctx context.Context, op string) error {
 
 func (c *countingBao) Sign(ctx context.Context, k transit.KeyVersion, in []byte) ([]byte, error) {
 	c.calls.Add(1)
+	if f, _ := c.onSign.Load().(func()); f != nil {
+		f()
+	}
 	if err := c.faulty(ctx, "sign"); err != nil {
 		return nil, err
 	}
@@ -736,5 +740,38 @@ func TestReadyz_ResolvesActiveSigningKeys(t *testing.T) {
 	set(`UPDATE signing_key SET state = 'retired', retired_at = now()`)
 	if w := signing(); w != checkOK {
 		t.Errorf("only a retired reference: %q", w)
+	}
+}
+
+// Expiry is judged again when the answer leaves: a token that expires, or comes within the margin
+// of expiring, while its value is read and its proof signed is not handed out.
+func TestSubstitute_ATokenThatExpiresDuringSigningIsNoUpstream(t *testing.T) {
+	e := newSubEnv(t, true)
+	s, url := e.server()
+	if a := e.post(url, guardID, subRequest(nil)); a.status != http.StatusOK {
+		t.Fatalf("acquiring: %d %s", a.status, a.raw)
+	}
+	var expires time.Time
+	if err := e.poolA.QueryRow(t.Context(), `SELECT expires_at FROM upstream_token WHERE state = 'active'`).Scan(&expires); err != nil {
+		t.Fatal(err)
+	}
+	var skew atomic.Int64 // how far the store's clock is ahead of the real one
+	s.substitute.Now = func() time.Time { return time.Now().Add(time.Duration(skew.Load())) }
+	for name, at := range map[string]time.Time{"past expiry": expires.Add(time.Second), "within the margin": expires.Add(-time.Second / 2)} {
+		skew.Store(0)
+		e.bao.onSign.Store(func() { skew.Store(int64(time.Until(at))) })
+		a := e.post(url, guardID, subRequest(nil))
+		if a.status != http.StatusConflict || a.body["reason_code"] != "TOK-NO-UPSTREAM" ||
+			strings.Contains(a.raw, "authorization") || strings.Contains(a.raw, "dpop") {
+			t.Errorf("%s: %d %q; want 409 TOK-NO-UPSTREAM and no credential", name, a.status, a.body["reason_code"])
+		}
+	}
+	e.bao.onSign.Store(func() {})
+	skew.Store(0)
+	if a := e.post(url, guardID, subRequest(nil)); a.status != http.StatusOK {
+		t.Errorf("the clock back: %d %s", a.status, a.raw)
+	}
+	if n := e.acquisitions(); n != 1 {
+		t.Errorf("%d acquisitions; the discarded token must not be reacquired synchronously", n)
 	}
 }

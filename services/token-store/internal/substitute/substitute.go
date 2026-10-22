@@ -35,6 +35,10 @@ const OpTimeout = 2 * time.Second
 // whatever the number of cold routes; the pool is sized for it (internal/server).
 const MaxAcquiring = 2
 
+// ExpiryMargin is how long a handed-out token must still be valid when the answer leaves: the
+// value read and the proof signed after the lookup take time, and the guard still has to send it.
+const ExpiryMargin = time.Second
+
 var (
 	ErrNoUpstream  = errors.New("TOK-NO-UPSTREAM")
 	ErrUnavailable = errors.New("TOK-STORE-UNAVAILABLE")
@@ -78,7 +82,8 @@ type Service struct {
 var tokenPattern = regexp.MustCompile(`^[A-Za-z0-9._~+/-]+=*$`)
 
 // Substitute returns the route's live token and a proof for req. ErrNoUpstream when the route has no
-// live, unexpired token and none could be acquired; ErrUnavailable when a dependency failed. The
+// live, unexpired token and none could be acquired, or when the token found expires within
+// ExpiryMargin of the answer; ErrUnavailable when a dependency failed. The
 // request must already be authorized: nothing here decides who may ask.
 func (s *Service) Substitute(ctx context.Context, req Request) (Result, error) {
 	origin, path, err := caller.Target(req.TargetURI)
@@ -115,6 +120,14 @@ func (s *Service) Substitute(ctx context.Context, req Request) (Result, error) {
 		ATH: base64.RawURLEncoding.EncodeToString(ath[:]), Nonce: req.Nonce})
 	if err != nil {
 		return Result{}, s.unavailable(ctx, "proof not signed")
+	}
+	// Expiry was judged at the lookup; reading the value and signing took time since. A token that
+	// has expired, or is about to, is discarded rather than handed out, and not reacquired here:
+	// the caller retries, and the next lookup finds no live row and acquires.
+	if !s.now().Add(ExpiryMargin).Before(tok.expiresAt) {
+		s.log().WarnContext(ctx, "no upstream token: it expired during substitution", "peer_zone", req.PeerZone,
+			"audience", req.Audience, "token_id", tok.id)
+		return Result{}, ErrNoUpstream
 	}
 	s.log().InfoContext(ctx, "upstream token substituted", "peer_zone", req.PeerZone, "audience", req.Audience,
 		"token_id", tok.id)
