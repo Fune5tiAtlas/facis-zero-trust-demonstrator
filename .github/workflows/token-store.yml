@@ -11,8 +11,13 @@ on:
       - services/connector/**
       - services/participant/**
       - services/protectedresource/**
+      - cmd/participant/**
+      - cmd/protected-resource/**
       - internal/**
       - deployment/docker/token-store/**
+      - deployment/docker/connector/**
+      - deployment/docker/participant/**
+      - deployment/docker/protected-resource/**
       - deployment/helm/token-store/**
       - scripts/verify-token-store/**
       - scripts/tools/pins.env
@@ -26,8 +31,13 @@ on:
       - services/connector/**
       - services/participant/**
       - services/protectedresource/**
+      - cmd/participant/**
+      - cmd/protected-resource/**
       - internal/**
       - deployment/docker/token-store/**
+      - deployment/docker/connector/**
+      - deployment/docker/participant/**
+      - deployment/docker/protected-resource/**
       - deployment/helm/token-store/**
       - scripts/verify-token-store/**
       - scripts/tools/pins.env
@@ -88,6 +98,7 @@ jobs:
             CONNECTOR_TEST_TOKENS=$tokens go test -count=1 -race -timeout 20m -v \
               ./services/token-store/... ./services/connector/... ./internal/... \
               ./services/participant/... ./services/protectedresource/... \
+              ./cmd/participant/... ./cmd/protected-resource/... \
               | tee "$RUNNER_TEMP/token-path-$tokens.log"
             if grep -q -- '--- SKIP' "$RUNNER_TEMP/token-path-$tokens.log"; then
               echo "::error::a test was skipped with $tokens tokens; this job must run them against PostgreSQL and OpenBao"
