@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/json"
 	"io"
 	"net"
@@ -13,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/jose"
 )
 
 func serveEnv(values map[string]string) func(string) string {
@@ -365,6 +370,103 @@ func TestServeNeverPrintsAnUnparsableDatabaseURL(t *testing.T) {
 				t.Errorf("the refusal was not recorded")
 			}
 			noCanary(t, logs, map[string]string{"database URL": c.dsn, "database password": c.password})
+		})
+	}
+}
+
+// testJWK is the public JWK of a fresh P-256 key with kid as its kid, as a JSON object.
+func testJWK(t *testing.T, kid string) (*ecdsa.PrivateKey, string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwk := jose.PublicJWK(&key.PublicKey)
+	jwk.Kid = kid
+	b, _ := json.Marshal(jwk)
+	return key, string(b)
+}
+
+const (
+	vpIssuer = "https://verifier.example"
+	vpScope  = "resource.vp"
+)
+
+// The verified-presentation flags: off when unset; the files parsed strictly, every refusal naming
+// the flag and nothing of the file.
+func TestParseServeVerifiedPresentation(t *testing.T) {
+	_, k1 := testJWK(t, "canary-kid-1")
+	_, k2 := testJWK(t, "canary-kid-2")
+	_, dup := testJWK(t, "canary-kid-1")
+	issuers := writeFile(t, "issuers.json", `{"`+vpIssuer+`":{"keys":[`+k1+`]},"https://other.example":{"keys":[`+k2+`]}}`)
+	scopeMap := writeFile(t, "scopes.json", `[{"role":"canary-role","entitlement":"e","scopes":["`+vpScope+`"]},{"role":"canary-role","scopes":["b","c"]}]`)
+	vpArgs := func(issuersFile, mapFile string) []string {
+		return []string{"--vp-trusted-issuers-file", issuersFile, "--vp-scope-map-file", mapFile}
+	}
+	issuersWith := func(content string) []string { return vpArgs(writeFile(t, "issuers.json", content), scopeMap) }
+	mapWith := func(content string) []string { return vpArgs(issuers, writeFile(t, "scopes.json", content)) }
+	private := strings.TrimSuffix(k1, "}") + `,"d":"AAAA"}`
+	p384 := strings.Replace(k1, `"P-256"`, `"P-384"`, 1)
+	noKid := strings.Replace(k1, `"kid":"canary-kid-1"`, `"use":"sig"`, 1)
+
+	t.Run("off when unset", func(t *testing.T) {
+		got, err := parseServe(nil, required(nil), io.Discard)
+		if err != nil || got.cfg.vp.TrustedIssuers != nil || got.cfg.vp.Scopes != nil || got.cfg.registrarDelegable != nil {
+			t.Fatalf("%+v, %v", got.cfg.vp, err)
+		}
+	})
+	t.Run("from the environment", func(t *testing.T) {
+		got, err := parseServe(nil, required(map[string]string{"CONNECTOR_VP_TRUSTED_ISSUERS_FILE": issuers,
+			"CONNECTOR_VP_SCOPE_MAP_FILE": scopeMap, "CONNECTOR_REGISTRAR_DELEGABLE_SCOPES": vpScope + ", b"}), io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vp := got.cfg.vp
+		if len(vp.TrustedIssuers) != 2 || vp.TrustedIssuers[vpIssuer]["canary-kid-1"] == nil || vp.TrustedIssuers["https://other.example"]["canary-kid-2"] == nil {
+			t.Errorf("issuers: %v", vp.TrustedIssuers)
+		}
+		if len(vp.Scopes) != 2 || vp.Scopes[0].Entitlement != "e" || vp.Scopes[1].Entitlement != "" || strings.Join(vp.Scopes[1].Scopes, " ") != "b c" {
+			t.Errorf("scopes: %+v", vp.Scopes)
+		}
+		if strings.Join(got.cfg.registrarDelegable, " ") != vpScope+" b" {
+			t.Errorf("delegable: %v", got.cfg.registrarDelegable)
+		}
+	})
+
+	for _, tc := range []struct {
+		name, wantErr string
+		args          []string
+	}{
+		{"issuers without a map", "--vp-scope-map-file", []string{"--vp-trusted-issuers-file", issuers}},
+		{"map without issuers", "--vp-scope-map-file", []string{"--vp-scope-map-file", scopeMap}},
+		{"missing issuers file", "--vp-trusted-issuers-file", vpArgs(filepath.Join(t.TempDir(), "absent"), scopeMap)},
+		{"private key member", "--vp-trusted-issuers-file", issuersWith(`{"` + vpIssuer + `":{"keys":[` + private + `]}}`)},
+		{"wrong curve", "--vp-trusted-issuers-file", issuersWith(`{"` + vpIssuer + `":{"keys":[` + p384 + `]}}`)},
+		{"no kid", "--vp-trusted-issuers-file", issuersWith(`{"` + vpIssuer + `":{"keys":[` + noKid + `]}}`)},
+		{"duplicate kid across issuers", "--vp-trusted-issuers-file", issuersWith(`{"` + vpIssuer + `":{"keys":[` + k1 + `]},"https://o.example":{"keys":[` + dup + `]}}`)},
+		{"unknown issuer member", "--vp-trusted-issuers-file", issuersWith(`{"` + vpIssuer + `":{"keys":[` + k1 + `],"canary-extra":1}}`)},
+		{"duplicate issuer", "--vp-trusted-issuers-file", issuersWith(`{"` + vpIssuer + `":{"keys":[` + k1 + `]},"` + vpIssuer + `":{"keys":[` + k2 + `]}}`)},
+		{"no keys", "--vp-trusted-issuers-file", issuersWith(`{"` + vpIssuer + `":{"keys":[]}}`)},
+		{"issuer not a URI", "--vp-trusted-issuers-file", issuersWith(`{"canary-issuer":{"keys":[` + k1 + `]}}`)},
+		{"empty issuers", "--vp-trusted-issuers-file", issuersWith(`{}`)},
+		{"unknown map member", "--vp-scope-map-file", mapWith(`[{"role":"canary-role","scopes":["a"],"canary-extra":true}]`)},
+		{"case-folded map member", "--vp-scope-map-file", mapWith(`[{"Role":"canary-role","scopes":["a"]}]`)},
+		{"duplicate map member", "--vp-scope-map-file", mapWith(`[{"role":"canary-role","role":"x","scopes":["a"]}]`)},
+		{"no role", "--vp-scope-map-file", mapWith(`[{"scopes":["a"]}]`)},
+		{"no scopes", "--vp-scope-map-file", mapWith(`[{"role":"canary-role","scopes":[]}]`)},
+		{"registration scope mapped", "--vp-scope-map-file", mapWith(`[{"role":"canary-role","scopes":["connector:client_registration"]}]`)},
+		{"pair mapped twice", "--vp-scope-map-file", mapWith(`[{"role":"canary-role","scopes":["a"]},{"role":"canary-role","scopes":["b"]}]`)},
+		{"map not an array", "--vp-scope-map-file", mapWith(`{"role":"canary-role","scopes":["a"]}`)},
+		{"registration scope delegated", "--registrar-delegable-scopes", []string{"--registrar-delegable-scopes", "a,connector:client_registration"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseServe(tc.args, required(nil), io.Discard)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want one naming %s", err, tc.wantErr)
+			}
+			if strings.Contains(err.Error(), "canary") || strings.Contains(err.Error(), "AAAA") {
+				t.Errorf("the error repeats the file: %v", err)
+			}
 		})
 	}
 }

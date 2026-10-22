@@ -42,6 +42,11 @@ flags of serve (each defaults to the CONNECTOR_* variable of the same name):
   --registrar-scopes LIST            comma-separated scopes of the registrar, connector:client_registration among them
   --registrar-audiences LIST         comma-separated audiences of the registrar: the registration endpoint and
                                      the resource audiences registered clients may name
+  --registrar-delegable-scopes LIST  comma-separated scopes the registrar may grant to the clients it registers
+                                     beyond its own token's (verified-presentation scopes)
+  --vp-trusted-issuers-file PATH     JSON file of the IF-03 issuers and their public keys; enables the
+                                     verified-presentation grant
+  --vp-scope-map-file PATH           JSON file mapping outcome claims to scopes, required with the issuers file
   --access-token-lifespan DURATION   access-token lifetime (default 5m0s)
   --dpop-enforce=BOOL                require a DPoP proof from every client (default true)
   --dpop-nonce=BOOL                  challenge with a server DPoP nonce (default true)

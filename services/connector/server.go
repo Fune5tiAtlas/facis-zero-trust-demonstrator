@@ -170,6 +170,7 @@ func newServer(ctx context.Context, cfg config, log *slog.Logger) (*server, erro
 				EndpointURL: cfg.registrationEndpoint,
 				GrantTypes:  []string{"client_credentials"},
 			},
+			VerifiedPresentation: cfg.vp,
 		},
 		replay:      replay.NewPostgres(pool),
 		reconnected: reconnected,
@@ -179,6 +180,13 @@ func newServer(ctx context.Context, cfg config, log *slog.Logger) (*server, erro
 		},
 		registrarSecret: registrarSecret,
 		clients:         pgstore.New(pool, nil).Clients,
+	}
+	if len(cfg.vp.TrustedIssuers) > 0 {
+		// Clients may register for the grant; the registrar itself needs only client_credentials.
+		s.providerCfg.Registration.GrantTypes = append(s.providerCfg.Registration.GrantTypes, oauth2provider.VerifiedPresentationGrantType)
+	}
+	if len(cfg.registrarDelegable) > 0 {
+		s.providerCfg.Registration.DelegableScopes = map[string][]string{cfg.registrarID: cfg.registrarDelegable}
 	}
 	s.live.Store(&live{routes: s.apiRoutes(nil, nil)})
 

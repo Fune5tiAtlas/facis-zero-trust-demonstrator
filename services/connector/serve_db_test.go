@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,12 +18,15 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/if03"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/jose"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/pgtest"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/replay"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/tokenverify"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/transit"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/dpoptest"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/oauth2provider"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/signing"
 )
 
 const scope = "resource.read"
@@ -309,4 +313,128 @@ func waitFor(t *testing.T, r *running, want string) string {
 	}
 	t.Fatalf("readyz never had %s: %s\n%s", want, body, r.out.String())
 	return ""
+}
+
+// The verified-presentation grant through the binary: started with a trusted issuer and a scope map,
+// the connector lets the registrar register a client for a delegated VP scope; that client gets a
+// challenge, exchanges an IF-03 outcome signed for it for a DPoP-bound token that tokenverify accepts
+// with the VP scope through the binary's key set, and a second use of the outcome is refused as
+// consumed.
+func TestServeIssuesVerifiedPresentationTokens(t *testing.T) {
+	in := newInfra(t)
+	apiAddr := freeAddr(t)
+	issuerKey, jwk := testJWK(t, "verifier-key-1")
+	args := append(in.args(t, apiAddr, in.key.Version),
+		"--vp-trusted-issuers-file", writeFile(t, "issuers.json", `{"`+vpIssuer+`":{"keys":[`+jwk+`]}}`),
+		"--vp-scope-map-file", writeFile(t, "scopes.json", `[{"role":"operator","scopes":["`+vpScope+`"]}]`),
+		"--registrar-delegable-scopes", vpScope)
+	r := start(t, args)
+	waitFor(t, r, `"ready":true`)
+	defer func() {
+		if code := r.stop(t); code != exitOK {
+			t.Errorf("exit %d after SIGTERM", code)
+		}
+	}()
+
+	var proofs []string
+	registrarKey := dpoptest.NewKey(t)
+	endpoint := "http://" + apiAddr + "/oauth2/register"
+	registrarToken := token(t, &proofs, apiAddr, "registrar", canaryRegistrarSecret, registrarKey,
+		oauth2provider.RegistrationScope+" "+scope, endpoint+" "+resourceAudience)
+	metadata, _ := json.Marshal(map[string]any{
+		"client_name": "participant backend", "grant_types": []string{"client_credentials", oauth2provider.VerifiedPresentationGrantType},
+		"token_endpoint_auth_method": "client_secret_basic", "scope": vpScope,
+		"dpop_bound_access_tokens": true, "audience": []string{resourceAudience},
+	})
+	resp, regBody := dpopCall(t, &proofs, func(nonce string) (*http.Request, string) {
+		req, _ := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(metadata))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "DPoP "+registrarToken)
+		return req, dpoptest.Mint(t, registrarKey, dpoptest.Proof{Method: http.MethodPost, URL: endpoint, AccessToken: registrarToken, Nonce: nonce})
+	})
+	var client struct {
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+	}
+	if resp.StatusCode != http.StatusCreated || json.Unmarshal(regBody, &client) != nil || client.ClientID == "" {
+		t.Fatalf("registration: status %d %s", resp.StatusCode, regBody)
+	}
+
+	form := url.Values{"audience": {resourceAudience}}
+	req, _ := http.NewRequest(http.MethodPost, "http://"+apiAddr+"/oauth2/challenge", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(url.QueryEscape(client.ClientID), url.QueryEscape(client.ClientSecret))
+	chResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var challenged struct {
+		Challenge string `json:"challenge"`
+		ExpiresIn int    `json:"expires_in"`
+	}
+	if err := json.NewDecoder(chResp.Body).Decode(&challenged); err != nil || chResp.StatusCode != http.StatusOK || challenged.Challenge == "" {
+		t.Fatalf("challenge: status %d, %v", chResp.StatusCode, err)
+	}
+	_ = chResp.Body.Close()
+
+	id := make([]byte, 16)
+	_, _ = rand.Read(id)
+	now := time.Now().UTC()
+	payload, _ := json.Marshal(map[string]any{
+		"iss": vpIssuer, "outcome_id": fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:]),
+		"client_id": client.ClientID, "challenge": challenged.Challenge, "audience": resourceAudience,
+		"claims": map[string]string{"role": "operator"}, "status": "verified",
+		"verified_at": now.Add(-5 * time.Second).Format(time.RFC3339), "expires_at": now.Add(100 * time.Second).Format(time.RFC3339),
+	})
+	issuer, err := signing.NewLocal(issuerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := jose.Sign(t.Context(), jose.Header{Typ: if03.Typ, Kid: "verifier-key-1"}, payload, issuer.Sign)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clientKey := dpoptest.NewKey(t)
+	tokenURL := "http://" + apiAddr + "/oauth2/token"
+	grant := func() (*http.Response, []byte) {
+		vpForm := url.Values{"grant_type": {oauth2provider.VerifiedPresentationGrantType}, "outcome": {outcome},
+			"challenge": {challenged.Challenge}, "audience": {resourceAudience}}
+		return dpopCall(t, &proofs, func(nonce string) (*http.Request, string) {
+			req, _ := http.NewRequest(http.MethodPost, tokenURL, strings.NewReader(vpForm.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.SetBasicAuth(url.QueryEscape(client.ClientID), url.QueryEscape(client.ClientSecret))
+			return req, dpoptest.Mint(t, clientKey, dpoptest.Proof{Method: http.MethodPost, URL: tokenURL, Nonce: nonce})
+		})
+	}
+	resp, body := grant()
+	var issued struct {
+		AccessToken string `json:"access_token"`
+		TokenType   string `json:"token_type"`
+		Scope       string `json:"scope"`
+	}
+	if resp.StatusCode != http.StatusOK || json.Unmarshal(body, &issued) != nil || issued.TokenType != "DPoP" || issued.Scope != vpScope {
+		t.Fatalf("verified-presentation grant: status %d %s", resp.StatusCode, body)
+	}
+
+	verifier, err := tokenverify.New(tokenverify.Config{
+		Issuer: "https://connector.example", JWKSURL: "http://" + apiAddr + "/.well-known/jwks.json",
+		Audience: resourceAudience, PublicBaseURL: resourceAudience, Scopes: []string{vpScope}, Replay: replay.NewPostgres(in.pool),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call, _ := http.NewRequest(http.MethodGet, resourceAudience+"/data", nil)
+	call.Header.Set("Authorization", "DPoP "+issued.AccessToken)
+	call.Header.Set("DPoP", dpoptest.Mint(t, clientKey, dpoptest.Proof{Method: http.MethodGet, URL: resourceAudience + "/data", AccessToken: issued.AccessToken}))
+	if got, err := verifier.Verify(call); err != nil || got.ClientID != client.ClientID || got.JKT != clientKey.Thumbprint() {
+		t.Fatalf("tokenverify: %+v, %v", got, err)
+	}
+
+	resp, body = grant()
+	var refused struct{ Error, Reason string }
+	if resp.StatusCode != http.StatusBadRequest || json.Unmarshal(body, &refused) != nil ||
+		refused.Error != "invalid_grant" || refused.Reason != if03.CodeConsumed {
+		t.Errorf("second use of the outcome: status %d %s, want 400 invalid_grant %s", resp.StatusCode, body, if03.CodeConsumed)
+	}
 }

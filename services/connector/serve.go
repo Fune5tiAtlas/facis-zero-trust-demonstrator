@@ -46,6 +46,11 @@ type config struct {
 	readinessTimeout       time.Duration
 	drainDelay             time.Duration
 	shutdownTimeout        time.Duration
+
+	// The verified-presentation grant: off unless the issuers file is set, read at start.
+	vpIssuersFile, vpScopeMapFile string
+	vp                            oauth2provider.VerifiedPresentationConfig
+	registrarDelegable            []string // scopes the registrar may grant beyond its token's
 }
 
 type serveOptions struct {
@@ -59,7 +64,7 @@ type serveOptions struct {
 func parseServe(args []string, env func(string) string, stderr io.Writer) (serveOptions, error) {
 	opts := serveOptions{level: slog.LevelInfo}
 	c := &opts.cfg
-	var registrarScopes, registrarAudiences string
+	var registrarScopes, registrarAudiences, registrarDelegable string
 	fs := flag.NewFlagSet("connector serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	strs := []struct {
@@ -80,6 +85,9 @@ func parseServe(args []string, env func(string) string, stderr io.Writer) (serve
 		{"registrar-secret-file", "CONNECTOR_REGISTRAR_SECRET_FILE", "", "file holding the registrar's client secret", &c.registrarSecretFile},
 		{"registrar-scopes", "CONNECTOR_REGISTRAR_SCOPES", "", "comma-separated scopes of the registrar, connector:client_registration among them", &registrarScopes},
 		{"registrar-audiences", "CONNECTOR_REGISTRAR_AUDIENCES", "", "comma-separated audiences of the registrar: the registration endpoint and the resource audiences registered clients may name", &registrarAudiences},
+		{"registrar-delegable-scopes", "CONNECTOR_REGISTRAR_DELEGABLE_SCOPES", "", "comma-separated scopes the registrar may grant to the clients it registers beyond its token's", &registrarDelegable},
+		{"vp-trusted-issuers-file", "CONNECTOR_VP_TRUSTED_ISSUERS_FILE", "", "JSON file of the IF-03 issuers and their keys; enables the verified-presentation grant", &c.vpIssuersFile},
+		{"vp-scope-map-file", "CONNECTOR_VP_SCOPE_MAP_FILE", "", "JSON file mapping outcome claims to scopes, required with the issuers file", &c.vpScopeMapFile},
 	}
 	for _, s := range strs {
 		fs.StringVar(s.dst, s.name, s.def, s.help+" ($"+s.variable+")")
@@ -163,7 +171,13 @@ func parseServe(args []string, env func(string) string, stderr io.Writer) (serve
 	}
 	c.registrarScopes = splitList(registrarScopes)
 	c.registrarAudiences = splitList(registrarAudiences)
-	return opts, c.validate()
+	c.registrarDelegable = splitList(registrarDelegable)
+	if err := c.validate(); err != nil {
+		return opts, err
+	}
+	var err error
+	c.vp, err = loadVP(c.vpIssuersFile, c.vpScopeMapFile)
+	return opts, err
 }
 
 func splitList(s string) []string {
@@ -213,6 +227,9 @@ func (c config) validate() error {
 	}
 	if !slices.Contains(c.registrarAudiences, c.registrationEndpoint) {
 		return errors.New("--registrar-audiences must include the registration endpoint")
+	}
+	if slices.Contains(c.registrarDelegable, oauth2provider.RegistrationScope) {
+		return errors.New("--registrar-delegable-scopes cannot include " + oauth2provider.RegistrationScope)
 	}
 	if c.accessTokenLifespan <= 0 {
 		return errors.New("the access-token lifespan must be longer than 0")

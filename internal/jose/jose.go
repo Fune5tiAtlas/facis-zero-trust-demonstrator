@@ -249,7 +249,7 @@ func parseHeader(raw []byte, policy HeaderPolicy) (Header, error) {
 		return Header{}, fmt.Errorf("%w: jwk presence", ErrHeader)
 	}
 	if present {
-		jwk, err := parseJWK(rawJWK)
+		jwk, err := ParseJWK(rawJWK)
 		if err != nil {
 			return Header{}, err
 		}
@@ -258,9 +258,9 @@ func parseHeader(raw []byte, policy HeaderPolicy) (Header, error) {
 	return h, nil
 }
 
-// parseJWK accepts a public P-256 key with members kty, crv, x, y and optionally kid; any other
+// ParseJWK accepts a public P-256 key with members kty, crv, x, y and optionally kid; any other
 // member, private ones (d) included, is refused.
-func parseJWK(raw []byte) (JWK, error) {
+func ParseJWK(raw []byte) (JWK, error) {
 	members, err := ParseObject(raw)
 	if err != nil {
 		return JWK{}, fmt.Errorf("%w: jwk: %w", ErrHeader, err)
