@@ -116,7 +116,7 @@ func envOrDefault(name, fallback string) string {
 // The replay record is the Resource's own, in memory (replay.Memory), not the zone's shared proof_jti
 // table: a proof names this Resource in htu, so only this Resource can be presented with it, and the
 // Resource needs no database. A restart loses the record, which re-opens at most one proof window
-// (90 s) for proofs presented before it; run one replica, since replicas do not share the record.
+// (120 s) for proofs presented before it; run one replica, since replicas do not share the record.
 func verifierFromEnv() (*tokenverify.Verifier, error) {
 	get := func(name string) string { return strings.TrimSpace(os.Getenv(name)) }
 	for _, name := range []string{"PROTECTED_RESOURCE_TOKEN_ISSUER", "PROTECTED_RESOURCE_JWKS_URL",
