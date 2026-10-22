@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -196,6 +197,16 @@ func TestVerify_HTUComparedAfterNormalisation(t *testing.T) {
 		{"fragment ignored", uri + "#frag", uri, true},
 		{"configured URI with port, proof without", "https://api.example.com/resource", "https://api.example.com:443/resource", true},
 		{"empty path is root", "https://api.example.com", "https://api.example.com/", true},
+		{"escaped unreserved decoded", "https://api.example.com/%7euser", "https://api.example.com/~user", true},
+		{"escaped unreserved letters decoded", "https://api.example.com/%72esource", uri, true},
+		{"hex case of an escape is irrelevant", "https://api.example.com/a%2fb", "https://api.example.com/a%2Fb", true},
+		{"escaped slash is not a slash", "https://api.example.com/a%2Fb", "https://api.example.com/a/b", false},
+		{"dot-dot segment removed", "https://api.example.com/a/../resource", uri, true},
+		{"dot segment removed", "https://api.example.com/./resource", uri, true},
+		{"escaped dot-dot segment removed", "https://api.example.com/a/%2E%2E/resource", uri, true},
+		{"dot-dot above root stays at root", "https://api.example.com/../../resource", uri, true},
+		{"repeated slash kept", "https://api.example.com//resource", uri, false},
+		{"bad escape", "https://api.example.com/%zz", uri, false},
 		{"other path", "https://api.example.com/other", uri, false},
 		{"trailing slash differs", uri + "/", uri, false},
 		{"path case differs", "https://api.example.com/Resource", uri, false},
@@ -372,6 +383,94 @@ func TestVerify_RefusesMalformedProofs(t *testing.T) {
 	t.Run("whitespace in claims is fine", func(t *testing.T) {
 		p := sign(hdr, `{ "jti" : "a" , "htm" : "GET" , "htu" : "`+uri+`" , "iat" : 1800000000 }`)
 		if _, err := Verify(context.Background(), p, Expect{Method: "GET", URI: uri}, policy, now, newStore()); err != nil {
+			t.Errorf("err = %v", err)
+		}
+	})
+}
+
+func TestVerify_ReplayIdentityUsesTheNormalisedURI(t *testing.T) {
+	k := newTestKey(t)
+	store := newStore()
+	want := Expect{Method: "GET", URI: "https://api.example.com/~user/resource"}
+	first := build(t, k, Claims{JTI: "same", HTM: "GET", HTU: "https://api.example.com/%7euser/x/../resource", IAT: now})
+	if _, err := Verify(context.Background(), first, want, policy, now, store); err != nil {
+		t.Fatal(err)
+	}
+	if store.last.URI != "https://api.example.com/~user/resource" {
+		t.Errorf("replay URI = %q", store.last.URI)
+	}
+	second := build(t, k, Claims{JTI: "same", HTM: "GET", HTU: "https://API.example.com:443/~user/resource", IAT: now})
+	if _, err := Verify(context.Background(), second, want, policy, now, store); !errors.Is(err, ErrReplayed) {
+		t.Errorf("same target spelled differently: err = %v, want ErrReplayed", err)
+	}
+}
+
+func TestNormalizePath_RFC3986(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                    "/",
+		"/":                   "/",
+		"/a/b/../c":           "/a/c",
+		"/a/b/..":             "/a/",
+		"/a/./b/.":            "/a/b/",
+		"/a/b/c/./../../g":    "/a/g",
+		"/mid/content=5/../6": "/mid/6",
+		"//a//b/":             "//a//b/",
+		"/a%2fb%3a":           "/a%2Fb%3A",
+		"/%7E%7e%2D%2e%5F":    "/~~-._",
+		"/%25":                "/%25",
+	} {
+		if got, err := normalizePath(in); err != nil || got != want {
+			t.Errorf("normalizePath(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+}
+
+type canaryStore struct{ err error }
+
+func (s canaryStore) TryUse(context.Context, replay.Use) (bool, error) { return false, s.err }
+
+// Canary: a refusal never carries the proof, a claim value, a member name, a parser message or the
+// replay store's error; only the category (and a context cancellation or deadline) survives.
+func TestErrors_NeverCarryInputOrStoreText(t *testing.T) {
+	k := newTestKey(t)
+	sign := func(claims string) string {
+		j := k.JWK()
+		hdr := `{"typ":"dpop+jwt","alg":"ES256","jwk":{"kty":"EC","crv":"P-256","x":"` + j.X + `","y":"` + j.Y + `"}}`
+		in := base64.RawURLEncoding.EncodeToString([]byte(hdr)) + "." + base64.RawURLEncoding.EncodeToString([]byte(claims))
+		sig, _ := k.Sign(context.Background(), []byte(in))
+		return in + "." + base64.RawURLEncoding.EncodeToString(sig)
+	}
+	want := Expect{Method: "GET", URI: uri, AccessToken: "CANARY-TOKEN", Nonce: "CANARY-NONCE-WANT"}
+	for _, tc := range []struct {
+		name  string
+		proof string
+		store replay.Store
+		cat   error
+	}{
+		{"malformed htu", sign(`{"jti":"a","htm":"GET","htu":"https://api.example/CANARY%zz","iat":1800000000}`), newStore(), ErrInvalid},
+		{"htu mismatch", sign(`{"jti":"a","htm":"GET","htu":"https://CANARY.example/","iat":1800000000}`), newStore(), ErrMismatch},
+		{"htm mismatch", sign(`{"jti":"a","htm":"CANARY-METHOD","htu":"` + uri + `","iat":1800000000}`), newStore(), ErrMismatch},
+		{"overflowing iat", sign(`{"jti":"a","htm":"GET","htu":"` + uri + `","iat":1e31337999}`), newStore(), ErrInvalid},
+		{"duplicate claim", sign(`{"jti":"a","CANARY_DUP":1,"CANARY_DUP":2,"htm":"GET","htu":"` + uri + `","iat":1800000000}`), newStore(), ErrInvalid},
+		{"claim of the wrong type", sign(`{"jti":{"CANARY":1},"htm":"GET","htu":"` + uri + `","iat":1800000000}`), newStore(), ErrInvalid},
+		{"wrong ath and nonce", build(t, k, Claims{HTM: "GET", HTU: uri, IAT: now, ATH: "CANARY-ATH", Nonce: "CANARY-NONCE"}), newStore(), ErrMismatch},
+		{"store error", build(t, k, Claims{HTM: "GET", HTU: uri, IAT: now, ATH: ath("CANARY-TOKEN"), Nonce: "CANARY-NONCE-WANT"}), canaryStore{errors.New("CANARY-STORE-DSN")}, errReplayCheck},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Verify(context.Background(), tc.proof, want, policy, now, tc.store)
+			if !errors.Is(err, tc.cat) {
+				t.Fatalf("err = %v, want %v", err, tc.cat)
+			}
+			msg := err.Error()
+			if strings.Contains(msg, "CANARY") || strings.Contains(msg, "31337") || strings.Contains(msg, tc.proof) || strings.Contains(msg, strings.Split(tc.proof, ".")[1]) {
+				t.Errorf("error carries input: %q", msg)
+			}
+		})
+	}
+	t.Run("store cancellation stays recognisable", func(t *testing.T) {
+		p := build(t, k, Claims{HTM: "GET", HTU: uri, IAT: now})
+		_, err := Verify(context.Background(), p, Expect{Method: "GET", URI: uri}, policy, now, canaryStore{fmt.Errorf("CANARY: %w", context.Canceled)})
+		if !errors.Is(err, context.Canceled) || errors.Is(err, ErrReplayed) || strings.Contains(err.Error(), "CANARY") {
 			t.Errorf("err = %v", err)
 		}
 	})

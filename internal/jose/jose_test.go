@@ -220,7 +220,7 @@ func TestVerify_RefusesMalformedCompactForm(t *testing.T) {
 		"padding on signature":     p[0] + "." + p[1] + "." + p[2] + "=",
 		"newline inside signature": p[0] + "." + p[1] + "." + p[2][:8] + "\r\n" + p[2][8:],
 		"newline inside header":    p[0][:4] + "\n" + p[0][4:] + "." + p[1] + "." + p[2],
-		"standard alphabet":        strings.NewReplacer("-", "+", "_", "/").Replace(good),
+		"standard alphabet":        p[0] + "." + p[1] + ".+" + p[2][1:],
 		"header is an array":       signRaw(t, k, `["alg","ES256"]`, `{}`),
 		"header is a string":       signRaw(t, k, `"ES256"`, `{}`),
 		"data after header object": signRaw(t, k, `{"alg":"ES256","typ":"at+jwt","kid":"k"}{}`, `{}`),
@@ -296,9 +296,8 @@ func TestVerify_RefusesTamperingAndWrongKey(t *testing.T) {
 	if _, _, err := Verify(good, atPolicy, fixed(newKey(t))); !errors.Is(err, ErrSignature) {
 		t.Errorf("wrong key: err = %v", err)
 	}
-	keyErr := errors.New("no such kid")
-	if _, _, err := Verify(good, atPolicy, func(Header) (*ecdsa.PublicKey, error) { return nil, keyErr }); !errors.Is(err, ErrSignature) || !errors.Is(err, keyErr) {
-		t.Errorf("key lookup error: err = %v, want ErrSignature wrapping it", err)
+	if _, _, err := Verify(good, atPolicy, func(Header) (*ecdsa.PublicKey, error) { return nil, errors.New("no such kid") }); !errors.Is(err, ErrSignature) {
+		t.Errorf("key lookup error: err = %v, want ErrSignature", err)
 	}
 	p384, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	if _, _, err := Verify(good, atPolicy, fixed(p384)); !errors.Is(err, ErrSignature) {
@@ -390,4 +389,78 @@ func TestPublicJWK_RoundTripsThroughPublicKey(t *testing.T) {
 	if (PublicJWK(nil) != JWK{}) {
 		t.Error("nil key gave a JWK")
 	}
+}
+
+// Canary: errors from this package are fixed text. Member names, JSON parser messages and the
+// errors of caller-supplied callbacks never reach them; only the category and a context
+// cancellation or deadline survive.
+func TestErrors_NeverCarryInputOrCallbackText(t *testing.T) {
+	k := newKey(t)
+	good := signRaw(t, k, `{"alg":"ES256","typ":"at+jwt","kid":"k"}`, `{}`)
+	canaryErr := errors.New("CANARY-CALLBACK-SECRET")
+	cases := []struct {
+		name string
+		err  func() error
+		want error
+	}{
+		{"unknown member name", func() error {
+			_, _, err := Verify(signRaw(t, k, `{"alg":"ES256","typ":"at+jwt","kid":"k","CANARY_MEMBER":1}`, `{}`), atPolicy, fixed(k))
+			return err
+		}, ErrHeader},
+		{"unknown jwk member name", func() error {
+			h := `{"alg":"ES256","typ":"dpop+jwt","jwk":` + strings.TrimSuffix(jwkJSON(k), "}") + `,"CANARY_JWK":1}}`
+			_, _, err := Verify(signRaw(t, k, h, `{}`), HeaderPolicy{Typ: "dpop+jwt", JWKNeeded: true}, fixed(k))
+			return err
+		}, ErrHeader},
+		{"duplicate member name", func() error {
+			_, _, err := Verify(signRaw(t, k, `{"alg":"ES256","typ":"at+jwt","kid":"k","CANARY_DUP":1,"CANARY_DUP":2}`, `{}`), atPolicy, fixed(k))
+			return err
+		}, ErrMalformed},
+		{"overflowing number", func() error {
+			_, _, err := Verify(signRaw(t, k, `{"alg":"ES256","typ":"at+jwt","kid":"k","n":1e31337999}`, `{}`), atPolicy, fixed(k))
+			return err
+		}, ErrMalformed},
+		{"invalid JSON token", func() error {
+			_, _, err := Verify(signRaw(t, k, `{"alg":"ES256","typ":"at+jwt","kid":CANARY_BARE}`, `{}`), atPolicy, fixed(k))
+			return err
+		}, ErrMalformed},
+		{"ParseObject on an overflowing number", func() error {
+			_, err := ParseObject([]byte(`{"CANARY_N":1e31337999,"CANARY_N":0}`))
+			return err
+		}, ErrMalformed},
+		{"key callback error", func() error {
+			_, _, err := Verify(good, atPolicy, func(Header) (*ecdsa.PublicKey, error) { return nil, canaryErr })
+			return err
+		}, ErrSignature},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.err()
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+			if msg := err.Error(); strings.Contains(msg, "CANARY") || strings.Contains(msg, "31337") || errors.Is(err, canaryErr) {
+				t.Errorf("error carries input: %q", msg)
+			}
+		})
+	}
+	t.Run("signer error", func(t *testing.T) {
+		_, err := Sign(context.Background(), Header{}, nil, func(context.Context, []byte) ([]byte, error) { return nil, canaryErr })
+		if err == nil || strings.Contains(err.Error(), "CANARY") || errors.Is(err, canaryErr) {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("context errors stay recognisable", func(t *testing.T) {
+		wrapped := fmt.Errorf("CANARY wrapper: %w", context.Canceled)
+		_, _, err := Verify(good, atPolicy, func(Header) (*ecdsa.PublicKey, error) { return nil, wrapped })
+		if !errors.Is(err, context.Canceled) || !errors.Is(err, ErrSignature) || strings.Contains(err.Error(), "CANARY") {
+			t.Errorf("key callback cancel: err = %v", err)
+		}
+		_, err = Sign(context.Background(), Header{}, nil, func(context.Context, []byte) ([]byte, error) {
+			return nil, fmt.Errorf("CANARY: %w", context.DeadlineExceeded)
+		})
+		if !errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "CANARY") {
+			t.Errorf("signer deadline: err = %v", err)
+		}
+	})
 }

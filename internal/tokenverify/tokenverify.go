@@ -62,6 +62,10 @@ var (
 	ErrProof             = errors.New("tokenverify: proof invalid")
 	ErrReplayed          = errors.New("tokenverify: proof replayed")
 	ErrKeySetUnavailable = errors.New("tokenverify: key set stale or unavailable")
+
+	// ErrInvalidRequest is a request the middleware answers 400 invalid_request: a repeated
+	// Authorization field.
+	ErrInvalidRequest = errors.New("tokenverify: malformed request")
 )
 
 // RequestVerifier is what a protected service depends on, so it can be built and tested against a fake.
@@ -119,13 +123,15 @@ func (v *Verifier) Verify(r *http.Request) (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
-	now := v.cfg.Now()
-
+	// jose keeps no detail of a key-lookup error, so the lookup's own error is kept here.
+	var keyErr error
 	_, payload, err := jose.Verify(token, jose.HeaderPolicy{Typ: tokenTyp, KidNeeded: true}, func(h jose.Header) (*ecdsa.PublicKey, error) {
-		return v.keys.key(h.Kid, now)
+		k, err := v.keys.key(h.Kid)
+		keyErr = err
+		return k, err
 	})
 	switch {
-	case errors.Is(err, ErrKeySetUnavailable):
+	case errors.Is(keyErr, ErrKeySetUnavailable):
 		return Identity{}, ErrKeySetUnavailable
 	case errors.Is(err, jose.ErrMalformed):
 		return Identity{}, ErrMalformed
@@ -133,6 +139,8 @@ func (v *Verifier) Verify(r *http.Request) (Identity, error) {
 		return Identity{}, ErrSignature
 	}
 
+	// Time is read after the key lookup, which may have waited on a fetch.
+	now := v.cfg.Now()
 	c, err := v.claims(payload, now)
 	if err != nil {
 		return Identity{}, err
@@ -156,7 +164,10 @@ func (v *Verifier) Verify(r *http.Request) (Identity, error) {
 		return Identity{}, errReplayUnavailable
 	}
 
-	granted := strings.Fields(c.scope)
+	var granted []string
+	if c.scope != "" {
+		granted = strings.Split(c.scope, " ")
+	}
 	for _, want := range v.cfg.Scopes {
 		if !slices.Contains(granted, want) {
 			return Identity{}, ErrScope
@@ -189,7 +200,7 @@ const (
 	maxKeySetBytes       = 1 << 20
 	defaultFetchTimeout  = 10 * time.Second
 	defaultProofLifespan = 60 * time.Second
-	defaultProofSkew     = 5 * time.Second
+	defaultProofSkew     = 30 * time.Second
 )
 
 // errReplayUnavailable is a failed replay check: the request is refused, as a server fault.
@@ -198,6 +209,8 @@ var errReplayUnavailable = errors.New("tokenverify: replay check unavailable")
 func refusal(err error) (status int, challenge string) {
 	const algs = `algs="ES256"`
 	switch {
+	case errors.Is(err, ErrInvalidRequest):
+		return http.StatusBadRequest, `DPoP error="invalid_request", ` + algs
 	case errors.Is(err, ErrNoToken):
 		return http.StatusUnauthorized, "DPoP " + algs // RFC 6750 3.1: no error code without credentials
 	case errors.Is(err, ErrScope):
@@ -219,13 +232,14 @@ func credentials(r *http.Request) (token, proof string, err error) {
 	case len(auth) == 0:
 		return "", "", ErrNoToken
 	case len(auth) > 1:
-		return "", "", ErrMalformed
+		return "", "", ErrInvalidRequest
 	}
 	scheme, token, _ := strings.Cut(auth[0], " ")
 	if !strings.EqualFold(scheme, "DPoP") {
 		return "", "", ErrNoToken
 	}
-	if token == "" || len(token) > maxCredential || strings.ContainsAny(token, " \t,") {
+	token = strings.TrimLeft(token, " ") // credentials = auth-scheme 1*SP token68
+	if token == "" || len(token) > maxCredential || !isToken68(token) {
 		return "", "", ErrMalformed
 	}
 	proofs := r.Header.Values("DPoP")
@@ -236,6 +250,37 @@ func credentials(r *http.Request) (token, proof string, err error) {
 		return "", "", ErrProof
 	}
 	return token, proofs[0], nil
+}
+
+// isToken68 is RFC 9110 11.2: 1*( ALPHA / DIGIT / "-" / "." / "_" / "~" / "+" / "/" ) *"=".
+func isToken68(s string) bool {
+	body := strings.TrimRight(s, "=")
+	if body == "" {
+		return false
+	}
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || strings.IndexByte("-._~+/", c) >= 0) {
+			return false
+		}
+	}
+	return true
+}
+
+// validScope is RFC 6749 3.3: scope-token *( SP scope-token ), scope-token = 1*( %x21 / %x23-5B / %x5D-7E ).
+func validScope(s string) bool {
+	for _, tok := range strings.Split(s, " ") {
+		if tok == "" {
+			return false
+		}
+		for i := 0; i < len(tok); i++ {
+			c := tok[i]
+			if c < 0x21 || c > 0x7e || c == '"' || c == '\\' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 type tokenClaims struct {
@@ -252,8 +297,8 @@ func (v *Verifier) claims(payload []byte, now time.Time) (tokenClaims, error) {
 	if iss, _, _ := jose.String(m, "iss"); iss != v.cfg.Issuer {
 		return tokenClaims{}, ErrIssuer
 	}
-	if !audienceHas(m["aud"], v.cfg.Audience) {
-		return tokenClaims{}, ErrAudience
+	if err := checkAudience(m["aud"], v.cfg.Audience); err != nil {
+		return tokenClaims{}, err
 	}
 	for _, f := range []struct {
 		name string
@@ -265,6 +310,9 @@ func (v *Verifier) claims(payload []byte, now time.Time) (tokenClaims, error) {
 	}
 	scope, present, ok := jose.String(m, "scope")
 	if present && !ok {
+		return tokenClaims{}, ErrMalformed
+	}
+	if present && !validScope(scope) {
 		return tokenClaims{}, ErrMalformed
 	}
 	c.scope = scope
@@ -305,16 +353,31 @@ func numericDate(m map[string]json.RawMessage, name string, required bool) (time
 	return time.Unix(n, 0), true
 }
 
-func audienceHas(raw json.RawMessage, want string) bool {
-	var one string
-	if json.Unmarshal(raw, &one) == nil && len(bytes.TrimSpace(raw)) > 0 && bytes.TrimSpace(raw)[0] == '"' {
-		return one == want
+// checkAudience checks aud, a string or an array of strings (RFC 7519 4.1.3). Absent or not containing
+// want is ErrAudience; any other shape, including a non-string array element, is ErrMalformed.
+func checkAudience(raw json.RawMessage, want string) error {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return ErrAudience
 	}
-	var many []string
-	if bytes.HasPrefix(bytes.TrimSpace(raw), []byte("[")) && json.Unmarshal(raw, &many) == nil {
-		return slices.Contains(many, want)
+	elems := []json.RawMessage{raw}
+	if raw[0] == '[' {
+		if json.Unmarshal(raw, &elems) != nil || len(elems) == 0 {
+			return ErrMalformed
+		}
 	}
-	return false
+	found := false
+	for _, e := range elems {
+		var s string
+		if e = bytes.TrimSpace(e); len(e) == 0 || e[0] != '"' || json.Unmarshal(e, &s) != nil {
+			return ErrMalformed
+		}
+		found = found || s == want
+	}
+	if !found {
+		return ErrAudience
+	}
+	return nil
 }
 
 func absoluteHTTP(raw string) error {

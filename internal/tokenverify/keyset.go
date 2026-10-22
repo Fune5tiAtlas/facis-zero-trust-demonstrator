@@ -30,19 +30,21 @@ type keySet struct {
 	flight    chan struct{} // non-nil while a fetch runs; closed when it ends
 }
 
-func (s *keySet) key(kid string, now time.Time) (*ecdsa.PublicKey, error) {
+// key returns the key for kid. Time is read from cfg.Now under the lock, again after any fetch or
+// wait, and MaxStale is checked last, immediately before a key is handed out.
+func (s *keySet) key(kid string) (*ecdsa.PublicKey, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.fetched.IsZero() || now.Sub(s.fetched) >= s.cfg.CacheTTL {
-		s.refreshLocked(now)
+	if s.fetched.IsZero() || s.cfg.Now().Sub(s.fetched) >= s.cfg.CacheTTL {
+		s.refreshLocked()
 	}
 	k, ok := s.keys[kid]
-	if !ok && s.usableLocked(now) {
-		s.refreshLocked(now)
+	if !ok && s.usableLocked() {
+		s.refreshLocked()
 		k, ok = s.keys[kid]
 	}
-	if !s.usableLocked(now) {
+	if !s.usableLocked() {
 		return nil, ErrKeySetUnavailable
 	}
 	if !ok {
@@ -51,23 +53,24 @@ func (s *keySet) key(kid string, now time.Time) (*ecdsa.PublicKey, error) {
 	return k, nil
 }
 
-func (s *keySet) usableLocked(now time.Time) bool {
-	return !s.fetched.IsZero() && now.Sub(s.fetched) <= s.cfg.MaxStale
+func (s *keySet) usableLocked() bool {
+	return !s.fetched.IsZero() && s.cfg.Now().Sub(s.fetched) <= s.cfg.MaxStale
 }
 
 // refreshLocked fetches the key set, or waits for the fetch already running. Called and returns with
-// s.mu held.
-func (s *keySet) refreshLocked(now time.Time) {
+// s.mu held. A successful fetch dates the keys from when it started, never later.
+func (s *keySet) refreshLocked() {
 	if ch := s.flight; ch != nil {
 		s.mu.Unlock()
 		<-ch
 		s.mu.Lock()
 		return
 	}
-	if !s.attempted.IsZero() && now.Sub(s.attempted) < s.cfg.MinRefresh {
+	start := s.cfg.Now()
+	if !s.attempted.IsZero() && start.Sub(s.attempted) < s.cfg.MinRefresh {
 		return
 	}
-	s.attempted = now
+	s.attempted = start
 	ch := make(chan struct{})
 	s.flight = ch
 	s.mu.Unlock()
@@ -76,7 +79,7 @@ func (s *keySet) refreshLocked(now time.Time) {
 
 	s.mu.Lock()
 	if err == nil {
-		s.keys, s.fetched = keys, s.cfg.Now()
+		s.keys, s.fetched = keys, start
 	}
 	s.flight = nil
 	close(ch)
@@ -156,6 +159,9 @@ func parseKey(raw json.RawMessage) (string, *ecdsa.PublicKey, bool) {
 	if alg, present, _ := jose.String(m, "alg"); present && alg != jose.AlgES256 {
 		return "", nil, false
 	}
+	if ops, present := m["key_ops"]; present && !opsAllowVerify(ops) {
+		return "", nil, false
+	}
 	j := jose.JWK{Kty: str("kty"), Crv: str("crv"), X: str("x"), Y: str("y"), Kid: str("kid")}
 	if j.Kid == "" {
 		return "", nil, false
@@ -165,4 +171,22 @@ func parseKey(raw json.RawMessage) (string, *ecdsa.PublicKey, bool) {
 		return "", nil, false
 	}
 	return j.Kid, pub, true
+}
+
+// opsAllowVerify reports whether key_ops (RFC 7517 4.3) is a JSON array of unique strings that
+// includes "verify".
+func opsAllowVerify(raw json.RawMessage) bool {
+	var elems []json.RawMessage
+	if raw = bytes.TrimSpace(raw); len(raw) == 0 || raw[0] != '[' || json.Unmarshal(raw, &elems) != nil {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, e := range elems {
+		var op string
+		if e = bytes.TrimSpace(e); len(e) == 0 || e[0] != '"' || json.Unmarshal(e, &op) != nil || seen[op] {
+			return false
+		}
+		seen[op] = true
+	}
+	return seen["verify"]
 }

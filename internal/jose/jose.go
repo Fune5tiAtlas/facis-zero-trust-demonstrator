@@ -63,15 +63,15 @@ func Sign(ctx context.Context, h Header, payload []byte, sign SignFunc) (string,
 	h.Alg = AlgES256
 	header, err := json.Marshal(h)
 	if err != nil {
-		return "", fmt.Errorf("jose: encode header: %w", err)
+		return "", errors.New("jose: encode header")
 	}
 	signingInput := b64(header) + "." + b64(payload)
 	sig, err := sign(ctx, []byte(signingInput))
 	if err != nil {
-		return "", fmt.Errorf("jose: sign: %w", err)
+		return "", withContextCause(errors.New("jose: signer failed"), err)
 	}
 	if len(sig) != sigSize {
-		return "", fmt.Errorf("jose: signer returned %d bytes, want %d", len(sig), sigSize)
+		return "", errors.New("jose: signer did not return a 64-byte signature")
 	}
 	return signingInput + "." + b64(sig), nil
 }
@@ -102,7 +102,7 @@ func Verify(token string, policy HeaderPolicy, key KeyFunc) (Header, []byte, err
 
 	pub, err := key(h)
 	if err != nil {
-		return Header{}, nil, fmt.Errorf("%w: key: %w", ErrSignature, err)
+		return Header{}, nil, withContextCause(fmt.Errorf("%w: no key", ErrSignature), err)
 	}
 	if pub == nil || pub.Curve != elliptic.P256() {
 		return Header{}, nil, fmt.Errorf("%w: key is not P-256", ErrSignature)
@@ -188,7 +188,7 @@ func ParseObject(data []byte) (map[string]json.RawMessage, error) {
 	}
 	var members map[string]json.RawMessage
 	if err := json.Unmarshal(data, &members); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrMalformed, err)
+		return nil, fmt.Errorf("%w: not a JSON object", ErrMalformed)
 	}
 	return members, nil
 }
@@ -228,7 +228,7 @@ func parseHeader(raw []byte, policy HeaderPolicy) (Header, error) {
 	}
 	for name := range members {
 		if !headerMembers[name] {
-			return Header{}, fmt.Errorf("%w: member %q", ErrHeader, name)
+			return Header{}, fmt.Errorf("%w: member not allowed", ErrHeader)
 		}
 	}
 
@@ -267,7 +267,7 @@ func parseJWK(raw []byte) (JWK, error) {
 	}
 	for name := range members {
 		if !jwkMembers[name] {
-			return JWK{}, fmt.Errorf("%w: jwk member %q", ErrHeader, name)
+			return JWK{}, fmt.Errorf("%w: jwk member not allowed", ErrHeader)
 		}
 	}
 	var j JWK
@@ -279,7 +279,7 @@ func parseJWK(raw []byte) (JWK, error) {
 	for _, f := range fields {
 		v, present, ok := String(members, f.name)
 		if (present && !ok) || (!present && !f.optional) {
-			return JWK{}, fmt.Errorf("%w: jwk member %q", ErrHeader, f.name)
+			return JWK{}, fmt.Errorf("%w: jwk member missing or not a string", ErrHeader)
 		}
 		*f.dst = v
 	}
@@ -296,7 +296,7 @@ func checkValue(dec *json.Decoder, depth int) error {
 	}
 	tok, err := dec.Token()
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrMalformed, err)
+		return fmt.Errorf("%w: invalid JSON", ErrMalformed)
 	}
 	delim, isDelim := tok.(json.Delim)
 	if !isDelim {
@@ -308,11 +308,11 @@ func checkValue(dec *json.Decoder, depth int) error {
 		for dec.More() {
 			tok, err := dec.Token()
 			if err != nil {
-				return fmt.Errorf("%w: %v", ErrMalformed, err)
+				return fmt.Errorf("%w: invalid JSON", ErrMalformed)
 			}
 			name, _ := tok.(string)
 			if seen[name] {
-				return fmt.Errorf("%w: duplicate member %q", ErrMalformed, name)
+				return fmt.Errorf("%w: duplicate member", ErrMalformed)
 			}
 			seen[name] = true
 			if err := checkValue(dec, depth+1); err != nil {
@@ -327,7 +327,7 @@ func checkValue(dec *json.Decoder, depth int) error {
 		}
 	}
 	if _, err := dec.Token(); err != nil { // the closing delimiter
-		return fmt.Errorf("%w: %v", ErrMalformed, err)
+		return fmt.Errorf("%w: invalid JSON", ErrMalformed)
 	}
 	return nil
 }
@@ -342,6 +342,18 @@ func decodeB64(s string) ([]byte, error) {
 		}
 	}
 	return base64.RawURLEncoding.Strict().DecodeString(s)
+}
+
+// withContextCause returns err, plus the context cancellation or deadline inside cause if there is one.
+// Nothing else of cause is kept: callback errors may carry input or secrets, and errors from this
+// package are fixed text.
+func withContextCause(err, cause error) error {
+	for _, c := range []error{context.Canceled, context.DeadlineExceeded} {
+		if errors.Is(cause, c) {
+			return fmt.Errorf("%w: %w", err, c)
+		}
+	}
+	return err
 }
 
 func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }

@@ -76,7 +76,7 @@ func Build(ctx context.Context, key Key, c Claims) (string, error) {
 	if c.JTI == "" {
 		raw := make([]byte, 16)
 		if _, err := rand.Read(raw); err != nil {
-			return "", fmt.Errorf("dpop: generate jti: %w", err)
+			return "", errors.New("dpop: generate jti")
 		}
 		c.JTI = base64.RawURLEncoding.EncodeToString(raw)
 	}
@@ -85,7 +85,7 @@ func Build(ctx context.Context, key Key, c Claims) (string, error) {
 	}
 	payload, err := json.Marshal(wireClaims{JTI: c.JTI, HTM: c.HTM, HTU: c.HTU, IAT: c.IAT.Unix(), ATH: c.ATH, Nonce: c.Nonce})
 	if err != nil {
-		return "", fmt.Errorf("dpop: encode claims: %w", err)
+		return "", errors.New("dpop: encode claims")
 	}
 	jwk := key.JWK()
 	return jose.Sign(ctx, jose.Header{Typ: Typ, JWK: &jwk}, payload, key.Sign)
@@ -121,7 +121,7 @@ func Verify(ctx context.Context, proof string, want Expect, policy Policy, now t
 	}
 	htu, err := normalizeURI(c.HTU)
 	if err != nil {
-		return Verified{}, fmt.Errorf("%w: htu: %w", ErrInvalid, err)
+		return Verified{}, fmt.Errorf("%w: htu", ErrInvalid)
 	}
 	wantURI, err := normalizeURI(want.URI)
 	if err != nil || htu != wantURI {
@@ -154,7 +154,7 @@ func Verify(ctx context.Context, proof string, want Expect, policy Policy, now t
 
 	fresh, err := store.TryUse(ctx, replay.Use{JKT: jkt, Method: c.HTM, URI: htu, JTI: c.JTI, NotAfter: notAfter})
 	if err != nil {
-		return Verified{}, fmt.Errorf("dpop: replay check failed: %w", err)
+		return Verified{}, withContextCause(errReplayCheck, err)
 	}
 	if !fresh {
 		return Verified{}, ErrReplayed
@@ -162,21 +162,27 @@ func Verify(ctx context.Context, proof string, want Expect, policy Policy, now t
 	return Verified{JKT: jkt, Claims: c, NotAfter: notAfter}, nil
 }
 
+// errReplayCheck is a replay store that could not answer; the proof is refused.
+var errReplayCheck = errors.New("dpop: replay check failed")
+
+// errURI is any htu that is not an absolute http(s) URI. It never carries the input.
+var errURI = errors.New("dpop: not an absolute http(s) URI")
+
 // normalizeURI is the htu comparison form (RFC 9449 4.3, RFC 3986 6.2.2-6.2.3): an absolute http or
 // https URI with lowercase scheme and host, without the default port, query, fragment or userinfo,
-// and with an empty path as "/".
+// with an empty path as "/", and the path normalised by normalizePath.
 func normalizeURI(raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", err
+		return "", errURI
 	}
 	scheme := strings.ToLower(u.Scheme)
 	if (scheme != "http" && scheme != "https") || u.Host == "" || u.User != nil || u.Opaque != "" {
-		return "", errors.New("not an absolute http(s) URI")
+		return "", errURI
 	}
 	host, port := strings.ToLower(u.Hostname()), u.Port()
 	if host == "" {
-		return "", errors.New("no host")
+		return "", errURI
 	}
 	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
 		port = ""
@@ -187,11 +193,104 @@ func normalizeURI(raw string) (string, error) {
 	if port != "" {
 		host += ":" + port
 	}
-	path := u.EscapedPath()
+	path, err := normalizePath(u.EscapedPath())
+	if err != nil {
+		return "", errURI
+	}
+	return scheme + "://" + host + path, nil
+}
+
+// normalizePath applies RFC 3986 6.2.2 to an escaped path: percent escapes in uppercase hex,
+// percent-encoded unreserved characters decoded, then remove_dot_segments (5.2.4). Escaped reserved
+// characters stay escaped (%2F is not /), and repeated and trailing slashes are kept.
+func normalizePath(escaped string) (string, error) {
+	var b strings.Builder
+	for i := 0; i < len(escaped); i++ {
+		c := escaped[i]
+		if c != '%' {
+			b.WriteByte(c)
+			continue
+		}
+		if i+2 >= len(escaped) || !isHex(escaped[i+1]) || !isHex(escaped[i+2]) {
+			return "", errURI
+		}
+		v := unhex(escaped[i+1])<<4 | unhex(escaped[i+2])
+		if isUnreserved(v) {
+			b.WriteByte(v)
+		} else {
+			b.WriteString("%" + strings.ToUpper(escaped[i+1:i+3]))
+		}
+		i += 2
+	}
+	path := removeDotSegments(b.String())
 	if path == "" {
 		path = "/"
 	}
-	return scheme + "://" + host + path, nil
+	return path, nil
+}
+
+// removeDotSegments is RFC 3986 5.2.4.
+func removeDotSegments(in string) string {
+	var out []string // output segments, each with its leading "/" where it had one
+	for in != "" {
+		switch {
+		case strings.HasPrefix(in, "../"):
+			in = in[3:]
+		case strings.HasPrefix(in, "./"):
+			in = in[2:]
+		case strings.HasPrefix(in, "/./"):
+			in = in[2:]
+		case in == "/.":
+			in = "/"
+		case strings.HasPrefix(in, "/../"):
+			in = in[3:]
+			if len(out) > 0 {
+				out = out[:len(out)-1]
+			}
+		case in == "/..":
+			in = "/"
+			if len(out) > 0 {
+				out = out[:len(out)-1]
+			}
+		case in == "." || in == "..":
+			in = ""
+		default:
+			end := strings.IndexByte(in[1:], '/') + 1
+			if end == 0 {
+				end = len(in)
+			}
+			out = append(out, in[:end])
+			in = in[end:]
+		}
+	}
+	return strings.Join(out, "")
+}
+
+func isUnreserved(c byte) bool {
+	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '.' || c == '_' || c == '~'
+}
+
+func isHex(c byte) bool { return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F' }
+
+func unhex(c byte) byte {
+	switch {
+	case c >= 'a':
+		return c - 'a' + 10
+	case c >= 'A':
+		return c - 'A' + 10
+	}
+	return c - '0'
+}
+
+// withContextCause returns err, plus the context cancellation or deadline inside cause if there is
+// one; nothing else of cause is kept, since a store's error may carry anything.
+func withContextCause(err, cause error) error {
+	for _, c := range []error{context.Canceled, context.DeadlineExceeded} {
+		if errors.Is(cause, c) {
+			return fmt.Errorf("%w: %w", err, c)
+		}
+	}
+	return err
 }
 
 const (

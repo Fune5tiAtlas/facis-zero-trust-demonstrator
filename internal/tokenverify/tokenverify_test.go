@@ -102,6 +102,7 @@ type jwksServer struct {
 	body    string // when set, served verbatim
 	fail    bool
 	delay   time.Duration
+	onFetch func() // runs while the request is being served, e.g. to move the clock
 	fetches atomic.Int32
 }
 
@@ -110,7 +111,7 @@ func newJWKSServer(t *testing.T) *jwksServer {
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		s.fetches.Add(1)
 		s.mu.Lock()
-		fail, delay, body := s.fail, s.delay, s.body
+		fail, delay, body, onFetch := s.fail, s.delay, s.body, s.onFetch
 		var set []jose.JWK
 		for kid, k := range s.keys {
 			j := k.JWK()
@@ -119,6 +120,9 @@ func newJWKSServer(t *testing.T) *jwksServer {
 		}
 		s.mu.Unlock()
 		time.Sleep(delay)
+		if onFetch != nil {
+			onFetch()
+		}
 		if fail {
 			http.Error(w, "down", http.StatusInternalServerError)
 			return
@@ -273,6 +277,19 @@ func TestVerify_TokenClaimsAreEnforced(t *testing.T) {
 		{"cnf.jkt empty", func(c map[string]any, _ time.Time) { c["cnf"] = map[string]any{"jkt": ""} }, ErrMalformed},
 		{"scope not a string", func(c map[string]any, _ time.Time) { c["scope"] = []string{"read"} }, ErrMalformed},
 		{"scope missing", func(c map[string]any, _ time.Time) { delete(c, "scope") }, ErrScope},
+		{"scope empty", func(c map[string]any, _ time.Time) { c["scope"] = "" }, ErrMalformed},
+		{"scope with double space", func(c map[string]any, _ time.Time) { c["scope"] = "read  write" }, ErrMalformed},
+		{"scope with leading space", func(c map[string]any, _ time.Time) { c["scope"] = " read" }, ErrMalformed},
+		{"scope with tab", func(c map[string]any, _ time.Time) { c["scope"] = "read\twrite" }, ErrMalformed},
+		{"scope with newline", func(c map[string]any, _ time.Time) { c["scope"] = "read\nwrite" }, ErrMalformed},
+		{"scope with double quote", func(c map[string]any, _ time.Time) { c["scope"] = `read "x"` }, ErrMalformed},
+		{"scope with backslash", func(c map[string]any, _ time.Time) { c["scope"] = `read a\b` }, ErrMalformed},
+		{"scope with non-ASCII", func(c map[string]any, _ time.Time) { c["scope"] = "read wrïte" }, ErrMalformed},
+		{"scope with all allowed characters", func(c map[string]any, _ time.Time) { c["scope"] = "read !#[]~:/" }, nil},
+		{"audience array with null", func(c map[string]any, _ time.Time) { c["aud"] = []any{nil, audience} }, ErrMalformed},
+		{"audience array with number", func(c map[string]any, _ time.Time) { c["aud"] = []any{1, audience} }, ErrMalformed},
+		{"audience array empty", func(c map[string]any, _ time.Time) { c["aud"] = []any{} }, ErrMalformed},
+		{"audience an object", func(c map[string]any, _ time.Time) { c["aud"] = map[string]any{"a": audience} }, ErrMalformed},
 		{"insufficient scope", func(c map[string]any, _ time.Time) { c["scope"] = "write readonly" }, ErrScope},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -349,7 +366,10 @@ func TestVerify_AuthorizationMustBeOneDPoPCredential(t *testing.T) {
 		{"absent", nil, ErrNoToken},
 		{"Bearer scheme", []string{"Bearer " + tok}, ErrNoToken},
 		{"Basic scheme", []string{"Basic dXNlcjpwYXNz"}, ErrNoToken},
-		{"two Authorization headers", []string{"DPoP " + tok, "DPoP " + tok}, ErrMalformed},
+		{"two Authorization headers", []string{"DPoP " + tok, "DPoP " + tok}, ErrInvalidRequest},
+		{"tab inside the token", []string{"DPoP " + tok[:10] + "\t" + tok[10:]}, ErrMalformed},
+		{"comma inside the token", []string{"DPoP " + tok + ",x"}, ErrMalformed},
+		{"tab instead of space after scheme", []string{"DPoP\t" + tok}, ErrNoToken},
 		{"scheme without token", []string{"DPoP "}, ErrMalformed},
 		{"token with a space", []string{"DPoP " + tok + " x"}, ErrMalformed},
 	} {
@@ -363,8 +383,15 @@ func TestVerify_AuthorizationMustBeOneDPoPCredential(t *testing.T) {
 			}
 		})
 	}
+	t.Run("several spaces after the scheme", func(t *testing.T) {
+		r := request(http.MethodGet, "", f.proof(f.client, http.MethodGet, baseURL+path, tok))
+		r.Header.Set("Authorization", "DPoP    "+tok)
+		if _, err := f.v.Verify(r); err != nil {
+			t.Errorf("err = %v", err)
+		}
+	})
 	t.Run("scheme is case-insensitive", func(t *testing.T) {
-		r := request(http.MethodGet, "", p)
+		r := request(http.MethodGet, "", f.proof(f.client, http.MethodGet, baseURL+path, tok))
 		r.Header.Set("Authorization", "dpop "+tok)
 		if _, err := f.v.Verify(r); err != nil {
 			t.Errorf("err = %v", err)
@@ -557,13 +584,22 @@ func TestKeySet_KeepsOnlyP256SigningKeysWithKid(t *testing.T) {
 		`{"kty":"RSA","kid":"rsa","n":"AQAB","e":"AQAB"}`,
 		`{"kty":"oct","kid":"hmac","k":"c2VjcmV0"}`,
 		ec(`,"kid":"twice"`), ec(`,"kid":"twice"`),
+		ec(`,"kid":"ops-verify","key_ops":["verify"]`),
+		ec(`,"kid":"ops-sign-verify","use":"sig","key_ops":["sign","verify"]`),
+		ec(`,"kid":"ops-derive","key_ops":["deriveKey"]`),
+		ec(`,"kid":"ops-empty","key_ops":[]`),
+		ec(`,"kid":"ops-string","key_ops":"verify"`),
+		ec(`,"kid":"ops-null","key_ops":null`),
+		ec(`,"kid":"ops-number","key_ops":["verify",1]`),
+		ec(`,"kid":"ops-dup","key_ops":["verify","verify"]`),
+		ec(`,"kid":"ops-enc","use":"enc","key_ops":["verify"]`),
 		`"not an object"`,
 	}, ",") + `]}`
 	keys, err := parseKeySet([]byte(body))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(keys) != 2 || keys["good"] == nil || keys["plain"] == nil {
+	if len(keys) != 4 || keys["good"] == nil || keys["plain"] == nil || keys["ops-verify"] == nil || keys["ops-sign-verify"] == nil {
 		t.Errorf("kept %d keys: %v", len(keys), keys)
 	}
 	for _, bad := range []string{`{"keys":[]}`, `{"keys":{}}`, `{}`, `[]`, `{"keys":[` + ec(`,"kid":"a"`) + `],"keys":[]}`} {
@@ -624,7 +660,8 @@ func TestNew_RequiresConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v.cfg.CacheTTL != 5*time.Minute || v.cfg.MaxStale != 5*time.Minute || v.cfg.MinRefresh != 30*time.Second || v.cfg.Now == nil || v.cfg.HTTPClient == nil {
+	if v.cfg.CacheTTL != 5*time.Minute || v.cfg.MaxStale != 5*time.Minute || v.cfg.MinRefresh != 30*time.Second || v.cfg.Now == nil || v.cfg.HTTPClient == nil ||
+		v.cfg.Proof.Lifespan != 60*time.Second || v.cfg.Proof.Skew != 30*time.Second {
 		t.Errorf("defaults not applied: %+v", v.cfg)
 	}
 }
@@ -641,6 +678,11 @@ func TestMiddleware_AnswersPerRefusal(t *testing.T) {
 	}{
 		{"valid passes with identity", func(f *fixture) *http.Request { r, _, _ := f.valid(); return r }, outcome{http.StatusOK, ""}},
 		{"no credentials", func(*fixture) *http.Request { return request(http.MethodGet, "", "") }, outcome{401, `DPoP algs="ES256"`}},
+		{"repeated Authorization", func(f *fixture) *http.Request {
+			r, tok, _ := f.valid()
+			r.Header.Add("Authorization", "DPoP "+tok)
+			return r
+		}, outcome{400, `DPoP error="invalid_request", algs="ES256"`}},
 		{"Bearer token", func(f *fixture) *http.Request {
 			r, tok, _ := f.valid()
 			r.Header.Set("Authorization", "Bearer "+tok)
@@ -764,3 +806,66 @@ func randID(t testing.TB) string {
 }
 
 func b64url(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
+
+// The clock is read after the key lookup: a fetch that blocks while a token, a proof or the key set
+// expires must not let any of them through on the time sampled before it.
+func TestVerify_TimeIsReadAfterABlockingKeyFetch(t *testing.T) {
+	t.Run("token expires during a successful fetch", func(t *testing.T) {
+		f := newFixture(t)
+		f.jwks.set(func(s *jwksServer) { s.onFetch = func() { f.clock.Advance(20 * time.Second) } })
+		tok := f.token(func(c map[string]any) { c["exp"] = f.clock.Now().Add(10 * time.Second).Unix() })
+		_, err := f.v.Verify(request(http.MethodGet, tok, f.proof(f.client, http.MethodGet, baseURL+path, tok)))
+		if !errors.Is(err, ErrExpired) {
+			t.Errorf("err = %v, want ErrExpired", err)
+		}
+	})
+	t.Run("proof expires during a successful fetch", func(t *testing.T) {
+		f := newFixture(t)
+		f.jwks.set(func(s *jwksServer) { s.onFetch = func() { f.clock.Advance(70 * time.Second) } }) // lifespan 60 s + skew 5 s
+		r, _, _ := f.valid()
+		if _, err := f.v.Verify(r); !errors.Is(err, ErrProof) {
+			t.Errorf("err = %v, want ErrProof", err)
+		}
+	})
+	t.Run("token expires during a failed refresh", func(t *testing.T) {
+		f := newFixture(t, func(c *Config) { c.CacheTTL = time.Minute; c.MaxStale = 5 * time.Minute })
+		r, _, _ := f.valid()
+		if _, err := f.v.Verify(r); err != nil {
+			t.Fatal(err)
+		}
+		f.clock.Advance(2 * time.Minute)
+		f.jwks.set(func(s *jwksServer) { s.fail = true; s.onFetch = func() { f.clock.Advance(20 * time.Second) } })
+		tok := f.token(func(c map[string]any) { c["exp"] = f.clock.Now().Add(10 * time.Second).Unix() })
+		_, err := f.v.Verify(request(http.MethodGet, tok, f.proof(f.client, http.MethodGet, baseURL+path, tok)))
+		if !errors.Is(err, ErrExpired) {
+			t.Errorf("err = %v, want ErrExpired", err)
+		}
+	})
+	t.Run("key set crosses MaxStale during a failed refresh", func(t *testing.T) {
+		f := newFixture(t, func(c *Config) { c.CacheTTL = time.Minute; c.MaxStale = 5 * time.Minute })
+		r, _, _ := f.valid()
+		if _, err := f.v.Verify(r); err != nil {
+			t.Fatal(err)
+		}
+		f.clock.Advance(5*time.Minute - time.Second) // age 4m59s: stale by TTL, not yet by MaxStale
+		f.jwks.set(func(s *jwksServer) { s.fail = true; s.onFetch = func() { f.clock.Advance(2 * time.Second) } })
+		r, _, _ = f.valid()
+		if _, err := f.v.Verify(r); !errors.Is(err, ErrKeySetUnavailable) {
+			t.Errorf("err = %v, want ErrKeySetUnavailable", err)
+		}
+	})
+	t.Run("keys are dated from the start of the fetch", func(t *testing.T) {
+		f := newFixture(t, func(c *Config) { c.CacheTTL = time.Minute; c.MaxStale = 2 * time.Minute })
+		f.jwks.set(func(s *jwksServer) { s.onFetch = func() { f.clock.Advance(30 * time.Second) } })
+		r, _, _ := f.valid()
+		if _, err := f.v.Verify(r); err != nil {
+			t.Fatal(err)
+		}
+		f.jwks.set(func(s *jwksServer) { s.fail = true; s.onFetch = nil })
+		f.clock.Advance(90*time.Second + time.Second) // 2m01s after the fetch began, 1m31s after it ended
+		r, _, _ = f.valid()
+		if _, err := f.v.Verify(r); !errors.Is(err, ErrKeySetUnavailable) {
+			t.Errorf("err = %v, want ErrKeySetUnavailable", err)
+		}
+	})
+}
