@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // KeyVersion names one version of a transit key; tokens bound to it keep working after rotation.
@@ -59,6 +60,8 @@ type Secrets interface {
 	Read(ctx context.Context, path string) ([]byte, error)       // ErrNotFound when absent
 	Delete(ctx context.Context, path string) error               // all versions
 	List(ctx context.Context, prefix string) ([]string, error)
+	// CreatedTime is when the secret's first version was written, from its KV v2 metadata.
+	CreatedTime(ctx context.Context, path string) (time.Time, error) // ErrNotFound when absent
 }
 
 // TokenSource yields the OpenBao token per call (Kubernetes auth in a cluster, a dev token in tests).
@@ -271,4 +274,22 @@ func (c *Client) List(ctx context.Context, prefix string) ([]string, error) {
 		return nil, err
 	}
 	return out.Data.Keys, nil
+}
+
+func (c *Client) CreatedTime(ctx context.Context, path string) (time.Time, error) {
+	if err := validPath(path); err != nil {
+		return time.Time{}, err
+	}
+	var out struct {
+		Data struct {
+			CreatedTime time.Time `json:"created_time"`
+		} `json:"data"`
+	}
+	if _, err := c.do(ctx, "metadata", http.MethodGet, c.kvPath("metadata", path), nil, &out); err != nil {
+		return time.Time{}, err
+	}
+	if out.Data.CreatedTime.IsZero() {
+		return time.Time{}, errors.New("transit: metadata: no created_time")
+	}
+	return out.Data.CreatedTime, nil
 }

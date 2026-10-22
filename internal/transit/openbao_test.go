@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // These tests run against a real OpenBao dev server when TRANSIT_TEST_ADDR and TRANSIT_TEST_TOKEN
@@ -139,6 +140,12 @@ func TestOpenBaoSecrets(t *testing.T) {
 	slices.Sort(keys)
 	if err != nil || !slices.Equal(keys, []string{"a", "sub/"}) {
 		t.Fatalf("list: %v %v", keys, err)
+	}
+	if ct, err := c.CreatedTime(ctx, a); err != nil || time.Since(ct) > time.Minute || time.Since(ct) < -time.Minute {
+		t.Fatalf("created time: %v %v", ct, err)
+	}
+	if _, err := c.CreatedTime(ctx, dir+"/missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("created time of missing: %v", err)
 	}
 	if _, err := c.Read(ctx, dir+"/missing"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("read missing: %v", err)
