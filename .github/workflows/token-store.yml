@@ -39,7 +39,7 @@ jobs:
   schema:
     name: Schema and store queries on an ephemeral database
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -60,22 +60,7 @@ jobs:
           done
           docker exec postgres pg_isready -h 127.0.0.1 -U postgres
 
-      # Migrates up, up again, down to empty and back; refuses an edited migration; serialises
-      # concurrent runners; then runs the store's queries against the migrated schema.
-      - name: Migrate, revert and run the store queries
-        run: |
-          set -o pipefail
-          go test -count=1 -race -v ./services/token-store/... | tee "$RUNNER_TEMP/go-test.log"
-          # The database tests skip without the variable; here a skip is a broken job, not a pass.
-          if grep -q -- '--- SKIP' "$RUNNER_TEMP/go-test.log"; then
-            echo "::error::a database test was skipped; this job must run them against PostgreSQL"
-            exit 1
-          fi
-        env:
-          TOKEN_STORE_TEST_DATABASE_URL: postgres://postgres:ci@127.0.0.1:5432/postgres?sslmode=disable
-
-      # The shared packages of the token path against the same PostgreSQL and a real OpenBao (dev mode,
-      # from the pinned image, transit mounted): replay record, transit signing and KV, token checks.
+      # The token path needs a real OpenBao too: transit signing, the KV store of upstream tokens.
       - name: Start OpenBao from the pinned image
         run: |
           . scripts/tools/pins.env
@@ -86,34 +71,28 @@ jobs:
           done
           curl -sf -X POST -H 'X-Vault-Token: ci' -d '{"type":"transit"}' http://127.0.0.1:8200/v1/sys/mounts/transit
 
-      - name: Run the token path's shared packages
+      # Everything on the token path against PostgreSQL and OpenBao: the schema's migrations and
+      # queries, the store (replay check, acquisition with its recovery, substitution, renewal) with
+      # the real connector binary as the peer zone, the connector's conformance suite on the database
+      # stores, and the shared packages. Run twice, once per access-token form the connector issues.
+      # A skipped test means a missing dependency, so it fails the job.
+      - name: Run the token path with opaque and with signed access tokens
         run: |
           set -o pipefail
-          go test -count=1 -race -v ./internal/replay/... ./internal/transit/... ./internal/jose/... \
-            ./internal/dpopproof/... ./internal/tokenverify/... ./services/token-store/internal/keys/... \
-            | tee "$RUNNER_TEMP/shared-test.log"
-          if grep -q -- '--- SKIP' "$RUNNER_TEMP/shared-test.log"; then
-            echo "::error::a test was skipped; this job must run them against PostgreSQL and OpenBao"
-            exit 1
-          fi
-        env:
-          TOKEN_STORE_TEST_DATABASE_URL: postgres://postgres:ci@127.0.0.1:5432/postgres?sslmode=disable
-          TRANSIT_TEST_ADDR: http://127.0.0.1:8200
-          TRANSIT_TEST_TOKEN: ci
-
-      # The connector's whole conformance suite once more, on PostgreSQL-backed stores in the same
-      # schema: every protocol rule is proven on both the in-memory and the database stores.
-      - name: Run the connector's conformance suite on PostgreSQL
-        run: |
-          set -o pipefail
-          go test -count=1 -race -v ./services/connector/... | tee "$RUNNER_TEMP/connector-test.log"
-          if grep -q -- '--- SKIP' "$RUNNER_TEMP/connector-test.log"; then
-            echo "::error::a connector test was skipped; this job must run them against PostgreSQL"
-            exit 1
-          fi
+          for tokens in opaque jwt; do
+            CONNECTOR_TEST_TOKENS=$tokens go test -count=1 -race -timeout 20m -v \
+              ./services/token-store/... ./services/connector/... ./internal/... \
+              | tee "$RUNNER_TEMP/token-path-$tokens.log"
+            if grep -q -- '--- SKIP' "$RUNNER_TEMP/token-path-$tokens.log"; then
+              echo "::error::a test was skipped with $tokens tokens; this job must run them against PostgreSQL and OpenBao"
+              exit 1
+            fi
+          done
         env:
           CONNECTOR_TEST_STORE: pg
           TOKEN_STORE_TEST_DATABASE_URL: postgres://postgres:ci@127.0.0.1:5432/postgres?sslmode=disable
+          TRANSIT_TEST_ADDR: http://127.0.0.1:8200
+          TRANSIT_TEST_TOKEN: ci
 
   chart:
     name: Chart lifecycle on kind

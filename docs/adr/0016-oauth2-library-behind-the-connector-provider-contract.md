@@ -110,9 +110,13 @@ The pinned library does this: with its signed-token strategy switched on, a DPoP
 receives a token of that form whose `cnf.jkt` equals the proof key's thumbprint, and the library's
 resource-side proof check accepts it. This was run against v0.3.2.
 
-The adapter does not issue such tokens yet. It issues opaque tokens validated by lookup, which is
-what the conformance suite covers today. Moving to signed tokens adds to the contract — a signing
-key in the configuration and a handler for the key set — and changes nothing that exists in it.
+Implemented: with `Config.AccessTokenSigner` set, the adapter issues RFC 9068 tokens (`at+jwt`,
+ES256, `kid`, `cnf.jkt`, `sub` = client id, a string `scope`) signed through the signer, which the
+connector binary backs with an OpenBao transit key, and it publishes the key set at
+`/.well-known/jwks.json`. A signed token is refused without a DPoP binding or an audience. Without a
+signer the adapter keeps issuing opaque tokens validated by lookup. The change was additive to the
+contract: the signer and the issuer in the configuration. Details in
+[Connector OAuth2 provider](../oauth2-provider.md).
 
 ## Consequences
 
@@ -132,10 +136,10 @@ key in the configuration and a handler for the key set — and changes nothing t
 
 ## Open items
 
-- **Signed access tokens.** Decision 5 is not implemented. It belongs to the token-issuance and
-  resource-side validation work, together with where the signing key is held and how it rotates;
-  the staleness matrix in the architecture already budgets for a key set cached by the guard. Until
-  then the adapter's tokens can only be validated through the connector.
+- **Signing key rotation.** Decision 5 is implemented with one pinned transit key version. Rotating
+  it means publishing the new key next to the old one in the key set for at least the longest token
+  lifetime before signing with it; the resource-side verifier (`internal/tokenverify`) already accepts
+  several keys and refreshes on an unknown `kid`. The procedure is not automated yet.
 
 ## References
 
