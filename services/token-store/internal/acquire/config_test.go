@@ -78,3 +78,47 @@ func TestLoadConfigBuildsRoutesWhoseFixtureOutcomesVerify(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadConfigBuildsTheSubstitutionRoutes(t *testing.T) {
+	dir := t.TempDir()
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	pub, _ := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	issuers := []any{map[string]any{"issuer": vpIssuer, "kid": vpKid, "public_key_file": writePEM(t, dir, "pub.pem", "PUBLIC KEY", pub)}}
+	route := func(name, tenant string, extra map[string]any) map[string]any {
+		r := map[string]any{"name": name, "peer_zone": "zone-b", "audience": audience, "tenant": tenant,
+			"connector_url": "https://connector.zone-b.test", "client_id": clientID, "client_secret_file": filepath.Join(dir, "secret")}
+		for k, v := range extra {
+			r[k] = v
+		}
+		return r
+	}
+	sub := map[string]any{"callers": []string{"spiffe://zone-a.test/ns/ztd-mgmt/sa/guard"}, "methods": []string{"GET"},
+		"target_prefix": audience + "/v1"}
+	load := func(routes ...any) (Loaded, error) {
+		raw, _ := json.Marshal(map[string]any{"signing_key": "k", "trusted_issuers": issuers, "routes": routes})
+		path := filepath.Join(dir, "acquire.json")
+		_ = os.WriteFile(path, raw, 0o600)
+		return LoadConfig(path)
+	}
+	got, err := load(route("a", "", sub), route("cli-only", "t1", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Substitution) != 1 || got.Substitution[0].TargetPrefix != audience+"/v1" || got.Substitution[0].Tenant != "" {
+		t.Fatalf("substitution routes %+v", got.Substitution)
+	}
+	if r, ok := got.For("zone-b", audience, "t1"); !ok || r.Name != "cli-only" {
+		t.Errorf("For: %+v %v", r, ok)
+	}
+	for name, routes := range map[string][]any{
+		"same route key":           {route("a", "", sub), route("b", "", nil)},
+		"methods without callers":  {route("a", "", map[string]any{"methods": []string{"GET"}})},
+		"caller not a SPIFFE ID":   {route("a", "", map[string]any{"callers": []string{"guard"}, "methods": []string{"GET"}, "target_prefix": audience})},
+		"target prefix with dots":  {route("a", "", map[string]any{"callers": sub["callers"], "methods": []string{"GET"}, "target_prefix": audience + "/v1/../x"})},
+		"callers without a method": {route("a", "", map[string]any{"callers": sub["callers"], "target_prefix": audience})},
+	} {
+		if _, err := load(routes...); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

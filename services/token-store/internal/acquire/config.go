@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/if03"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/caller"
 )
 
 // Config is the acquisition configuration file (JSON). It holds file paths, never secrets.
@@ -33,6 +34,12 @@ type Config struct {
 		ConnectorURL     string `json:"connector_url"`
 		ClientID         string `json:"client_id"`
 		ClientSecretFile string `json:"client_secret_file"`
+		// Callers, Methods and TargetPrefix make the route substitutable (D7): the SPIFFE IDs
+		// allowed to call /internal/substitute for it, the methods and the target URIs under the
+		// prefix. A route without callers is acquired by the command line only.
+		Callers      []string `json:"callers"`
+		Methods      []string `json:"methods"`
+		TargetPrefix string   `json:"target_prefix"`
 		// FixtureOutcomes makes the route's outcomes come from a fixture signer (tests, demo).
 		FixtureOutcomes *struct {
 			Issuer          string `json:"issuer"`
@@ -50,6 +57,18 @@ type Loaded struct {
 	SigningKey string
 	Trusted    if03.Issuers
 	Routes     map[string]Route
+	// Substitution authorizes /internal/substitute: one caller.Route per route with callers.
+	Substitution caller.Routes
+}
+
+// For is the route of (peer zone, audience, tenant); a route key names at most one route.
+func (l Loaded) For(peerZone, audience, tenant string) (Route, bool) {
+	for _, r := range l.Routes {
+		if r.PeerZone == peerZone && r.Audience == audience && r.Tenant == tenant {
+			return r, true
+		}
+	}
+	return Route{}, false
 }
 
 // LoadConfig reads and validates the configuration file. Errors name the field, never a file's
@@ -91,6 +110,18 @@ func LoadConfig(path string) (Loaded, error) {
 		}
 		if _, dup := out.Routes[r.Name]; dup {
 			return Loaded{}, fmt.Errorf("acquisition config: route %q defined twice", r.Name)
+		}
+		if _, dup := out.For(r.PeerZone, r.Audience, r.Tenant); dup {
+			return Loaded{}, fmt.Errorf("acquisition config: route %q: another route has the same peer_zone, audience and tenant", r.Name)
+		}
+		if len(r.Callers) > 0 {
+			out.Substitution = append(out.Substitution, caller.Route{Callers: r.Callers, PeerZone: r.PeerZone,
+				Audience: r.Audience, Tenant: r.Tenant, Methods: r.Methods, TargetPrefix: r.TargetPrefix})
+			if _, err := caller.NewRoutes(out.Substitution[len(out.Substitution)-1:]); err != nil {
+				return Loaded{}, fmt.Errorf("acquisition config: route %q: %w", r.Name, err)
+			}
+		} else if len(r.Methods) > 0 || r.TargetPrefix != "" {
+			return Loaded{}, fmt.Errorf("acquisition config: route %q: methods and target_prefix need callers", r.Name)
 		}
 		route := Route{Name: r.Name, PeerZone: r.PeerZone, Audience: r.Audience, Tenant: r.Tenant,
 			ConnectorURL: r.ConnectorURL, ClientID: r.ClientID, ClientSecretFile: r.ClientSecretFile}

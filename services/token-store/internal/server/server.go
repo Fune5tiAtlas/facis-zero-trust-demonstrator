@@ -1,6 +1,6 @@
 // Package server is the token store's process: its listeners, its liveness and readiness, and the
-// correlation every request's records and outbound calls carry. The store's endpoints join it as
-// they land; this build serves the health paths of the contract and nothing else.
+// correlation every request's records and outbound calls carry, and the endpoints of the contract:
+// the health paths, the replay check and substitution.
 package server
 
 import (
@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -18,7 +19,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/replay"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/acquire"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/caller"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/substitute"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/openbao"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/schema"
@@ -40,7 +43,9 @@ type Server struct {
 
 	replay      *replay.Postgres
 	callers     caller.Authenticator
-	reconnected chan struct{} // signalled when the pool opens a connection, so the replay epoch is rechecked
+	routes      caller.Routes       // substitution's router; empty refuses every caller
+	substitute  *substitute.Service // nil without an acquisition config
+	reconnected chan struct{}       // signalled when the pool opens a connection, so the replay epoch is rechecked
 	now         func() time.Time
 }
 
@@ -60,7 +65,9 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*Server, error) {
 		// pgx redacts the password of a URL it cannot parse.
 		return nil, fmt.Errorf("database URL: %w", err)
 	}
-	poolCfg.MaxConns = 4
+	// Two connections more than the replay check and readiness need: an on-demand acquisition holds
+	// one for its route lock while it uses another.
+	poolCfg.MaxConns = 6
 	poolCfg.MinConns = 0
 	poolCfg.MaxConnIdleTime = 5 * time.Minute
 	poolCfg.HealthCheckPeriod = 30 * time.Second
@@ -76,9 +83,13 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("database pool: %w", err)
 	}
+	var routes caller.Routes
+	if cfg.Acquisition != nil {
+		routes = cfg.Acquisition.Substitution
+	}
 	callers := cfg.Callers
 	if callers == nil {
-		if callers, err = caller.NewXFCC(cfg.ReplayCallers); err != nil {
+		if callers, err = caller.NewXFCC(slices.Concat(cfg.ReplayCallers, routes.Callers())); err != nil {
 			pool.Close()
 			return nil, err
 		}
@@ -92,8 +103,14 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*Server, error) {
 		openBaoURL:  strings.TrimRight(cfg.OpenBaoURL, "/"),
 		replay:      replay.NewPostgres(pool),
 		callers:     callers,
+		routes:      routes,
 		reconnected: reconnected,
 		now:         time.Now,
+	}
+	if a := cfg.Acquisition; a != nil {
+		s.substitute = &substitute.Service{DB: pool, Signer: cfg.OpenBao, Secrets: cfg.OpenBao, Routes: *a, Log: log,
+			Acquirer: &acquire.Acquirer{DB: pool, Signer: cfg.OpenBao, Secrets: cfg.OpenBao, KeyName: a.SigningKey,
+				Trusted: a.Trusted, Log: log}}
 	}
 	s.ready = &readiness{timeout: cfg.ReadinessTimeout, postgres: s.checkPostgres, openbao: s.checkOpenBao}
 
@@ -135,6 +152,7 @@ func (s *Server) apiRoutes() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.HandleFunc("POST /internal/replay-check", s.handleReplayCheck)
+	mux.HandleFunc("POST /internal/substitute", s.handleSubstitute)
 	return s.correlate(mux)
 }
 
@@ -143,8 +161,9 @@ func (s *Server) httpServer(h http.Handler) *http.Server {
 		Handler:           h,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		// A /readyz answer may take the whole readiness budget; the write deadline sits above it.
-		WriteTimeout: s.cfg.ReadinessTimeout + 5*time.Second,
+		// A /readyz answer may take the whole readiness budget, a substitution its own; the write
+		// deadline sits above both.
+		WriteTimeout: max(s.cfg.ReadinessTimeout, substituteTimeout) + 5*time.Second,
 		IdleTimeout:  60 * time.Second,
 		ErrorLog:     slog.NewLogLogger(s.log.Handler(), slog.LevelWarn),
 	}

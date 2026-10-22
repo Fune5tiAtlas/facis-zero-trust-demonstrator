@@ -34,6 +34,7 @@ import (
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/replay"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/tokenverify"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/transit"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/acquire/acquiretest"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/testsupport"
 )
 
@@ -43,14 +44,14 @@ import (
 // TRANSIT_TEST_TOKEN.
 
 const (
-	vpIssuer  = "https://verifier.zone-b.test"
-	vpKid     = "verifier-1"
-	bIssuer   = "https://connector.zone-b.test"
-	audience  = "https://api.zone-b.test"
+	vpIssuer  = acquiretest.VPIssuer
+	vpKid     = acquiretest.VPKid
+	bIssuer   = acquiretest.BIssuer
+	audience  = acquiretest.Audience
 	clientID  = "zone-a-token-store" // config test only; the Connector assigns the real id
-	vpRole    = "participant-operator"
-	vpEntitle = "write"
-	vpScope   = "resource.write"
+	vpRole    = acquiretest.VPRole
+	vpEntitle = acquiretest.VPEntitle
+	vpScope   = acquiretest.VPScope
 )
 
 // hook sits between A and B: it records what A sends, can change a token request before B sees it
@@ -195,7 +196,7 @@ func newEnv(t *testing.T) *env {
 		HTTPClient: &http.Client{Transport: e.hook, Timeout: 10 * time.Second},
 		Log:        slog.New(slog.NewJSONHandler(e.logs, nil)),
 		Now:        e.clock.Now,
-		prefix:     "ztd/token-store-test/" + randHex(6),
+		Prefix:     "ztd/token-store-test/" + randHex(6),
 	}
 	e.route = Route{Name: "zone-b-api", PeerZone: "zone-b", Audience: audience, ConnectorURL: bBase,
 		ClientID: b.clientID, ClientSecretFile: secretFile,

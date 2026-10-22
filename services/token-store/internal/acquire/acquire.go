@@ -73,6 +73,7 @@ const (
 	CodeActivationFailed  = "ACQ-ACTIVATION-FAILED"   // the transaction confirmed rolled back
 	CodeCommitUnknown     = "ACQ-COMMIT-UNKNOWN"      // reconciliation could not settle it
 	CodeOrphan            = "ACQ-ORPHAN-DELETED"      // the sweep removed a value without a row
+	CodeClaimLost         = "ACQ-CLAIM-LOST"          // a renewal's fence no longer held: result discarded
 )
 
 // Error is a failed acquisition: a reason code and fixed text, never anything a peer sent.
@@ -115,20 +116,28 @@ type Acquirer struct {
 	Log        *slog.Logger
 	Now        func() time.Time
 
+	// Prefix replaces KVPrefix when set; tests use it so each sweeps only its own values.
+	Prefix string
+
 	// commit settles the activation transaction; tests replace it to lose an acknowledgement.
 	commit func(context.Context, pgx.Tx) error
-	// prefix replaces KVPrefix in tests, so each test sweeps only its own values.
-	prefix string
 	// sweepPause runs in the sweep between the age check and the locked re-check; tests use it to
 	// commit an activation there.
 	sweepPause func(tokenID string)
 }
 
 func (a *Acquirer) kvPrefix() string {
-	if a.prefix != "" {
-		return a.prefix
+	if a.Prefix != "" {
+		return a.Prefix
 	}
 	return KVPrefix
+}
+
+// Fence is a renewal claim (D11): the row being renewed and the claim as it was recorded.
+type Fence struct {
+	TokenID   string
+	ClaimedBy string
+	ClaimedAt time.Time
 }
 
 // Acquire runs D10 for route: challenge from the peer, outcome, A's receipt, the grant with a
@@ -136,8 +145,24 @@ func (a *Acquirer) kvPrefix() string {
 // that consumes the receipt and activates the row. Every refusal and failure is audited and returned
 // as *Error. A failure after the grant was sent is terminal for that outcome: the next call starts
 // with a fresh challenge and outcome.
+//
+// The route has at most one live row (active or renewing; migration 4). The activation retires the
+// route's live rows that have expired, in the same transaction; a live row that has not expired makes
+// the activation fail (ACQ-ACTIVATION-FAILED, the value deleted): Acquire never replaces a valid
+// token, Replace does.
 func (a *Acquirer) Acquire(ctx context.Context, r Route) (Token, error) {
-	at := attempt{a: a, r: r, id: newUUID()}
+	return a.acquire(ctx, r, nil)
+}
+
+// Replace is Acquire for a renewal: the activation transaction retires the row f names and inserts
+// the new one only if that row is still state 'renewing' under exactly this claim. Otherwise the
+// worker lost its claim: nothing commits, the new value is deleted and the error is ACQ-CLAIM-LOST.
+func (a *Acquirer) Replace(ctx context.Context, r Route, f Fence) (Token, error) {
+	return a.acquire(ctx, r, &f)
+}
+
+func (a *Acquirer) acquire(ctx context.Context, r Route, fence *Fence) (Token, error) {
+	at := attempt{a: a, r: r, id: newUUID(), fence: fence}
 	tok, err := at.run(ctx)
 	if err != nil {
 		var e *Error
@@ -165,6 +190,7 @@ type attempt struct {
 	outcomeID string
 	tokenID   string
 	detail    string // the failed response check, for the audit row
+	fence     *Fence // set for a renewal
 }
 
 func (at *attempt) run(ctx context.Context) (Token, error) {
@@ -383,12 +409,12 @@ func (at *attempt) activate(ctx context.Context, key *Key, path string, tok issu
 	a := at.a
 	tx, err := a.DB.Begin(ctx)
 	if err != nil {
-		return at.rolledBack(ctx, path, false)
+		return at.rolledBack(ctx, path, CodeActivationFailed)
 	}
-	if refused, err := at.stage(ctx, tx, key, path, tok); err != nil {
+	if code, err := at.stage(ctx, tx, key, path, tok); err != nil {
 		// COMMIT was never sent: the transaction did not commit.
 		_ = tx.Rollback(context.WithoutCancel(ctx))
-		return at.rolledBack(ctx, path, refused)
+		return at.rolledBack(ctx, path, code)
 	}
 	commit := a.commit
 	if commit == nil {
@@ -400,7 +426,7 @@ func (at *attempt) activate(ctx context.Context, key *Key, path string, tok issu
 		return Token{ID: at.tokenID, ExpiresAt: tok.expiresAt}, nil
 	case errors.Is(err, pgx.ErrTxCommitRollback):
 		// The server answered COMMIT with ROLLBACK: the transaction had failed before it.
-		return at.rolledBack(ctx, path, false)
+		return at.rolledBack(ctx, path, CodeActivationFailed)
 	default:
 		// Any other answer, a server error included, does not prove a rollback: a FATAL
 		// termination can arrive after the commit took effect. The row decides, once the
@@ -409,38 +435,66 @@ func (at *attempt) activate(ctx context.Context, key *Key, path string, tok issu
 	}
 }
 
-func (at *attempt) stage(ctx context.Context, tx pgx.Tx, key *Key, path string, tok issued) (refused bool, err error) {
+// stage runs the activation's statements. On an error the returned code says why the transaction
+// must not commit.
+func (at *attempt) stage(ctx context.Context, tx pgx.Tx, key *Key, path string, tok issued) (code string, err error) {
 	now := at.a.now()
 	renewAfter := tok.issuedAt.Add(tok.expiresAt.Sub(tok.issuedAt) * 3 / 4)
 	if _, err := tx.Exec(ctx, `SELECT set_config('statement_timeout', $2, true),
 		set_config('idle_in_transaction_session_timeout', $3, true), pg_advisory_xact_lock(hashtextextended($1::text, 0))`,
 		at.tokenID, ms(statementTimeout), ms(idleTimeout)); err != nil {
-		return false, err
+		return CodeActivationFailed, err
 	}
 	tag, err := tx.Exec(ctx, `UPDATE verified_outcome SET consumed_at = $3
 		WHERE outcome_id = $1 AND audience = $2 AND status = 'verified' AND consumed_at IS NULL AND expires_at > $3`,
 		at.outcomeID, at.r.Audience, now)
 	if err != nil {
-		return false, err
+		return CodeActivationFailed, err
 	}
 	if tag.RowsAffected() == 0 {
-		return true, errors.New("receipt not consumable")
+		return CodeActivationRefused, errors.New("receipt not consumable")
+	}
+	// The row this one replaces stops being live first, in this transaction: the route goes from the
+	// old live row to the new one in one commit, never through two or none.
+	if at.fence != nil {
+		tag, err = tx.Exec(ctx, `UPDATE upstream_token SET state = 'retired', updated_at = $4
+			WHERE token_id = $1 AND state = 'renewing' AND claimed_by = $2 AND claimed_at = $3`,
+			at.fence.TokenID, at.fence.ClaimedBy, at.fence.ClaimedAt, now)
+		if err != nil {
+			return CodeActivationFailed, err
+		}
+		if tag.RowsAffected() != 1 {
+			return CodeClaimLost, errors.New("renewal claim lost")
+		}
+	} else if _, err := tx.Exec(ctx, `UPDATE upstream_token SET state = 'retired', updated_at = $4
+		WHERE peer_zone = $1 AND audience = $2 AND tenant = $3 AND state IN ('active', 'renewing') AND expires_at <= $4`,
+		at.r.PeerZone, at.r.Audience, at.r.Tenant, now); err != nil {
+		return CodeActivationFailed, err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO upstream_token
 		(token_id, peer_zone, audience, tenant, outcome_id, token_ref, key_ref, state, issued_at, expires_at, renew_after)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, $9, $10)`,
 		at.tokenID, at.r.PeerZone, at.r.Audience, at.r.Tenant, at.outcomeID, path, key.Ref(), tok.issuedAt, tok.expiresAt, renewAfter); err != nil {
-		return false, err
+		return CodeActivationFailed, err
 	}
-	_, err = tx.Exec(ctx, auditSQL, "upstream.acquired", at.id, at.r.ClientID, at.outcomeID, at.tokenID, nil, at.auditDetail())
-	return false, err
+	kind := "upstream.acquired"
+	if at.fence != nil {
+		kind = "upstream.renewed"
+	}
+	if _, err = tx.Exec(ctx, auditSQL, kind, at.id, at.r.ClientID, at.outcomeID, at.tokenID, nil, at.auditDetail()); err != nil {
+		return CodeActivationFailed, err
+	}
+	return "", nil
 }
 
 // rolledBack handles a transaction confirmed not committed: the value is deleted.
-func (at *attempt) rolledBack(ctx context.Context, path string, refused bool) (Token, error) {
+func (at *attempt) rolledBack(ctx context.Context, path, code string) (Token, error) {
 	at.deleteValue(ctx, path)
-	if refused {
-		return Token{}, fail(CodeActivationRefused, "receipt not consumable")
+	switch code {
+	case CodeActivationRefused:
+		return Token{}, fail(code, "receipt not consumable")
+	case CodeClaimLost:
+		return Token{}, fail(code, "renewal claim lost; result discarded")
 	}
 	return Token{}, fail(CodeActivationFailed, "activation rolled back")
 }
@@ -510,6 +564,9 @@ const auditSQL = `INSERT INTO audit_event (kind, correlation_id, client_id, outc
 
 func (at *attempt) auditDetail() []byte {
 	d := map[string]string{"route": at.r.Name, "peer_zone": at.r.PeerZone, "audience": at.r.Audience}
+	if at.fence != nil {
+		d["replaces"] = at.fence.TokenID
+	}
 	if at.detail != "" {
 		d["check"] = at.detail
 	}

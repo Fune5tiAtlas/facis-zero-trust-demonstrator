@@ -57,6 +57,9 @@ flags of serve (each defaults to the TOKEN_STORE_* variable of the same name):
   --drain-delay DURATION        time /readyz answers 503 before the listeners close on SIGTERM (default 5s)
   --shutdown-timeout DURATION   drain of the listeners on SIGTERM (default 10s)
   --log-level LEVEL             debug, info, warn or error (default info)
+  --replay-callers IDS          comma-separated SPIFFE IDs allowed to call /internal/replay-check
+  --acquire-config PATH         routes file, JSON: enables /internal/substitute and renewal
+  --openbao-token-file PATH     file holding the OpenBao token, read on every call (with --acquire-config)
 
 flags of every migrate command:
   --database-url URL   PostgreSQL connection URL (default: $TOKEN_STORE_DATABASE_URL)

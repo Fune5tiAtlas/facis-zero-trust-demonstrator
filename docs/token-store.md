@@ -19,7 +19,7 @@ verified; the service's endpoints are documented as they land.
 | `oauth2_challenge` | the connector's OAuth2 surface | single-use challenges of the verified-presentation grant, bound to a client and one audience, valid 120 s; a consumed one is never reset or deleted (migration 3) |
 | `signing_key` | the token store | references to the store's outbound signing keys in the key-value store, with their thumbprints; never key material |
 | `verified_outcome` | the token store; in the issuing zone, the connector | verification outcomes received over IF-03, consumed at most once. The connector records each outcome its verified-presentation grant consumes here, in the transaction that issues the token |
-| `upstream_token` | the token store | the upstream tokens held per route `(peer_zone, audience, tenant)`, as references into the key-value store, with state and the single-flight renewal claim |
+| `upstream_token` | the token store | the upstream tokens held per route `(peer_zone, audience, tenant)`, as references into the key-value store, with state and the single-flight renewal claim; at most one live row (`active` or `renewing`) per route (migration 4) |
 | `proof_jti` | the token store, on behalf of the connector and the guard | one-time DPoP proof identifiers, keyed `(jkt, htm, htu, jti)` and kept until `not_after`; the replay check of the store's API |
 | `audit_event` | both | registration decisions, outcome consumption and refusal, every renewal attempt with its reason; append-only |
 
@@ -67,8 +67,8 @@ since only the build that applied a migration knows how to revert it.
 ## The service
 
 `token-store serve` runs the service from the same binary: two plain-HTTP listeners, a liveness
-and a readiness answer, and JSON records on stdout. It serves the contract's `/healthz`, `/readyz`
-and `/internal/replay-check`; substitution follows. It never waits for its dependencies at
+and a readiness answer, and JSON records on stdout. It serves the contract's `/healthz`, `/readyz`,
+`/internal/replay-check` and `/internal/substitute`. It never waits for its dependencies at
 start: a store that starts before its database or its key-value store still starts, listens, and
 says it is not ready until they are there.
 
@@ -88,6 +88,8 @@ wins. Neither URL is ever logged.
 | `--shutdown-timeout` | `TOKEN_STORE_SHUTDOWN_TIMEOUT` | `10s` | Drain of the listeners after that delay |
 | `--log-level` | `TOKEN_STORE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 | `--replay-callers` | `TOKEN_STORE_REPLAY_CALLERS` | none | Comma-separated SPIFFE IDs allowed to call `/internal/replay-check` (the connector's, the guard's); with none, every call is refused |
+| `--acquire-config` | `TOKEN_STORE_ACQUIRE_CONFIG` | none | The routes file ([below](#acquisition-of-upstream-tokens)), read at start: the routes `/internal/substitute` authorizes and acquires for. Without it every substitution caller is refused |
+| `--openbao-token-file` | `TOKEN_STORE_OPENBAO_TOKEN_FILE` | none | The OpenBao token, read on every call; required with `--acquire-config` |
 
 The environment fills in after the command line is parsed, never as a flag's default, so a
 malformed variable only matters when its flag is absent and no value, the connection URL above
@@ -262,8 +264,9 @@ was unchanged. Expired records are swept every minute.
 The store obtains the token it substitutes on a route from the peer zone's Connector through the
 verified-presentation grant ([IF-02 v1.1](api-docs.md#if-02-connector-authorization-surface),
 [Connector OAuth2 provider](oauth2-provider.md#verified-presentation-grant)). The code is
-`services/token-store/internal/acquire`; `Acquirer.Acquire(ctx, route)` is what substitution and
-renewal call, and there is no HTTP endpoint for it.
+`services/token-store/internal/acquire`; `Acquirer.Acquire(ctx, route)` is what substitution calls
+on demand and `Acquirer.Replace(ctx, route, fence)` what renewal calls, and there is no HTTP endpoint
+for either.
 
 **Order.** For one route `(peer_zone, audience, tenant)`:
 
@@ -282,9 +285,13 @@ renewal call, and there is no HTTP endpoint for it.
    read: the signature is checked by the peer's resources (`internal/tokenverify`).
 6. The token value is written to KV v2 at `ztd/token-store/upstream/<token_id>`, create-only.
 7. One transaction consumes the receipt (conditionally: unconsumed, verified, for the route's audience
-   and not expired at the store's clock) and inserts the `upstream_token` row `active` with
-   `token_ref` (the KV path), `key_ref`, the token's `iat` and `exp`, and `renew_after` at 75 % of
-   its lifetime, together with the `upstream.acquired` audit row.
+   and not expired at the store's clock), retires the route's live rows that have expired, and
+   inserts the `upstream_token` row `active` with `token_ref` (the KV path), `key_ref`, the token's
+   `iat` and `exp`, and `renew_after` at 75 % of its lifetime, together with the `upstream.acquired`
+   audit row. A route has at most one live row (`active` or `renewing`; a unique index of migration
+   4), so `Acquire` never replaces a token that is still valid: on such a route the insert is refused,
+   the transaction is confirmed rolled back and the value deleted (`ACQ-ACTIVATION-FAILED`). That
+   holds for `token-store acquire --route` too. Replacing a valid token is renewal's.
 
 **The store's key.** The store's DPoP key is its transit key (`signing_key` in the configuration),
 created non-exportable if missing; its latest version is used, and a `signing_key` row
@@ -321,6 +328,8 @@ never secrets:
     "name": "zone-b-api", "peer_zone": "zone-b", "audience": "https://api.zone-b.example", "tenant": "",
     "connector_url": "https://connector.zone-b.example",
     "client_id": "zone-a-token-store", "client_secret_file": "/var/run/secrets/zone-b-client/secret",
+    "callers": ["spiffe://zone-a.example/ns/ztd-mgmt/sa/ztd-guard"],
+    "methods": ["GET", "POST"], "target_prefix": "https://api.zone-b.example/v1",
     "fixture_outcomes": {"issuer": "https://verifier.zone-b.example", "kid": "verifier-1",
                          "private_key_file": "/etc/token-store/fixture-key.pem", "role": "participant-operator",
                          "entitlement": "write", "validity_seconds": 90}
@@ -330,7 +339,11 @@ never secrets:
 
 `fixture_outcomes` is the fixture `OutcomeSource` for tests and the demo: it signs a verified IF-03
 outcome for each challenge with the configured key, a new `outcome_id` per call, valid 60 to 120 s
-(default 90 s). A route without an outcome source cannot be acquired. Unknown members are refused.
+(default 90 s). A route without an outcome source cannot be acquired. `callers`, `methods` and
+`target_prefix` make the route substitutable ([Substitution](#substitution)); a route without
+callers is acquired by the command line only, and `methods` or `target_prefix` without callers is
+refused. Two routes with the same `(peer_zone, audience, tenant)` are refused, so a route key names
+one route. Unknown members are refused.
 
 **Commands.**
 
@@ -360,11 +373,71 @@ isolation is REPEATABLE READ; the orphan sweep, including an activation that com
 first look and its deletion;
 the response checks; and a canary that no credential reaches logs, errors or audit rows.
 
+## Substitution
+
+`POST /internal/substitute` hands the guard the upstream credential of one configured route: the
+route's token as `authorization` (`DPoP <token>`) and a fresh DPoP proof as `dpop`, minted with the
+store's key for exactly the upstream request, with `expires_at` the token's expiry. The caller's own
+proof is never forwarded. The code is `services/token-store/internal/substitute`, the handler
+`internal/server/substitute.go`. Every answer carries `Cache-Control: no-store`.
+
+**Order.** Nothing is read from the database or the key-value store, and nothing is signed, before
+the request is authorized:
+
+1. The caller is authenticated as for the replay check (the forwarded client certificate) and must
+   be listed by some route's `callers`; otherwise 403 `TOK-CALLER-DENIED`, before the body is read.
+2. The body is parsed strictly: at most 8 KiB, one JSON object and nothing after it, no unknown
+   members, the contract's required members, `method` from its enum, `correlation_id` 1 to 128
+   bytes, `upstream_nonce` 1 to 256 visible ASCII characters when present. A body that does not
+   parse matches no route: 403 `TOK-ROUTE-DENIED` (the contract has no other refusal for it).
+3. Authorization against the routes from configuration alone (D7): a route that lists the caller and
+   equals the request's `peer_zone`, `audience` and `tenant` (absent or null is the empty tenant),
+   allows its `method`, and whose `target_prefix` covers `target_uri`. Otherwise 403
+   `TOK-ROUTE-DENIED`. `target_uri` must already be in canonical form, and the store refuses rather
+   than normalises: an absolute `http`/`https` URI with lowercase scheme and host, no userinfo, no
+   fragment, no default port, no dot segment in any spelling (`.`, `..`, `%2e`, with `;` parameters),
+   no encoded `/` or `\` and no `\`, and unchanged by a parse and re-serialisation. The prefix
+   matches on the same origin and whole path segments (`/v1` covers `/v1` and `/v1/x`, never `/v10`);
+   the query is not compared.
+4. The route's live row: `active`, or `renewing` (claimed by a renewal worker; it is still the
+   route's token until its replacement commits), unexpired at the store's clock, bound to an
+   `active` `signing_key`. A `failed` or `retired` row is never read, however long it would still be
+   valid. Migration 4 allows one live row per route, so there is nothing older to fall back to.
+5. No live row: the token is acquired on demand ([Acquisition](#acquisition-of-upstream-tokens)),
+   once for all concurrent callers. In one process they queue on the route's gate, so waiters hold
+   no database connection; across replicas the first takes a transaction-scoped advisory lock on the
+   route (`lock_timeout` the caller's remaining deadline), looks again, and only then acquires; the
+   others find the committed row when they get the lock. A failed acquisition, or a route without an
+   outcome source, is 409 `TOK-NO-UPSTREAM` (the acquisition's reason code is logged and audited by
+   acquisition).
+6. The token is read from the key-value store by `token_ref` and must have the contract's
+   `authorization` form; the store key version named by `key_ref` is checked against its recorded
+   thumbprint (cached per version); the proof carries `htm` the method, `htu` the target without
+   query, `ath` the token's hash, `nonce` the `upstream_nonce` when given, and a new random `jti`.
+
+Every database, key-value store and transit operation is bounded (2 s each) and the whole call by
+10 s, the on-demand acquisition included; a dependency that fails is 503 `TOK-STORE-UNAVAILABLE`,
+fail closed. Records name the route and the `token_id`, never the token, the proof or the
+`authorization` value; refusals carry the reason code and the correlation id and nothing the caller
+sent.
+
+**Verification.** `go test ./services/token-store/internal/server` with the three variables above
+runs substitution through the service against zone A's database, OpenBao and the real `connector`
+binary as zone B: a valid token yields `DPoP <token>` and a proof by the store key for the target
+(method, `htu` without the query, `ath`, nonce), two calls give two distinct `jti`s, and B's
+`internal/tokenverify` accepts the token with each proof; with zone B stopped, an expired-only, a
+failed-only and a retired-only route answer 409 `TOK-NO-UPSTREAM`; with the database pool closed and
+OpenBao counting its calls, every caller refusal is 403 `TOK-CALLER-DENIED` and every wrong method,
+target (a dot-segment escape included), peer zone, audience, tenant or malformed body is 403
+`TOK-ROUTE-DENIED`, with no OpenBao call, while an authorized request answers 503; twelve concurrent
+callers on two store replicas sharing the database, with only an expired row, cause exactly one
+acquisition at B, all get that token, the expired row is retired and one live row remains; the
+`no-store` header; and a canary that no token, proof or client secret reaches a record or a refusal.
+`internal/caller` tests the router and the canonical-target rule on their own.
+
 ## What follows
 
 Key custody against the key-value store, which is when "every active key reference resolves"
-joins readiness; substitution with the allow-list of its callers and routes, which reads the active
-row acquisition leaves and calls `Acquire` on demand; renewal, which schedules `Acquire` and the
-orphan sweep; and the lane from the
+joins readiness; renewal, which schedules `Replace` and the orphan sweep; and the lane from the
 guard to the store across the planes, each building on the tables, the queries and the service
 above.

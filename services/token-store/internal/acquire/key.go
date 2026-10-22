@@ -55,6 +55,24 @@ func LoadKey(ctx context.Context, pool *pgxpool.Pool, signer transit.Signer, nam
 	return &Key{signer: signer, ref: ref, jwk: jwk, jkt: jkt}, nil
 }
 
+// KeyAt is the store key version ref names, for the tokens bound to it: its public key must have
+// the thumbprint jkt recorded for ref in signing_key, or it is refused.
+func KeyAt(ctx context.Context, signer transit.Signer, ref, jkt string) (*Key, error) {
+	kv, err := transit.ParseRef(ref)
+	if err != nil {
+		return nil, err
+	}
+	pub, err := signer.PublicKey(ctx, kv)
+	if err != nil {
+		return nil, err
+	}
+	jwk := jose.PublicJWK(pub)
+	if t, err := jwk.Thumbprint(); err != nil || t != jkt {
+		return nil, errors.New("acquire: transit public key does not match its recorded thumbprint")
+	}
+	return &Key{signer: signer, ref: kv, jwk: jwk, jkt: jkt}, nil
+}
+
 // JWK is the public key, as the proof's jwk header carries it.
 func (k *Key) JWK() jose.JWK { return k.jwk }
 

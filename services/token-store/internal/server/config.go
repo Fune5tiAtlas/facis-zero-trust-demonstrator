@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/transit"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/acquire"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/caller"
 )
 
@@ -32,8 +34,21 @@ type Config struct {
 	// the guard). With none, every call to it is refused.
 	ReplayCallers []string
 	// Callers authenticates the store's internal callers. Nil means the forwarded client certificate
-	// (caller.XFCC) checked against the allow-lists above; tests inject their own.
+	// (caller.XFCC) checked against the allow-lists above and the substitution routes' callers;
+	// tests inject their own.
 	Callers caller.Authenticator
+	// Acquisition is the routes file (--acquire-config): the routes /internal/substitute authorizes
+	// and acquires tokens for. Nil refuses every substitution caller.
+	Acquisition *acquire.Loaded
+	// OpenBao signs the store's proofs and holds the upstream token values; required with
+	// Acquisition.
+	OpenBao OpenBao
+}
+
+// OpenBao is the key-value store as the store uses it: transit signing and KV v2.
+type OpenBao interface {
+	transit.Signer
+	transit.Secrets
 }
 
 // Validate reports the first thing the service cannot run with.
@@ -61,6 +76,9 @@ func (c Config) Validate() error {
 	}
 	if _, err := caller.NewXFCC(c.ReplayCallers); err != nil {
 		return errors.New("the replay-check callers must be spiffe:// IDs")
+	}
+	if c.Acquisition != nil && c.OpenBao == nil {
+		return errors.New("substitution needs the key-value store's token")
 	}
 	return nil
 }

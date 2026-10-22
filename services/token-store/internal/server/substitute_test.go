@@ -1,0 +1,453 @@
+package server
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/if03"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/jose"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/pgtest"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/replay"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/tokenverify"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/transit"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/acquire"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/acquire/acquiretest"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/caller"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/testsupport"
+)
+
+// These tests run substitution against real infrastructure: a zone-A database, OpenBao for transit
+// and KV, and zone B as the real connector binary (acquiretest). They skip without
+// TOKEN_STORE_TEST_DATABASE_URL, TRANSIT_TEST_ADDR and TRANSIT_TEST_TOKEN.
+
+const (
+	guardID = "spiffe://zone-a.example/ns/ztd-mgmt/sa/guard"
+	target  = acquiretest.Audience + "/v1/items"
+)
+
+// countingBao counts every OpenBao call the store makes.
+type countingBao struct {
+	*transit.Client
+	calls atomic.Int64
+}
+
+func (c *countingBao) Sign(ctx context.Context, k transit.KeyVersion, in []byte) ([]byte, error) {
+	c.calls.Add(1)
+	return c.Client.Sign(ctx, k, in)
+}
+
+func (c *countingBao) PublicKey(ctx context.Context, k transit.KeyVersion) (*ecdsa.PublicKey, error) {
+	c.calls.Add(1)
+	return c.Client.PublicKey(ctx, k)
+}
+
+func (c *countingBao) EnsureKey(ctx context.Context, name string) (transit.KeyVersion, error) {
+	c.calls.Add(1)
+	return c.Client.EnsureKey(ctx, name)
+}
+
+func (c *countingBao) Read(ctx context.Context, path string) ([]byte, error) {
+	c.calls.Add(1)
+	return c.Client.Read(ctx, path)
+}
+
+func (c *countingBao) Create(ctx context.Context, path string, v []byte) error {
+	c.calls.Add(1)
+	return c.Client.Create(ctx, path, v)
+}
+
+type subEnv struct {
+	t       *testing.T
+	dsnA    string
+	poolA   *pgxpool.Pool
+	poolB   *pgxpool.Pool
+	b       acquiretest.ZoneB
+	bao     *countingBao
+	loaded  acquire.Loaded
+	prefix  string
+	logs    *testsupport.Buffer
+	servers []*Server
+	refused []string // every refusal body, for the canary
+}
+
+// newSubEnv makes zone A's database and configuration; withB starts zone B and points the route at
+// it, otherwise the route's connector is an address nothing listens on.
+func newSubEnv(t *testing.T, withB bool) *subEnv {
+	t.Helper()
+	addr, token := os.Getenv("TRANSIT_TEST_ADDR"), os.Getenv("TRANSIT_TEST_TOKEN")
+	if addr == "" || token == "" {
+		t.Skip("TRANSIT_TEST_ADDR and TRANSIT_TEST_TOKEN not set")
+	}
+	if os.Getenv(pgtest.DatabaseEnv) == "" {
+		t.Skipf("%s not set", pgtest.DatabaseEnv)
+	}
+	e := &subEnv{t: t, logs: &testsupport.Buffer{}, prefix: "ztd/token-store-test/" + acquiretest.RandHex(6)}
+	e.dsnA = testDatabaseURL(t)
+	migrate(t, e.dsnA)
+	var err error
+	if e.poolA, err = pgxpool.New(t.Context(), e.dsnA); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(e.poolA.Close)
+	kv, err := transit.New(transit.Config{Addr: addr, Token: func(context.Context) (string, error) { return token, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.bao = &countingBao{Client: kv}
+	issuer, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	connector, clientID, secret := "http://127.0.0.1:1", "unused", "unused"
+	if withB {
+		dsnB := pgtest.MigratedURL(t, "sub_b")
+		if e.poolB, err = pgxpool.New(t.Context(), dsnB); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(e.poolB.Close)
+		e.b = acquiretest.StartConnector(t, dsnB, addr, token, &issuer.PublicKey)
+		connector, clientID, secret = e.b.Base, e.b.ClientID, e.b.ClientSecret
+	}
+	routes, err := caller.NewRoutes([]caller.Route{{Callers: []string{guardID}, PeerZone: "zone-b",
+		Audience: acquiretest.Audience, Methods: []string{"GET", "POST"}, TargetPrefix: acquiretest.Audience + "/v1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.loaded = acquire.Loaded{
+		SigningKey: "sub-a-" + acquiretest.RandHex(6),
+		Trusted:    if03.Issuers{acquiretest.VPIssuer: {acquiretest.VPKid: &issuer.PublicKey}},
+		Routes: map[string]acquire.Route{"zone-b-api": {Name: "zone-b-api", PeerZone: "zone-b", Audience: acquiretest.Audience,
+			ConnectorURL: connector, ClientID: clientID, ClientSecretFile: acquiretest.WriteFile(t, "secret", secret+"\n"),
+			Outcomes: acquire.Fixture{Issuer: acquiretest.VPIssuer, Kid: acquiretest.VPKid, Key: issuer,
+				Claims: if03.Claims{Role: acquiretest.VPRole, Entitlement: acquiretest.VPEntitle}}}},
+		Substitution: routes,
+	}
+	return e
+}
+
+// server starts one more store on zone A's database.
+func (e *subEnv) server() (*Server, string) {
+	e.t.Helper()
+	cfg := localConfig(e.dsnA, fakeOpenBao(e.t).URL)
+	cfg.Callers = headerCaller{}
+	cfg.Acquisition = &e.loaded
+	cfg.OpenBao = e.bao
+	s, err := New(context.Background(), cfg, testLogger(e.logs))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	s.substitute.Acquirer.Prefix = e.prefix
+	startServer(e.t, s)
+	e.servers = append(e.servers, s)
+	return s, "http://" + s.Addr().String() + "/internal/substitute"
+}
+
+func subRequest(over map[string]any) map[string]any {
+	m := map[string]any{"peer_zone": "zone-b", "audience": acquiretest.Audience, "method": "GET",
+		"target_uri": target + "?page=2", "correlation_id": "corr-1"}
+	for k, v := range over {
+		if v == nil {
+			delete(m, k)
+		} else {
+			m[k] = v
+		}
+	}
+	return m
+}
+
+type subAnswer struct {
+	status int
+	header http.Header
+	body   map[string]string
+	raw    string
+}
+
+func (e *subEnv) post(url, who string, body any) subAnswer {
+	e.t.Helper()
+	raw, ok := body.(string)
+	if !ok {
+		b, _ := json.Marshal(body)
+		raw = string(b)
+	}
+	req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader(raw))
+	if who != "" {
+		req.Header.Set("X-Test-Caller", who)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	a := subAnswer{status: resp.StatusCode, header: resp.Header, raw: string(data)}
+	_ = json.Unmarshal(data, &a.body)
+	if a.status != http.StatusOK {
+		e.refused = append(e.refused, a.raw)
+	}
+	return a
+}
+
+func (e *subEnv) count(pool *pgxpool.Pool, sql string, args ...any) int {
+	e.t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), sql, args...).Scan(&n); err != nil {
+		e.t.Fatal(err)
+	}
+	return n
+}
+
+// acquisitions is how many outcomes zone B consumed: one per acquisition that reached the grant.
+func (e *subEnv) acquisitions() int {
+	return e.count(e.poolB, `SELECT count(*) FROM verified_outcome WHERE consumed_at IS NOT NULL`)
+}
+
+func part(t *testing.T, jws string, i int) map[string]any {
+	t.Helper()
+	raw, err := base64.RawURLEncoding.DecodeString(strings.Split(jws, ".")[i])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	_ = json.Unmarshal(raw, &m)
+	return m
+}
+
+type memReplay struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+func (m *memReplay) TryUse(_ context.Context, u replay.Use) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := u.JKT + u.Method + u.URI + u.JTI
+	if m.seen[k] {
+		return false, nil
+	}
+	m.seen[k] = true
+	return true, nil
+}
+
+func TestSubstitute_ValidTokenYieldsTheAuthorizationAndAFreshProofAcceptedByB(t *testing.T) {
+	e := newSubEnv(t, true)
+	_, url := e.server()
+
+	first := e.post(url, guardID, subRequest(nil))
+	if first.status != http.StatusOK {
+		t.Fatalf("first: %d %s", first.status, first.raw)
+	}
+	if got := first.header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control %q; want no-store", got)
+	}
+	second := e.post(url, guardID, subRequest(map[string]any{"method": "POST", "upstream_nonce": "nonce-from-b"}))
+	if second.status != http.StatusOK {
+		t.Fatalf("second: %d %s", second.status, second.raw)
+	}
+	if n := e.acquisitions(); n != 1 {
+		t.Errorf("%d acquisitions; want 1 (on demand, then the active row)", n)
+	}
+	var tokenID, ref, jkt string
+	var expires time.Time
+	if err := e.poolA.QueryRow(t.Context(), `SELECT u.token_id::text, u.token_ref, k.jkt, u.expires_at
+		FROM upstream_token u JOIN signing_key k USING (key_ref) WHERE u.state = 'active'`).Scan(&tokenID, &ref, &jkt, &expires); err != nil {
+		t.Fatal(err)
+	}
+	value, err := e.bao.Client.Read(t.Context(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := string(value)
+	ath := sha256.Sum256(value)
+	for _, a := range []subAnswer{first, second} {
+		if a.body["authorization"] != "DPoP "+token {
+			t.Error("authorization is not DPoP + the active row's token")
+		}
+		if a.body["expires_at"] != expires.UTC().Format(time.RFC3339) {
+			t.Errorf("expires_at %s; want %s", a.body["expires_at"], expires.UTC().Format(time.RFC3339))
+		}
+		h := part(t, a.body["dpop"], 0)
+		jwkJSON, _ := json.Marshal(h["jwk"])
+		var jwk jose.JWK
+		_ = json.Unmarshal(jwkJSON, &jwk)
+		if got, _ := jwk.Thumbprint(); h["typ"] != "dpop+jwt" || got != jkt {
+			t.Errorf("proof header %v: not the store key %s", h, jkt)
+		}
+	}
+	p1, p2 := part(t, first.body["dpop"], 1), part(t, second.body["dpop"], 1)
+	if p1["htm"] != "GET" || p1["htu"] != target || p1["ath"] != base64.RawURLEncoding.EncodeToString(ath[:]) || p1["nonce"] != nil {
+		t.Errorf("first proof claims %v", p1)
+	}
+	if p2["htm"] != "POST" || p2["htu"] != target || p2["nonce"] != "nonce-from-b" {
+		t.Errorf("second proof claims %v", p2)
+	}
+	if p1["jti"] == "" || p1["jti"] == p2["jti"] {
+		t.Errorf("jtis %v and %v; want two distinct ones", p1["jti"], p2["jti"])
+	}
+
+	// End to end: B's resource verifier accepts the token with each minted proof.
+	verifier, err := tokenverify.New(tokenverify.Config{Issuer: acquiretest.BIssuer, JWKSURL: e.b.Base + "/.well-known/jwks.json",
+		Audience: acquiretest.Audience, PublicBaseURL: acquiretest.Audience, Scopes: []string{acquiretest.VPScope},
+		Replay: &memReplay{seen: map[string]bool{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for method, a := range map[string]subAnswer{"GET": first, "POST": second} {
+		req, _ := http.NewRequest(method, target+"?page=2", nil)
+		req.Header.Set("Authorization", a.body["authorization"])
+		req.Header.Set("DPoP", a.body["dpop"])
+		if id, err := verifier.Verify(req); err != nil || id.JKT != jkt {
+			t.Errorf("%s: B's verifier refused the substitution: %+v %v", method, id, err)
+		}
+	}
+
+	// Canary: no token, proof or client secret in a record or a refusal body.
+	e.post(url, guardID, subRequest(map[string]any{"method": "DELETE"}))
+	e.post(url, "", subRequest(nil))
+	haystack := e.logs.String() + strings.Join(e.refused, "\n")
+	for _, n := range []string{token, first.body["dpop"], second.body["dpop"], e.b.ClientSecret} {
+		for i := 0; i+24 <= len(n); i += 24 {
+			if strings.Contains(haystack, n[i:i+24]) {
+				t.Fatal("a credential piece leaked into the records or a refusal")
+			}
+		}
+	}
+	if !strings.Contains(e.logs.String(), tokenID) {
+		t.Error("the substitution left no record naming the token id")
+	}
+}
+
+func TestSubstitute_ExpiredOrFailedOnlyIsNoUpstream(t *testing.T) {
+	e := newSubEnv(t, true)
+	_, url := e.server()
+	if a := e.post(url, guardID, subRequest(nil)); a.status != http.StatusOK {
+		t.Fatalf("acquiring: %d %s", a.status, a.raw)
+	}
+	// Zone B goes away, so no new token can be had, and the only row expires.
+	e.b.Stop()
+	if _, err := e.poolA.Exec(t.Context(), `UPDATE upstream_token SET issued_at = now() - interval '10 minutes',
+		expires_at = now() - interval '1 second', renew_after = now() - interval '2 seconds'`); err != nil {
+		t.Fatal(err)
+	}
+	if a := e.post(url, guardID, subRequest(nil)); a.status != http.StatusConflict || a.body["reason_code"] != "TOK-NO-UPSTREAM" {
+		t.Fatalf("expired-only: %d %s; want 409 TOK-NO-UPSTREAM", a.status, a.raw)
+	}
+	// A failed or retired row is never a fallback, however long it would still be valid.
+	for _, state := range []string{"failed", "retired"} {
+		if _, err := e.poolA.Exec(t.Context(), `UPDATE upstream_token SET state = $1, expires_at = now() + interval '5 minutes',
+			renew_after = now() + interval '4 minutes'`, state); err != nil {
+			t.Fatal(err)
+		}
+		if a := e.post(url, guardID, subRequest(nil)); a.status != http.StatusConflict || a.body["reason_code"] != "TOK-NO-UPSTREAM" {
+			t.Errorf("%s-only: %d %s; want 409 TOK-NO-UPSTREAM", state, a.status, a.raw)
+		}
+	}
+}
+
+func TestSubstitute_DeniesCallersAndRoutesBeforeAnyRead(t *testing.T) {
+	e := newSubEnv(t, false)
+	s, url := e.server()
+	// Nothing below may touch the database or OpenBao: the pool is closed, so a read would answer
+	// 503, and OpenBao counts its calls.
+	s.pool.Close()
+	before := e.bao.calls.Load()
+
+	for name, who := range map[string]string{"unauthenticated": "", "not on any route": strangerID, "replay caller only": connectorID} {
+		if a := e.post(url, who, subRequest(nil)); a.status != http.StatusForbidden || a.body["reason_code"] != "TOK-CALLER-DENIED" {
+			t.Errorf("%s: %d %s; want 403 TOK-CALLER-DENIED", name, a.status, a.raw)
+		}
+	}
+	for name, body := range map[string]any{
+		"wrong method":            subRequest(map[string]any{"method": "DELETE"}),
+		"wrong target":            subRequest(map[string]any{"target_uri": acquiretest.Audience + "/admin"}),
+		"target escaping prefix":  subRequest(map[string]any{"target_uri": acquiretest.Audience + "/v1/../admin"}),
+		"wrong peer zone":         subRequest(map[string]any{"peer_zone": "zone-c"}),
+		"wrong audience":          subRequest(map[string]any{"audience": "https://other.zone-b.test"}),
+		"wrong tenant":            subRequest(map[string]any{"tenant": "t1"}),
+		"unknown field":           subRequest(map[string]any{"extra": 1}),
+		"no correlation id":       subRequest(map[string]any{"correlation_id": nil}),
+		"method outside the enum": subRequest(map[string]any{"method": "TRACE"}),
+		"empty nonce":             subRequest(map[string]any{"upstream_nonce": ""}),
+		"trailing data":           `{"peer_zone":"zone-b","audience":"` + acquiretest.Audience + `","method":"GET","target_uri":"` + target + `","correlation_id":"c"} {}`,
+		"not JSON":                "peer_zone=zone-b",
+		"over the size limit":     subRequest(map[string]any{"correlation_id": strings.Repeat("c", 10<<10)}),
+		"correlation id too long": subRequest(map[string]any{"correlation_id": strings.Repeat("c", 129)}),
+	} {
+		if a := e.post(url, guardID, body); a.status != http.StatusForbidden || a.body["reason_code"] != "TOK-ROUTE-DENIED" {
+			t.Errorf("%s: %d %s; want 403 TOK-ROUTE-DENIED", name, a.status, a.raw)
+		}
+	}
+	if n := e.bao.calls.Load() - before; n != 0 {
+		t.Errorf("%d OpenBao calls while refusing; want none", n)
+	}
+	// The control: an authorized request does read, and with the pool closed fails closed.
+	if a := e.post(url, guardID, subRequest(map[string]any{"tenant": nil})); a.status != http.StatusServiceUnavailable ||
+		a.body["reason_code"] != "TOK-STORE-UNAVAILABLE" {
+		t.Errorf("authorized request with the database gone: %d %s; want 503 TOK-STORE-UNAVAILABLE", a.status, a.raw)
+	}
+	// Refusals echo nothing the caller sent.
+	for _, r := range e.refused {
+		if strings.Contains(r, "zone-c") || strings.Contains(r, "/admin") || strings.Contains(r, "TRACE") {
+			t.Errorf("a refusal echoes the request: %s", r)
+		}
+	}
+}
+
+// TestSubstitute_OnDemandAcquisitionIsSingleFlight: with no live row (only an expired one), many
+// concurrent substitutions on two store replicas sharing the database acquire exactly once; every
+// caller gets that token, the expired row is retired in the same transaction, and the route ends with
+// one live row.
+func TestSubstitute_OnDemandAcquisitionIsSingleFlight(t *testing.T) {
+	e := newSubEnv(t, true)
+	_, url1 := e.server()
+	_, url2 := e.server()
+	if a := e.post(url1, guardID, subRequest(nil)); a.status != http.StatusOK {
+		t.Fatalf("acquiring: %d %s", a.status, a.raw)
+	}
+	if _, err := e.poolA.Exec(t.Context(), `UPDATE upstream_token SET issued_at = now() - interval '10 minutes',
+		expires_at = now() - interval '1 second', renew_after = now() - interval '2 seconds'`); err != nil {
+		t.Fatal(err)
+	}
+	before := e.acquisitions()
+	const n = 12
+	answers := make([]subAnswer, n)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range n {
+		url := url1
+		if i%2 == 1 {
+			url = url2
+		}
+		wg.Go(func() {
+			<-start
+			answers[i] = e.post(url, guardID, subRequest(nil))
+		})
+	}
+	close(start)
+	wg.Wait()
+	for i, a := range answers {
+		if a.status != http.StatusOK || a.body["authorization"] != answers[0].body["authorization"] {
+			t.Fatalf("caller %d: %d %s; want the one acquired token", i, a.status, a.raw)
+		}
+	}
+	if got := e.acquisitions() - before; got != 1 {
+		t.Errorf("%d acquisitions for %d concurrent callers; want exactly 1", got, n)
+	}
+	if live := e.count(e.poolA, `SELECT count(*) FROM upstream_token WHERE state IN ('active', 'renewing')`); live != 1 {
+		t.Errorf("%d live rows; want 1", live)
+	}
+	if retired := e.count(e.poolA, `SELECT count(*) FROM upstream_token WHERE state = 'retired' AND expires_at < now()`); retired != 1 {
+		t.Errorf("%d retired expired rows; want 1", retired)
+	}
+}
