@@ -70,8 +70,8 @@ Each service has two modes. The mode is derived from what the caller injects int
 
 | Service | `sample` (default) | `token` |
 | --- | --- | --- |
-| Protected Resource | No `Config.Verifier`. `/demo` is unauthenticated and the `scenario` field selects the result, as described below. | `Config.Verifier` (a `tokenverify.RequestVerifier`) is set. `/demo` runs behind its `Middleware`; the response is chosen by the caller's token scopes ([scope table](#scope-table)). A `scenario` field is rejected. |
-| Participant | No `Config.Bootstrapper`. The `sample` or `http-sample` adapter is used, as before. | `Config.Bootstrapper` is set. The lifecycle runs it at start and the request adapter calls the Resource with credentials from the resulting `TokenSession`. |
+| Protected Resource | No `Config.Verifier`. `/demo` is unauthenticated and the `scenario` field selects the result, as described below. | `Config.Verifier` (a `tokenverify.RequestVerifier`) is set. `/demo` runs behind its `Middleware`; the response is chosen by the caller's token scopes ([scope table](#scope-table)). A `scenario` field that is non-empty after trimming whitespace is rejected; an empty or whitespace-only one counts as absent. |
+| Participant | No `Config.Bootstrapper`. The `sample` or `http-sample` adapter (or one injected through `NewServerWithAdapter`) is used, as before. | `Config.Bootstrapper` is set. The lifecycle runs it at start and the request adapter calls the Resource with credentials from the resulting `TokenSession`. An adapter injected through `NewServerWithAdapter` is ignored in this mode. |
 
 `LoadConfig` never sets a verifier or a bootstrapper, so both binaries start in sample mode with the existing settings and no new required variable. What is implemented in this repository today: the token-mode code paths, tested with fake verifiers, bootstrappers and sessions. What is not: the concrete token verifier, DPoP proofs, token acquisition and their wiring into `cmd/`; those arrive with the token path.
 
@@ -85,7 +85,7 @@ In token mode the Protected Resource answers `POST /demo` for `sample-report` / 
 | includes `report:summary`, not `report:read` | 200 | `success` | `RESOURCE_SUMMARY_RETURNED` | `{resource, action, summary: {id, title, summary}}` |
 | neither | 403 | `denied` | `RESOURCE_SCOPE_INSUFFICIENT` | `{}` |
 
-Other token-mode answers: an uncatalogued resource or action is 404 `SAMPLE_RESOURCE_NOT_FOUND`; a `scenario` field is 400 `RESOURCE_SCENARIO_NOT_ALLOWED`. Every request log line in token mode carries `client_id`, `sub` and `jkt` from the verified identity. A request the verifier refused is logged as `protected resource request refused` with its HTTP status and IDs only. Neither service logs or returns a token, a DPoP proof, a token ID or any request header.
+Other token-mode answers: an uncatalogued resource or action is 404 `SAMPLE_RESOURCE_NOT_FOUND`; a `scenario` field that is non-empty after trimming is 400 `RESOURCE_SCENARIO_NOT_ALLOWED`. Every log line for a token-mode request that reached the verified handler (passed the verifier) carries `client_id`, `sub` and `jkt` from the verified identity. A request the verifier refused is logged as `protected resource request refused` with its HTTP status and IDs only. Neither service logs or returns a token, a DPoP proof, a token ID or any request header.
 
 ### Participant token adapter
 
@@ -98,9 +98,11 @@ For each `/demo` call in token mode the adapter calls `TokenSession.Authorize(ct
 | Resource 401 | 403 | `denied` | `TOKEN_REJECTED` |
 | Resource 403 | 403 | `denied` | `TOKEN_FORBIDDEN` |
 | Resource 503 | 503 | `unavailable` | `TOKEN_RESOURCE_UNAVAILABLE` |
+| Resource answer contains this request's `Authorization` value, bare token or DPoP proof (raw or in any decoded JSON string) | 502 | `error` | `TOKEN_CREDENTIAL_ECHOED` |
 | Resource 200 | 200 | `success` | the Resource's scope-table reason, after the same contract validation as `http-sample` |
+| Other documented Resource answers | as for `http-sample` | as for `http-sample` | the Resource's reason |
 
-The bodies of 401, 403 and 503 answers are not read into the result.
+The bodies of 401, 403 and 503 answers are not read into the result. For every other answer the Resource's `explanation` is replaced by a fixed local text, so no upstream text is forwarded in token mode.
 
 ### Participant lifecycle and `GET /state`
 
@@ -118,11 +120,11 @@ If a run ends in an error without a `failed_*` state, the lifecycle records the 
 {"mode":"token","state":"ready","attempt":1,"lastErrorCode":"","history":[{"state":"registering","reason":"step_started","at":"2026-10-21T09:00:00Z"}]}
 ```
 
-`lastErrorCode` is the reason of the most recent failure. In sample mode `/state` reports `mode: sample`, `state: idle` and an empty history.
+`lastErrorCode` is the reason of the most recent failure. In sample mode `/state` reports `mode: sample` and `state: idle`; the history is empty until the first `/reset`, after which it holds the `idle` / `reset` entry.
 
 ### `POST /reset`
 
-`POST /reset` on the Participant waits for an in-flight bootstrap run to return (it is not cancelled, so a token acquisition is never cut short), skips any pending retry, clears the history, `lastErrorCode` and the session reference, records `idle` / `reset` and starts a new bootstrap. It returns 200 with the `/state` body. If the run does not finish within `PARTICIPANT_REQUEST_TIMEOUT`, it returns 503 `{"reason":"reset_wait_timeout"}` and the pending retries stay cancelled; a later reset restarts. In sample mode it only records the reset.
+`POST /reset` on the Participant waits for an in-flight bootstrap run to return (it is not cancelled, so a token acquisition is never cut short), stops any pending retry (no new run starts once a reset has begun), clears the history, `lastErrorCode` and the session reference, records `idle` / `reset` and starts a new bootstrap. It returns 200 with the state taken right after the reset, before the new run can change it: always `idle` with the single `idle` / `reset` entry. Resets are serialised. A reset that does not get its turn, or whose wait for the run does not finish, within `PARTICIPANT_REQUEST_TIMEOUT` returns 503 `{"reason":"reset_wait_timeout"}` and clears nothing; if it had already stopped pending retries, they stay stopped, and a later reset restarts the bootstrap. In sample mode it only records the reset.
 
 `POST /reset` on the Protected Resource returns 200 with `status: reset`, `mode` and `seedVersion`. Its demo data is the read-only seed, so there is nothing to rebuild.
 

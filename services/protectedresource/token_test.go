@@ -86,6 +86,9 @@ func TestTokenModeScopeTable(t *testing.T) {
 		{name: "unrelated scope is refused with 403", verifier: fakeVerifier{identity: callerIdentity("other:write")}, body: body, status: 403, reasonCode: ReasonScopeInsufficient},
 		{name: "no scope is refused with 403", verifier: fakeVerifier{identity: callerIdentity()}, body: body, status: 403, reasonCode: ReasonScopeInsufficient},
 		{name: "sample scenario is rejected in token mode", verifier: fakeVerifier{identity: callerIdentity(ScopeReportRead)}, body: `{"resource":"sample-report","action":"read","scenario":"success"}`, status: 400, reasonCode: ReasonScenarioNotAllowed},
+		{name: "whitespace-only scenario counts as absent", verifier: fakeVerifier{identity: callerIdentity(ScopeReportRead)}, body: `{"resource":"sample-report","action":"read","scenario":"  "}`, status: 200, reasonCode: ReasonReportReturned, dataKey: "report"},
+		{name: "empty scenario counts as absent", verifier: fakeVerifier{identity: callerIdentity(ScopeReportRead)}, body: `{"resource":"sample-report","action":"read","scenario":""}`, status: 200, reasonCode: ReasonReportReturned, dataKey: "report"},
+		{name: "padded scenario is still rejected", verifier: fakeVerifier{identity: callerIdentity(ScopeReportRead)}, body: `{"resource":"sample-report","action":"read","scenario":" denied "}`, status: 400, reasonCode: ReasonScenarioNotAllowed},
 		{name: "uncatalogued resource is 404 even with scope", verifier: fakeVerifier{identity: callerIdentity(ScopeReportRead)}, body: `{"resource":"other","action":"read"}`, status: 404, reasonCode: ReasonResourceNotFound},
 	}
 	for _, test := range tests {
