@@ -12,7 +12,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/connectorclient"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/if03"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/if03/if03fixture"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/caller"
 )
 
@@ -105,7 +107,7 @@ func LoadConfig(path string) (Loaded, error) {
 		if r.Name == "" || r.PeerZone == "" || r.Audience == "" || r.ClientID == "" || r.ClientSecretFile == "" {
 			return Loaded{}, fmt.Errorf("acquisition config: route %q: name, peer_zone, audience, client_id and client_secret_file are required", r.Name)
 		}
-		if _, err := baseURL(r.ConnectorURL); err != nil {
+		if _, err := connectorclient.BaseURL(r.ConnectorURL); err != nil {
 			return Loaded{}, fmt.Errorf("acquisition config: route %q: connector_url must be an absolute http(s) URL", r.Name)
 		}
 		if _, dup := out.Routes[r.Name]; dup {
@@ -126,7 +128,7 @@ func LoadConfig(path string) (Loaded, error) {
 		route := Route{Name: r.Name, PeerZone: r.PeerZone, Audience: r.Audience, Tenant: r.Tenant,
 			ConnectorURL: r.ConnectorURL, ClientID: r.ClientID, ClientSecretFile: r.ClientSecretFile}
 		if f := r.FixtureOutcomes; f != nil {
-			key, err := readPrivateKey(f.PrivateKeyFile)
+			key, err := if03fixture.ReadPrivateKey(f.PrivateKeyFile)
 			if err != nil || f.Issuer == "" || f.Kid == "" || f.Role == "" {
 				return Loaded{}, fmt.Errorf("acquisition config: route %q: fixture_outcomes needs issuer, kid, role and a P-256 private_key_file", r.Name)
 			}
@@ -134,7 +136,7 @@ func LoadConfig(path string) (Loaded, error) {
 			if v != 0 && (v < 60*time.Second || v > 120*time.Second) {
 				return Loaded{}, fmt.Errorf("acquisition config: route %q: validity_seconds must be 60 to 120", r.Name)
 			}
-			route.Outcomes = Fixture{Issuer: f.Issuer, Kid: f.Kid, Key: key, Validity: v,
+			route.Outcomes = if03fixture.Fixture{Issuer: f.Issuer, Kid: f.Kid, Key: key, Validity: v,
 				Claims: if03.Claims{Role: f.Role, Entitlement: f.Entitlement}}
 		}
 		out.Routes[r.Name] = route
@@ -165,20 +167,4 @@ func readPublicKey(path string) (*ecdsa.PublicKey, error) {
 		return nil, errors.New("not a P-256 public key")
 	}
 	return pub, nil
-}
-
-func readPrivateKey(path string) (*ecdsa.PrivateKey, error) {
-	der, err := pemBlock(path, "EC PRIVATE KEY", "PRIVATE KEY")
-	if err != nil {
-		return nil, err
-	}
-	if k, err := x509.ParseECPrivateKey(der); err == nil && k.Curve == elliptic.P256() {
-		return k, nil
-	}
-	k, err := x509.ParsePKCS8PrivateKey(der)
-	ec, ok := k.(*ecdsa.PrivateKey)
-	if err != nil || !ok || ec.Curve != elliptic.P256() {
-		return nil, errors.New("not a P-256 private key")
-	}
-	return ec, nil
 }

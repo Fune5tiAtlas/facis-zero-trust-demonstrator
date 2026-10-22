@@ -2,18 +2,12 @@
 package acquire
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
-	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,28 +15,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/dpopproof"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/connectorclient"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/if03"
-	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/jose"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/transit"
 )
-
-// Challenge is what the peer Connector issued for one grant.
-type Challenge struct {
-	Value     string
-	ClientID  string
-	Audience  string
-	ExpiresAt time.Time
-}
-
-// OutcomeSource yields a fresh signed IF-03 outcome for a challenge: the verifier in a deployment, a
-// fixture signer in tests. Each call returns a new outcome_id.
-type OutcomeSource interface {
-	Outcome(ctx context.Context, ch Challenge) (compactJWS string, err error)
-}
-
-// VPGrantType is the peer Connector's verified-presentation grant (IF-02 v1.1).
-const VPGrantType = "urn:facis:params:oauth:grant-type:verified-presentation"
 
 // KVPrefix is where upstream token values live in KV v2: KVPrefix + "/" + token_id, create-only.
 const KVPrefix = "ztd/token-store/upstream"
@@ -56,7 +32,6 @@ const (
 	idleTimeout      = 10 * time.Second
 	settleWait       = 30 * time.Second
 	OrphanAge        = 10 * time.Minute
-	maxBody          = 64 << 10
 	// cleanupTimeout bounds each step that must still run after the caller's context ended: a
 	// rollback, the deletion of a value whose transaction confirmed rolled back, a failure's audit
 	// row. A step that does not finish in time leaves its value to the orphan sweep.
@@ -199,7 +174,7 @@ type attempt struct {
 
 func (at *attempt) run(ctx context.Context) (Token, error) {
 	a, r := at.a, at.r
-	base, err := baseURL(r.ConnectorURL)
+	base, err := connectorclient.BaseURL(r.ConnectorURL)
 	if err != nil {
 		return Token{}, fail(CodeChallenge, "connector URL is not an absolute http(s) URL")
 	}
@@ -214,11 +189,12 @@ func (at *attempt) run(ctx context.Context) (Token, error) {
 	if err != nil {
 		return Token{}, fail(CodeStore, "store key unavailable")
 	}
+	b := &connectorclient.Client{BaseURL: base, ClientID: r.ClientID, ClientSecret: secret, HTTP: a.HTTPClient, Now: a.now}
 
 	// 1. Challenge from B.
-	ch, err := at.challenge(ctx, base, secret)
+	ch, err := b.Challenge(ctx, r.Audience)
 	if err != nil {
-		return Token{}, err
+		return Token{}, at.mapped(err)
 	}
 	// 2. Outcome.
 	jws, err := r.Outcomes.Outcome(ctx, ch)
@@ -239,14 +215,14 @@ func (at *attempt) run(ctx context.Context) (Token, error) {
 		return Token{}, err
 	}
 	// 4. The grant at B. From here on, an unreadable answer is terminal for this outcome.
-	token, err := at.grant(ctx, base, secret, key, jws, ch.Value)
-	if err != nil {
-		return Token{}, err
+	var token tokenResponse
+	if token, err = b.Grant(ctx, key, jws, ch.Value, r.Audience); err != nil {
+		return Token{}, at.mapped(err)
 	}
 	// 5. Response checks.
-	claims, err := at.check(token, key.JKT())
+	claims, err := b.Check(token, key.JKT(), r.Audience)
 	if err != nil {
-		return Token{}, err
+		return Token{}, at.mapped(err)
 	}
 	// 6. KV create-only.
 	at.tokenID = newUUID()
@@ -258,25 +234,6 @@ func (at *attempt) run(ctx context.Context) (Token, error) {
 	// 7. One A transaction.
 	return at.activate(ctx, key, path, claims)
 }
-
-// challenge asks B for a challenge for the route's audience.
-func (at *attempt) challenge(ctx context.Context, base, secret string) (Challenge, error) {
-	status, _, body, err := at.post(ctx, base+"/oauth2/challenge", secret, url.Values{"audience": {at.r.Audience}}, "")
-	if err != nil || status != http.StatusOK {
-		return Challenge{}, fail(CodeChallenge, "peer issued no challenge")
-	}
-	var out struct {
-		Challenge string `json:"challenge"`
-		ExpiresIn int    `json:"expires_in"`
-	}
-	if json.Unmarshal(body, &out) != nil || !challengePattern.MatchString(out.Challenge) || out.ExpiresIn <= 0 {
-		return Challenge{}, fail(CodeChallenge, "peer challenge malformed")
-	}
-	return Challenge{Value: out.Challenge, ClientID: at.r.ClientID, Audience: at.r.Audience,
-		ExpiresAt: at.a.now().Add(time.Duration(out.ExpiresIn) * time.Second)}, nil
-}
-
-var challengePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,256}$`)
 
 // recordReceipt inserts A's receipt, verified and unconsumed. An outcome A has seen before is never
 // used again.
@@ -299,117 +256,36 @@ func (at *attempt) recordReceipt(ctx context.Context, o if03.Outcome) error {
 	return nil
 }
 
-type tokenResponse struct {
-	AccessToken string `json:"access_token"`
-	TokenType   string `json:"token_type"`
-}
-
-// grant sends the verified-presentation grant with a fresh proof, retrying once with the server's
-// nonce when challenged for one (a refusal before any write, so the outcome is still unused).
-func (at *attempt) grant(ctx context.Context, base, secret string, key *Key, outcome, challenge string) (tokenResponse, error) {
-	tokenURL := base + "/oauth2/token"
-	form := url.Values{"grant_type": {VPGrantType}, "outcome": {outcome}, "challenge": {challenge}, "audience": {at.r.Audience}}
-	nonce := ""
-	for try := 0; ; try++ {
-		proof, err := dpopproof.Build(ctx, key, dpopproof.Claims{HTM: http.MethodPost, HTU: tokenURL, Nonce: nonce})
-		if err != nil {
-			// Nothing was sent: the outcome is unused, but the attempt ends here all the same.
-			return tokenResponse{}, fail(CodeStore, "proof not signed")
+// mapped turns a connectorclient error into acquisition's reason codes; a failed response check is
+// kept for the audit row. The CRED-OUTCOME-* codes the peer answered are used as they are.
+func (at *attempt) mapped(err error) error {
+	var ce *connectorclient.Error
+	if !errors.As(err, &ce) {
+		return fail(CodePeerLost, "no readable answer from the peer")
+	}
+	switch ce.Kind {
+	case connectorclient.KindChallenge:
+		return &Error{Code: CodeChallenge, Err: ce}
+	case connectorclient.KindProof:
+		// Nothing was sent: the outcome is unused, but the attempt ends here all the same.
+		return &Error{Code: CodeStore, Err: ce}
+	case connectorclient.KindRefused:
+		if strings.HasPrefix(ce.Reason, "CRED-") {
+			return &Error{Code: ce.Reason, Err: ce}
 		}
-		status, header, body, err := at.post(ctx, tokenURL, secret, form, proof)
-		if err != nil || status >= 500 {
-			return tokenResponse{}, fail(CodePeerLost, "no readable answer from the peer")
-		}
-		if status == http.StatusOK {
-			var out tokenResponse
-			if json.Unmarshal(body, &out) != nil || out.AccessToken == "" {
-				return tokenResponse{}, fail(CodePeerLost, "no readable answer from the peer")
-			}
-			return out, nil
-		}
-		var refusal struct {
-			Reason string `json:"reason"`
-		}
-		_ = json.Unmarshal(body, &refusal)
-		if refusal.Reason == "dpop_use_nonce" && try == 0 && header.Get("DPoP-Nonce") != "" {
-			nonce = header.Get("DPoP-Nonce")
-			continue
-		}
-		if slices.Contains(credCodes, refusal.Reason) {
-			return tokenResponse{}, &Error{Code: refusal.Reason, Err: errors.New("outcome refused by the peer")}
-		}
-		return tokenResponse{}, fail(CodePeerRefused, "grant refused by the peer")
+		return &Error{Code: CodePeerRefused, Err: ce}
+	case connectorclient.KindTokenInvalid:
+		at.detail = ce.Check
+		return &Error{Code: CodeTokenInvalid, Err: ce}
+	default:
+		return &Error{Code: CodePeerLost, Err: ce}
 	}
-}
-
-var credCodes = []string{if03.CodeSignature, if03.CodeNotVerified, if03.CodeMismatch, if03.CodeExpired, if03.CodeConsumed}
-
-type issued struct {
-	issuedAt, expiresAt time.Time
-}
-
-// check is A's acceptance of the issued token: DPoP-bound to the store key, for the route's
-// audience, not expired. Only the payload is read; the signature is the peer's and its resources'.
-func (at *attempt) check(t tokenResponse, jkt string) (issued, error) {
-	bad := func(what string) (issued, error) {
-		at.detail = what
-		return issued{}, fail(CodeTokenInvalid, "issued token failed the "+what+" check")
-	}
-	if !strings.EqualFold(t.TokenType, "DPoP") {
-		return bad("token_type")
-	}
-	parts := strings.Split(t.AccessToken, ".")
-	if len(parts) != 3 {
-		return bad("format")
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return bad("format")
-	}
-	m, err := jose.ParseObject(raw)
-	if err != nil {
-		return bad("format")
-	}
-	cnf, err := jose.ParseObject(m["cnf"])
-	if err != nil {
-		return bad("cnf.jkt")
-	}
-	if got, _, ok := jose.String(cnf, "jkt"); !ok || got != jkt {
-		return bad("cnf.jkt")
-	}
-	var auds []string
-	if one, present, ok := jose.String(m, "aud"); present && ok {
-		auds = []string{one}
-	} else if json.Unmarshal(m["aud"], &auds) != nil {
-		auds = nil
-	}
-	if !slices.Contains(auds, at.r.Audience) {
-		return bad("aud")
-	}
-	exp, ok := numericDate(m["exp"])
-	now := at.a.now()
-	if !ok || !exp.After(now) {
-		return bad("exp")
-	}
-	iat, ok := numericDate(m["iat"])
-	if !ok || iat.After(exp) || iat.After(now.Add(time.Minute)) {
-		iat = now
-	}
-	return issued{issuedAt: iat, expiresAt: exp}, nil
-}
-
-func numericDate(raw json.RawMessage) (time.Time, bool) {
-	n, err := strconv.ParseInt(string(bytes.TrimSpace(raw)), 10, 64)
-	if err != nil || n <= 0 {
-		return time.Time{}, false
-	}
-	return time.Unix(n, 0), true
 }
 
 // activate is the A transaction: consume the receipt, insert the active row and its audit row,
 // commit. The transaction first takes an advisory lock on token_id that it holds until it ends, so
 // reconciliation can wait for it to settle.
-func (at *attempt) activate(ctx context.Context, key *Key, path string, tok issued) (Token, error) {
+func (at *attempt) activate(ctx context.Context, key *Key, path string, tok connectorclient.Issued) (Token, error) {
 	a := at.a
 	tx, err := a.DB.Begin(ctx)
 	if err != nil {
@@ -427,7 +303,7 @@ func (at *attempt) activate(ctx context.Context, key *Key, path string, tok issu
 	err = commit(ctx, tx)
 	switch {
 	case err == nil:
-		return Token{ID: at.tokenID, ExpiresAt: tok.expiresAt}, nil
+		return Token{ID: at.tokenID, ExpiresAt: tok.ExpiresAt}, nil
 	case errors.Is(err, pgx.ErrTxCommitRollback):
 		// The server answered COMMIT with ROLLBACK: the transaction had failed before it.
 		return at.rolledBack(ctx, path, CodeActivationFailed)
@@ -446,9 +322,9 @@ func (at *attempt) activate(ctx context.Context, key *Key, path string, tok issu
 
 // stage runs the activation's statements. On an error the returned code says why the transaction
 // must not commit.
-func (at *attempt) stage(ctx context.Context, tx pgx.Tx, key *Key, path string, tok issued) (code string, err error) {
+func (at *attempt) stage(ctx context.Context, tx pgx.Tx, key *Key, path string, tok connectorclient.Issued) (code string, err error) {
 	now := at.a.now()
-	renewAfter := tok.issuedAt.Add(tok.expiresAt.Sub(tok.issuedAt) * 3 / 4)
+	renewAfter := tok.IssuedAt.Add(tok.ExpiresAt.Sub(tok.IssuedAt) * 3 / 4)
 	if _, err := tx.Exec(ctx, `SELECT set_config('statement_timeout', $2, true),
 		set_config('idle_in_transaction_session_timeout', $3, true), pg_advisory_xact_lock(hashtextextended($1::text, 0))`,
 		at.tokenID, ms(statementTimeout), ms(idleTimeout)); err != nil {
@@ -483,7 +359,7 @@ func (at *attempt) stage(ctx context.Context, tx pgx.Tx, key *Key, path string, 
 	if _, err := tx.Exec(ctx, `INSERT INTO upstream_token
 		(token_id, peer_zone, audience, tenant, outcome_id, token_ref, key_ref, state, issued_at, expires_at, renew_after)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, $9, $10)`,
-		at.tokenID, at.r.PeerZone, at.r.Audience, at.r.Tenant, at.outcomeID, path, key.Ref(), tok.issuedAt, tok.expiresAt, renewAfter); err != nil {
+		at.tokenID, at.r.PeerZone, at.r.Audience, at.r.Tenant, at.outcomeID, path, key.Ref(), tok.IssuedAt, tok.ExpiresAt, renewAfter); err != nil {
 		return CodeActivationFailed, err
 	}
 	kind := "upstream.acquired"
@@ -512,7 +388,7 @@ func (at *attempt) rolledBack(ctx context.Context, path, code string) (Token, er
 // committed or aborted; the server's timeouts bound how long that takes), then reads the row by
 // token_id. Only a missing row lets the value go; if the wait or the read fails, or the caller's
 // deadline comes first, the value stays for the orphan sweep, which applies the same rule.
-func (at *attempt) reconcile(ctx context.Context, path string, tok issued) (Token, error) {
+func (at *attempt) reconcile(ctx context.Context, path string, tok connectorclient.Issued) (Token, error) {
 	rctx, cancel := context.WithTimeout(ctx, settleWait+5*time.Second)
 	defer cancel()
 	deleted, err := at.a.deleteIfNoRow(rctx, at.tokenID, path)
@@ -520,7 +396,7 @@ func (at *attempt) reconcile(ctx context.Context, path string, tok issued) (Toke
 	case err != nil:
 		return Token{}, fail(CodeCommitUnknown, "activation outcome unknown; value kept for the orphan sweep")
 	case !deleted:
-		return Token{ID: at.tokenID, ExpiresAt: tok.expiresAt}, nil
+		return Token{ID: at.tokenID, ExpiresAt: tok.ExpiresAt}, nil
 	default:
 		return Token{}, fail(CodeActivationFailed, "activation did not commit")
 	}
@@ -607,39 +483,6 @@ func nullable(s string) any {
 	return s
 }
 
-// post sends a form with client_secret_basic (RFC 6749 2.3.1) and, when given, a DPoP proof.
-func (at *attempt) post(ctx context.Context, target, secret string, form url.Values, proof string) (int, http.Header, []byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(form.Encode()))
-	if err != nil {
-		return 0, nil, nil, err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-	req.SetBasicAuth(url.QueryEscape(at.r.ClientID), url.QueryEscape(secret))
-	if proof != "" {
-		req.Header.Set("DPoP", proof)
-	}
-	resp, err := at.a.httpClient().Do(req)
-	if err != nil {
-		return 0, nil, nil, errors.New("request failed") // the transport's text is not ours to vouch for
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
-	if err != nil || len(body) > maxBody {
-		return 0, nil, nil, errors.New("answer unreadable")
-	}
-	return resp.StatusCode, resp.Header, body, nil
-}
-
-func (a *Acquirer) httpClient() *http.Client {
-	c := http.Client{Timeout: 10 * time.Second}
-	if a.HTTPClient != nil {
-		c = *a.HTTPClient
-	}
-	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &c
-}
-
 func (a *Acquirer) now() time.Time {
 	if a.Now != nil {
 		return a.Now()
@@ -652,15 +495,6 @@ func (a *Acquirer) log() *slog.Logger {
 		return a.Log
 	}
 	return slog.New(slog.DiscardHandler)
-}
-
-func baseURL(raw string) (string, error) {
-	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil ||
-		u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
-		return "", errors.New("bad URL")
-	}
-	return strings.TrimRight(u.String(), "/"), nil
 }
 
 func readSecret(path string) (string, error) {
