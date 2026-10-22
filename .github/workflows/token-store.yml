@@ -9,7 +9,7 @@ on:
     paths:
       - services/token-store/**
       - services/connector/**
-      - internal/pgtest/**
+      - internal/**
       - deployment/docker/token-store/**
       - deployment/helm/token-store/**
       - scripts/verify-token-store/**
@@ -22,7 +22,7 @@ on:
     paths:
       - services/token-store/**
       - services/connector/**
-      - internal/pgtest/**
+      - internal/**
       - deployment/docker/token-store/**
       - deployment/helm/token-store/**
       - scripts/verify-token-store/**
@@ -73,6 +73,33 @@ jobs:
           fi
         env:
           TOKEN_STORE_TEST_DATABASE_URL: postgres://postgres:ci@127.0.0.1:5432/postgres?sslmode=disable
+
+      # The shared packages of the token path against the same PostgreSQL and a real OpenBao (dev mode,
+      # from the pinned image, transit mounted): replay record, transit signing and KV, token checks.
+      - name: Start OpenBao from the pinned image
+        run: |
+          . scripts/tools/pins.env
+          docker run -d --name openbao -e BAO_DEV_ROOT_TOKEN_ID=ci -p 127.0.0.1:8200:8200 "$OPENBAO_IMAGE" server -dev
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8200/v1/sys/health >/dev/null && break
+            sleep 1
+          done
+          curl -sf -X POST -H 'X-Vault-Token: ci' -d '{"type":"transit"}' http://127.0.0.1:8200/v1/sys/mounts/transit
+
+      - name: Run the token path's shared packages
+        run: |
+          set -o pipefail
+          go test -count=1 -race -v ./internal/replay/... ./internal/transit/... ./internal/jose/... \
+            ./internal/dpopproof/... ./internal/tokenverify/... ./services/token-store/internal/keys/... \
+            | tee "$RUNNER_TEMP/shared-test.log"
+          if grep -q -- '--- SKIP' "$RUNNER_TEMP/shared-test.log"; then
+            echo "::error::a test was skipped; this job must run them against PostgreSQL and OpenBao"
+            exit 1
+          fi
+        env:
+          TOKEN_STORE_TEST_DATABASE_URL: postgres://postgres:ci@127.0.0.1:5432/postgres?sslmode=disable
+          TRANSIT_TEST_ADDR: http://127.0.0.1:8200
+          TRANSIT_TEST_TOKEN: ci
 
       # The connector's whole conformance suite once more, on PostgreSQL-backed stores in the same
       # schema: every protocol rule is proven on both the in-memory and the database stores.
