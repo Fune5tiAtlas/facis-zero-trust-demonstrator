@@ -1,13 +1,11 @@
 package participant
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -208,23 +206,24 @@ func failure(err error) (State, string) {
 
 const maxCredentialsBytes = 4 << 10
 
-// readCredentials reads the mounted client credentials, a JSON object {"client_id", "client_secret"}
-// and nothing else. Errors never repeat the file's content.
+// readCredentials reads the mounted client credentials: one strict JSON object (jose.ParseObject: no
+// duplicate member, nothing after it) with exactly the members client_id and client_secret, both
+// non-empty strings. Errors never repeat the file's content.
 func readCredentials(path string) (id, secret string, err error) {
 	raw, err := os.ReadFile(path)
 	if err != nil || len(raw) > maxCredentialsBytes {
 		return "", "", errors.New("credentials unreadable")
 	}
-	var c struct {
-		ClientID     string `json:"client_id"`
-		ClientSecret string `json:"client_secret"`
-	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if dec.Decode(&c) != nil || dec.More() || c.ClientID == "" || c.ClientSecret == "" {
+	m, err := jose.ParseObject(raw)
+	if err != nil || len(m) != 2 {
 		return "", "", errors.New("credentials malformed")
 	}
-	return c.ClientID, c.ClientSecret, nil
+	id, _, okID := jose.String(m, "client_id")
+	secret, _, okSecret := jose.String(m, "client_secret")
+	if !okID || !okSecret || id == "" || secret == "" {
+		return "", "", errors.New("credentials malformed")
+	}
+	return id, secret, nil
 }
 
 // processKey is the Participant's DPoP key, held in the process.

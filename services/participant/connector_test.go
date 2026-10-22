@@ -301,3 +301,39 @@ func TestLoadConfigTokenMode(t *testing.T) {
 		}
 	})
 }
+
+func TestReadCredentialsIsStrict(t *testing.T) {
+	if id, secret, err := readCredentials(credentialsFile(t, " "+goodCredentials+"\n")); err != nil || id != "client-1" || secret != "secret-1" {
+		t.Fatalf("good file: %q %v", id, err)
+	}
+	for name, content := range map[string]string{
+		"trailing brace":      goodCredentials + "}",
+		"trailing bracket":    goodCredentials + "]",
+		"trailing JSON":       goodCredentials + `{"client_id":"x"}`,
+		"duplicate id":        `{"client_id":"client-1","client_id":"other","client_secret":"secret-1"}`,
+		"duplicate secret":    `{"client_id":"client-1","client_secret":"secret-1","client_secret":"other"}`,
+		"escaped duplicate":   `{"client_id":"client-1","client_id":"other","client_secret":"secret-1"}`,
+		"case variant":        `{"Client_ID":"client-1","client_secret":"secret-1"}`,
+		"case variant secret": `{"client_id":"client-1","CLIENT_SECRET":"secret-1"}`,
+		"null id":             `{"client_id":null,"client_secret":"secret-1"}`,
+		"null secret":         `{"client_id":"client-1","client_secret":null}`,
+		"empty secret":        `{"client_id":"client-1","client_secret":""}`,
+		"number id":           `{"client_id":1,"client_secret":"secret-1"}`,
+		"unknown member":      `{"client_id":"client-1","client_secret":"secret-1","scope":"x"}`,
+		"missing secret":      `{"client_id":"client-1"}`,
+		"array":               `["client-1","secret-1"]`,
+		"empty":               ``,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := readCredentials(credentialsFile(t, content))
+			if err == nil {
+				t.Fatal("accepted")
+			}
+			for _, leak := range []string{"secret-1", "client-1", "other"} {
+				if strings.Contains(err.Error(), leak) {
+					t.Fatalf("error repeats the file: %v", err)
+				}
+			}
+		})
+	}
+}
