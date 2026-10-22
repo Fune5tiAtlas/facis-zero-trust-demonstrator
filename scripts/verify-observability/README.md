@@ -68,7 +68,7 @@ Each check is named by what it proves; the result is `passed`, `failed` or `pend
 | `workload-otlp-accepted` | a data-plane workload's OTLP/HTTP span (4318) and OTLP/gRPC call (4317) are accepted and stored with the zone; another gateway port is refused |
 | `correlated-trace` | one trace holds a proxy's span and the echo's span as its child |
 | `revocation-probe-reports` | the probe reports the status list up, down within one probe interval of it stopping, and up again |
-| `export-buffered-while-down` | a span sent and metrics produced during a 60 s outage of the entry arrive afterwards; a full queue counts what it refuses, and no container restarts |
+| `export-buffered-while-down` | a span sent and metrics produced during a 60 s outage of the entry arrive afterwards (waiting up to 3 min for them, because the collectors reconnect with gRPC's backoff); a full queue counts what it refuses, and no container restarts |
 | `unknown-client-refused` | the entry refuses no certificate, a foreign CA, another zone's certificate and TLS 1.2, and accepts the zone's own |
 | `zone-taken-from-listener` | a metric and a span claiming another zone are stored under the listener's zone only |
 | `other-egress-refused` | the zone gateway's pods reach the entry and no other external address |
@@ -97,8 +97,9 @@ must find closed, to show the check fails.
 
 ## The record
 
-`evidence.md` and `record.json` (checks, details, the transport, the clusters and each alert's
-measured detection time), the rendered manifests of both roles (`render/`) and the run log go to
+`evidence.md` and `record.json` (checks, details, the transport, the clusters and, for each
+injected failure, the time of the failure, the time the alert was seen firing, both in UTC, and the
+difference between them), the rendered manifests of both roles (`render/`) and the run log go to
 `ZTD_EVIDENCE_DIR`, or a new directory under
 `${XDG_STATE_HOME:-$HOME/.local/state}/ztd/verify-observability/<context>/`, printed as the last line.
 The repository holds no record of a run. Exit status: 0 when every check passed (pending ones are

@@ -284,27 +284,28 @@ wait_resolved() { # wait_resolved <timeout> <jq filter>: no matching alert, pend
 # alert_check <check> <label> <alert filter> <inject command> <restore command>: sets ALERT_T to the
 # detection time and returns 0, or records the check as failed and returns 1. Never in a subshell.
 ALERT_T=""
+clock() { date -u -d "@$1" +%H:%M:%S; }   # clock <epoch seconds>: the UTC time of day
 alert_check() {
   local name=$1 label=$2 filter=$3 inject=$4 restore=$5 t rc
   ALERT_T=""
   if ! wait_resolved 120 "$filter"; then record "$name" failed "$label: the alert was already active before the failure"; return 1; fi
   RESTORE+=("$restore")
-  local at t0; at=$(date -u +%H:%M:%S); t0=$(date +%s)
+  local at t0; t0=$(date +%s); at=$(clock "$t0")
   eval "$inject" >>"$LOG" 2>&1
   rc=0; t=$(wait_alert 60 "$filter" "$t0") || rc=$?
   if [ "$rc" = 2 ]; then
-    DETECT["$name/$label"]="failure at $at, firing after ${t}s in the alerts API, absent from ALERTS"
+    DETECT["$name/$label"]="failure at $at UTC, alert firing at $(clock $((t0 + t))) UTC in the alerts API (absent from ALERTS), difference ${t} s"
     eval "$restore" >>"$LOG" 2>&1; pop_restore
     record "$name" failed "$label: firing after ${t}s in the alerts API but not in the ALERTS series"; return 1
   fi
   if [ "$rc" = 0 ]; then
-    DETECT["$name/$label"]="failure at $at, alert firing after ${t}s"
+    DETECT["$name/$label"]="failure at $at UTC, alert firing at $(clock $((t0 + t))) UTC, difference ${t} s"
     eval "$restore" >>"$LOG" 2>&1; pop_restore
     if [ "$t" -gt 30 ]; then record "$name" failed "$label: alert after ${t}s, over 30 s"; return 1; fi
     if ! wait_resolved 180 "$filter"; then record "$name" failed "$label: alert after ${t}s, not resolved on recovery"; return 1; fi
     ALERT_T=$t; return 0
   fi
-  DETECT["$name/$label"]="failure at $at, no alert within 60 s"
+  DETECT["$name/$label"]="failure at $at UTC, no alert within 60 s"
   eval "$restore" >>"$LOG" 2>&1; pop_restore
   record "$name" failed "$label: no alert within 60 s"; return 1
 }
@@ -499,8 +500,13 @@ if [ "$MODE" = kind ] || [ "$DCTX" != "$ZCTX" ]; then
   entry_scale 1; pop_restore
   kd -n "$NSB" rollout status deploy/otel-entry --timeout=120s >>"$LOG" 2>&1
   if until_true 120 trace_has_zone "$tid" "$ZONE"; then span_ok=yes; else span_ok=no; fi
-  sleep 10
-  samples=$(pqv "count_over_time(up{job=\"spire-server\",zone=\"$ZONE\"}[50s] @ $((down_end - 5)))")
+  # The gateway's metrics of the outage, scraped every 5 s. Each signal has its own gRPC connection
+  # to the entry, which reconnects on gRPC's backoff (it grows through the outage), so the metrics
+  # can arrive well after the span: wait for them up to 3 min.
+  outage_samples() { pqv "count_over_time(up{job=\"spire-server\",zone=\"$ZONE\"}[50s] @ $((down_end - 5)))"; }
+  outage_complete() { [ "$(outage_samples)" -ge 6 ] 2>/dev/null; }
+  until_true 180 outage_complete || true
+  samples=$(outage_samples)
   # Then a full queue: with the entry down again, more spans than the gateway's queue holds.
   restarts_before=$( (kz -n "$NSM" get pods -o json; kz -n "$NSD" get pods -o json; kz -n ztd-otel-node get pods -o json) | jq -s '[.[].items[].status.containerStatuses[]?.restartCount] | add')
   RESTORE+=("kd -n $NSB scale deploy/otel-entry --replicas=1")
@@ -775,10 +781,11 @@ else record logs-exported failed "${lx_why%; }"; fi
   echo
   echo "## Detection times"
   echo
-  echo "An alert is a Prometheus rule in the firing state; the time runs from the"
-  echo "injected failure until the alerts API shows the rule firing, confirmed in the ALERTS series."
+  echo "An alert is a Prometheus rule in the firing state. Each entry states the time"
+  echo "of the injected failure, the time the alerts API first showed the rule firing (confirmed in the"
+  echo "ALERTS series) and the difference between them; a difference over 30 s fails the proof."
   echo
-  echo "| Alert | Measured |"
+  echo "| Alert | Failure, firing, difference |"
   echo "|---|---|"
   for k in "${!DETECT[@]}"; do echo "| $k | ${DETECT[$k]} |"; done | sort
 } >"$EVIDENCE/evidence.md"

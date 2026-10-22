@@ -61,6 +61,13 @@ tests:
       - eval_time: 10s
         alertname: SpireAgentsMissing
         exp_alerts: []
+      # its last sample (5 s) leaves the 10 s window at 15 s; firing 10 s later, 20 s after it
+      - eval_time: 25s
+        alertname: SpireAgentsMissing
+        exp_alerts:
+          - exp_labels: { severity: critical, target: spire-agent, zone: zone-a }
+            exp_annotations:
+              summary: "zone-a: 1 SPIRE agents report, fewer than the zone's ready nodes"
       - eval_time: 30s
         alertname: SpireAgentsMissing
         exp_alerts:

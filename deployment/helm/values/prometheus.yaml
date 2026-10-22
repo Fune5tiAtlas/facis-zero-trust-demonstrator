@@ -114,9 +114,11 @@ serverFiles:
                 or
                 label_replace(max by (zone) (last_over_time(k8s_daemonset_desired_scheduled_nodes{k8s_daemonset_name="spire-agent"}[30s])), "source", "agent-daemonset", "", "")
               )
+          # The window of 10 s is the first term of the alert's budget (10 + evaluation 5 + for 10 =
+          # 25 s): a vanished agent's last sample leaves the count 10 s after it was taken.
           - record: ztd:spire_agents_reporting:count
             expr: |
-              count by (zone) (last_over_time(up{job="spire-agent"}[15s]) == 1)
+              count by (zone) (last_over_time(up{job="spire-agent"}[10s]) == 1)
               or on (zone) (0 * ztd:spire_agents_expected:count)
           - alert: SpireAgentsMissing
             expr: ztd:spire_agents_reporting:count < on (zone) ztd:spire_agents_expected:count

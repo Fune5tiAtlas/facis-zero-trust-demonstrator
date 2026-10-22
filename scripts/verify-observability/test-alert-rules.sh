@@ -33,7 +33,7 @@ RENDER_DIR="$work/zone" ZONE_VALUES="$repo/deployment/helm/ztd/ci/values.yaml" \
   "$repo/scripts/install-zone/install.sh" render otel-node otel-gateway >/dev/null 2>&1 \
   || { echo "the zone's telemetry releases do not render" >&2; exit 1; }
 python3 - "$work" <<'PY'
-import sys, yaml
+import re, sys, yaml
 work = sys.argv[1]
 def docs(path): return [d for d in yaml.safe_load_all(open(path)) if d]
 def cm(path, key):
@@ -59,6 +59,11 @@ silent = [r for g in rules["groups"] for r in g["rules"] if r.get("alert") == "Z
 if sorted(r["labels"]["zone"] for r in silent) != ["zone-a", "zone-b"]:
     bad.append("one silent-zone rule per zone of ionos.yaml is expected")
 if any("[15s]" not in r["expr"] for r in silent): bad.append("the silent-zone window is not 15 s")
+# The vanished-agent alert waits until the agent's last sample has left the reporting window: that
+# window is the first term of its budget, so every window of the reporting rule must be 10 s.
+reporting = [r for g in rules["groups"] for r in g["rules"] if r.get("record") == "ztd:spire_agents_reporting:count"]
+windows = sorted(set(re.findall(r"\[(\d+s)\]", reporting[0]["expr"]))) if reporting else []
+if windows != ["10s"]: bad.append(f"the agents' reporting window is {windows or 'missing'}, the budget states 10 s")
 if "alerting" in prom: bad.append("the Prometheus configuration has an alerting block; the firing state of a rule is the alert")
 for name, c in (("otel-node", node), ("otel-gateway", gw)):
     for job in c["receivers"]["prometheus"]["config"]["scrape_configs"]:
@@ -67,8 +72,8 @@ for name, c in (("otel-node", node), ("otel-gateway", gw)):
 expect("revocation probe interval", gw["receivers"]["http_check/revocation"]["collection_interval"], "5s")
 expect("k8s_cluster interval", gw["receivers"]["k8s_cluster"]["collection_interval"], "5s")
 # Worst cases (seconds), with no routing stage: a missing target: scrape 5 + batch 1 + export 2 +
-# evaluation 5 + for 10; a silent zone or a vanished agent: window 15 (10) + evaluation 5 + for 5
-# (10); the probe: interval 5 + batch 1 + export 2 + evaluation 5 + for 10.
+# evaluation 5 + for 10; a silent zone: window 15 + evaluation 5 + for 5; a vanished agent: reporting
+# window 10 + evaluation 5 + for 10; the probe: interval 5 + batch 1 + export 2 + evaluation 5 + for 10.
 budgets = {"missing target": 5 + 1 + 2 + 5 + 10, "silent zone": 15 + 5 + 5,
            "vanished agent": 10 + 5 + 10, "revocation probe": 5 + 1 + 2 + 5 + 10}
 for k, v in budgets.items():
