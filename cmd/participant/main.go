@@ -26,7 +26,8 @@ func main() {
 
 	shutdownSignal, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	// No Bootstrapper is wired yet, so this is a no-op and the process runs in sample mode.
+	// In token mode (PARTICIPANT_ADAPTER_MODE=token) this starts the Connector bootstrap; in sample mode
+	// it does nothing.
 	app.Start(shutdownSignal)
 
 	shutdownDone := make(chan error, 1)
