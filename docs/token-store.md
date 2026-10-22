@@ -233,7 +233,14 @@ caller's window applies when it sends `not_after` (at most `iat` + 90 s, not in 
 contract's default otherwise (`now` - 60 s <= `iat` <= `now` + 30 s, kept until `iat` + 90 s);
 anything else is 422 `TOK-PROOF-INVALID`, and a database it cannot write is 503
 `TOK-STORE-UNAVAILABLE`. The connector uses the same table directly through the same code
-(`internal/replay`), so a proof seen by either is seen by both. Refusals carry the reason code and
+(`internal/replay`), so a proof seen by either is seen by both. Every consumer of the table keys it
+on the same normalised `htu`, `dpopproof.NormalizeURI` (RFC 9449 4.3; RFC 3986 6.2.2 and 6.2.3):
+lowercase scheme and host, the default or an empty port removed, no query, fragment or userinfo,
+percent escapes in uppercase hex with unreserved characters decoded, dot segments removed, an empty
+path as `/`. The replay check normalises the `htu` it is sent, and refuses one with no such form
+with 422 `TOK-PROOF-INVALID`; the guard's verifier normalises before it records; the connector
+normalises the provider's already normalised `htu` once more, since the provider keeps an empty
+port. So `https://EXAMPLE.test:443/%7Eapi` and `https://example.test/~api` are one proof. Refusals carry the reason code and
 the correlation id and nothing the caller sent.
 
 **Caller.** The caller is authenticated before the body is read. The store takes its identity from

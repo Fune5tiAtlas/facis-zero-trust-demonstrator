@@ -3,6 +3,10 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +16,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/dpopproof"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/jose"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/caller"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/testsupport"
@@ -280,4 +287,66 @@ func must(b []byte, err error) []byte {
 		panic(err)
 	}
 	return b
+}
+
+// Two spellings of one target (RFC 3986 6.2.2-6.2.3) are one proof: the record is keyed on the
+// normalised htu.
+func TestReplayCheck_EquivalentHTUSpellingsAreOneProof(t *testing.T) {
+	var buf testsupport.Buffer
+	_, url := replayServer(t, &buf)
+	now := time.Now()
+	first := proofUse("j-spelling", now)
+	first["htu"] = "https://EXAMPLE.test:443/%7Eapi"
+	if status, out := postReplay(t, url, connectorID, first); status != http.StatusOK {
+		t.Fatalf("first: %d %v", status, out)
+	}
+	second := proofUse("j-spelling", now)
+	second["htu"] = "https://example.test/~api"
+	if status, out := postReplay(t, url, connectorID, second); status != http.StatusConflict || out["reason_code"] != "TOK-REPLAY" {
+		t.Fatalf("second: %d %v", status, out)
+	}
+	bad := proofUse("j-bad-htu", now)
+	bad["htu"] = "ftp://example.test/x"
+	if status, out := postReplay(t, url, connectorID, bad); status != http.StatusUnprocessableEntity || out["reason_code"] != "TOK-PROOF-INVALID" {
+		t.Fatalf("non-normalisable htu: %d %v", status, out)
+	}
+}
+
+type ecKey struct{ k *ecdsa.PrivateKey }
+
+func (k ecKey) JWK() jose.JWK { return jose.PublicJWK(&k.k.PublicKey) }
+
+func (k ecKey) Sign(_ context.Context, in []byte) ([]byte, error) {
+	d := sha256.Sum256(in)
+	r, s, err := ecdsa.Sign(rand.Reader, k.k, d[:])
+	if err != nil {
+		return nil, err
+	}
+	return append(r.FillBytes(make([]byte, 32)), s.FillBytes(make([]byte, 32))...), nil
+}
+
+// A use recorded by the resource-side verifier (dpopproof over the shared record) and the same
+// proof presented to the replay check under another spelling of its htu are one proof.
+func TestReplayCheck_SharesTheRecordWithTheVerifier(t *testing.T) {
+	var buf testsupport.Buffer
+	s, url := replayServer(t, &buf)
+	pk, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := ecKey{pk}
+	now := time.Now()
+	proof, err := dpopproof.Build(context.Background(), key, dpopproof.Claims{JTI: "j-cross", HTM: "GET", HTU: "https://example.test/~api", IAT: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := dpopproof.Verify(context.Background(), proof, dpopproof.Expect{Method: "GET", URI: "https://example.test/~api"},
+		dpopproof.Policy{Lifespan: 60 * time.Second, Skew: 5 * time.Second}, now, s.replay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := map[string]any{"jkt": v.JKT, "htm": "GET", "htu": "https://EXAMPLE.test:443/%7Eapi", "jti": "j-cross", "iat": now.Unix()}
+	if status, out := postReplay(t, url, connectorID, body); status != http.StatusConflict || out["reason_code"] != "TOK-REPLAY" {
+		t.Fatalf("the verifier's use was not seen: %d %v", status, out)
+	}
 }

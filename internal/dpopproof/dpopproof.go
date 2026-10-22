@@ -119,11 +119,11 @@ func Verify(ctx context.Context, proof string, want Expect, policy Policy, now t
 	if c.HTM != want.Method {
 		return Verified{}, fmt.Errorf("%w: htm", ErrMismatch)
 	}
-	htu, err := normalizeURI(c.HTU)
+	htu, err := NormalizeURI(c.HTU)
 	if err != nil {
 		return Verified{}, fmt.Errorf("%w: htu", ErrInvalid)
 	}
-	wantURI, err := normalizeURI(want.URI)
+	wantURI, err := NormalizeURI(want.URI)
 	if err != nil || htu != wantURI {
 		return Verified{}, fmt.Errorf("%w: htu", ErrMismatch)
 	}
@@ -168,10 +168,10 @@ var errReplayCheck = errors.New("dpop: replay check failed")
 // errURI is any htu that is not an absolute http(s) URI. It never carries the input.
 var errURI = errors.New("dpop: not an absolute http(s) URI")
 
-// normalizeURI is the htu comparison form (RFC 9449 4.3, RFC 3986 6.2.2-6.2.3): an absolute http or
+// NormalizeURI is the htu comparison form (RFC 9449 4.3, RFC 3986 6.2.2-6.2.3): an absolute http or
 // https URI with lowercase scheme and host, without the default port, query, fragment or userinfo,
 // with an empty path as "/", and the path normalised by normalizePath.
-func normalizeURI(raw string) (string, error) {
+func NormalizeURI(raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "", errURI

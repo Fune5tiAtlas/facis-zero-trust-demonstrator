@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/dpopproof"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/replay"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/caller"
 )
@@ -57,6 +58,13 @@ func (s *Server) handleReplayCheck(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, http.StatusUnprocessableEntity, "TOK-PROOF-INVALID")
 		return
 	}
+	// The record is keyed on the normalised htu, the form every other consumer of proof_jti
+	// (dpopproof, the Connector) records, so two spellings of one target are one proof.
+	htu, err := dpopproof.NormalizeURI(req.HTU)
+	if err != nil {
+		s.refuse(w, r, http.StatusUnprocessableEntity, "TOK-PROOF-INVALID")
+		return
+	}
 	now := s.now()
 	iat := time.Unix(*req.IAT, 0)
 	var notAfter time.Time
@@ -75,7 +83,7 @@ func (s *Server) handleReplayCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), replayOpTimeout)
 	defer cancel()
-	fresh, err := s.replay.TryUse(ctx, replay.Use{JKT: req.JKT, Method: req.HTM, URI: req.HTU, JTI: req.JTI, NotAfter: notAfter})
+	fresh, err := s.replay.TryUse(ctx, replay.Use{JKT: req.JKT, Method: req.HTM, URI: htu, JTI: req.JTI, NotAfter: notAfter})
 	switch {
 	case err != nil:
 		s.log.WarnContext(r.Context(), "replay record unavailable")

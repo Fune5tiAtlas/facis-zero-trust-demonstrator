@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/pgtest"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/replay"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/oauth2provider"
 )
 
@@ -350,5 +351,30 @@ func TestTokens_VerifiedPresentationTokenNeedsItsOutcome(t *testing.T) {
 		expires_at, grant_type, outcome_id) VALUES ('access', 'cc', 'r', 'c', now(), '{}', now() + interval '1 minute',
 		'client_credentials', '00000000-0000-4000-8000-000000000009')`); err == nil {
 		t.Error("SQL: a client_credentials token carrying an outcome was inserted")
+	}
+}
+
+// The provider keeps an empty port ("host:") in its normalised htu; the adapter records the form
+// the other consumers of the shared record use, so both spellings are one proof.
+func TestReplay_RecordsTheSharedNormalForm(t *testing.T) {
+	ctx := t.Context()
+	pool := newPool(t)
+	stores := New(pool, nil)
+	use := oauth2provider.DPoPProofUse{
+		Thumbprint: "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I", Method: "POST",
+		URI: "https://example.test:/token", ID: "j-port", NotAfter: time.Now().Add(time.Minute),
+	}
+	if used, err := stores.DPoPReplay.MarkUsed(ctx, use); err != nil || used {
+		t.Fatalf("first use: used=%v err=%v", used, err)
+	}
+	fresh, err := replay.NewPostgres(pool).TryUse(ctx, replay.Use{
+		JKT: use.Thumbprint, Method: "POST", URI: "https://example.test/token", JTI: "j-port", NotAfter: use.NotAfter,
+	})
+	if err != nil || fresh {
+		t.Fatalf("the Connector's use was not seen under the shared form: fresh=%v err=%v", fresh, err)
+	}
+	use.ID, use.URI = "j-bad", "ftp://example.test/token"
+	if _, err := stores.DPoPReplay.MarkUsed(ctx, use); err == nil {
+		t.Fatal("a URI outside the shared form was recorded")
 	}
 }

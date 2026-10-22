@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/dpopproof"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/replay"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/oauth2provider"
 )
@@ -189,12 +190,19 @@ func (s *outcomes) ConsumeOutcome(ctx context.Context, o oauth2provider.Verified
 }
 
 // replayStore presents the shared replay record as the provider's replay store. The two say the
-// same thing the other way round: TryUse reports fresh, MarkUsed reports already used.
+// same thing the other way round: TryUse reports fresh, MarkUsed reports already used. The URI is
+// normalised once more by dpopproof.NormalizeURI, the form the token store and the guard record:
+// the provider's own normalisation can differ from it (an empty port "host:" is kept), and the
+// record must hold one spelling per target. A URI it refuses is an error, so the proof fails closed.
 type replayStore struct{ store replay.Store }
 
 func (s replayStore) MarkUsed(ctx context.Context, use oauth2provider.DPoPProofUse) (bool, error) {
+	uri, err := dpopproof.NormalizeURI(use.URI)
+	if err != nil {
+		return false, err
+	}
 	fresh, err := s.store.TryUse(ctx, replay.Use{
-		JKT: use.Thumbprint, Method: use.Method, URI: use.URI, JTI: use.ID, NotAfter: use.NotAfter,
+		JKT: use.Thumbprint, Method: use.Method, URI: uri, JTI: use.ID, NotAfter: use.NotAfter,
 	})
 	if err != nil {
 		return false, err
