@@ -155,6 +155,13 @@ Header: `typ` `at+jwt`, `alg` `ES256`, `kid` the signer's `KeyID()`. Nothing els
 it. The library's default is a JSON list under the same name, which the verifier refuses; the adapter
 selects the string form.
 
+Every signed token carries `cnf.jkt` and `aud`, so a signed token is issued only to a request that
+presents a valid DPoP proof and names an audience the client is allowed. Without a proof the request
+is refused with `invalid_dpop_proof` (`reason` `dpop_invalid_proof`) even when `DPoP.Enforce` is off
+and the client is not registered for bound tokens; without an audience it is refused with
+`invalid_request`. No default audience is assumed. A dynamically registered client therefore
+registers the audiences it needs, and the token that authorises the registration must carry them.
+
 The signer contract, `oauth2provider.TokenSigner`, is `KeyID()`, `Public()` (the P-256 public key)
 and `Sign(ctx, signingInput)` returning the 64-byte `R||S` ES256 signature. `Sign` receives the
 context of the request being served. The adapter refuses at start-up a signer with an empty key id or
