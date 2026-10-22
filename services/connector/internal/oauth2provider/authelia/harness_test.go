@@ -120,9 +120,7 @@ func newHarness(t *testing.T, configure func(*oauth2provider.Config)) *harness {
 	if h.signed {
 		h.defaultAudience = resourceAudience
 	}
-	h.stores, h.pool = newStores(t, func() time.Time {
-		return time.Now().Add(time.Duration(h.clockOffset.Load()))
-	})
+	h.stores, h.pool = newStores(t, h.now)
 
 	h.replay = &recordingReplayStore{inner: h.stores.DPoPReplay}
 	h.stores.DPoPReplay = h.replay
@@ -136,12 +134,16 @@ func newHarness(t *testing.T, configure func(*oauth2provider.Config)) *harness {
 func (h *harness) start() {
 	h.t.Helper()
 
-	provider, err := New(h.cfg, h.stores)
+	built, err := New(h.cfg, h.stores)
 	if err != nil {
 		h.t.Fatalf("new provider: %v", err)
 	}
 
-	h.provider = provider
+	h.provider = built
+
+	// One clock for the provider and the stores, moved by advanceClock.
+	built.(*provider).clock.now = h.now
+	provider := built
 
 	mux := http.NewServeMux()
 	mux.Handle("/token", provider.TokenHandler())
@@ -209,6 +211,8 @@ func (h *harness) serveResource(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *harness) advanceClock(d time.Duration) { h.clockOffset.Add(int64(d)) }
+
+func (h *harness) now() time.Time { return time.Now().Add(time.Duration(h.clockOffset.Load())) }
 
 func (h *harness) withDefaultAudience(audience []string) []string {
 	if h.defaultAudience == "" || slices.Contains(audience, h.defaultAudience) {

@@ -171,7 +171,12 @@ type vpGrant struct {
 	vp       *verifiedPresentation
 	store    *storeAdapter
 	lifespan time.Duration
+	clock    *clock
 }
+
+// clock is the provider's one time source: every validity decision and every instant written to
+// the stores comes from it. Tests replace now.
+type clock struct{ now func() time.Time }
 
 var _ oauth2.TokenEndpointHandler = (*vpGrant)(nil)
 
@@ -187,6 +192,10 @@ type checked struct {
 	challenge string
 	audience  string
 	scopes    []string
+
+	// at is the instant the checks were made at, and challengeExpires the challenge's expiry.
+	at               time.Time
+	challengeExpires time.Time
 }
 
 func (g *vpGrant) HandleTokenEndpointRequest(ctx context.Context, request oauth2.AccessRequester) error {
@@ -194,17 +203,20 @@ func (g *vpGrant) HandleTokenEndpointRequest(ctx context.Context, request oauth2
 		return oauth2.ErrUnknownRequest
 	}
 
-	if _, err := g.check(ctx, request); err != nil {
+	v, err := g.check(ctx, request, false)
+	if err != nil {
 		return err
 	}
 
-	request.GetSession().SetExpiresAt(oauth2.AccessToken, time.Now().UTC().Add(g.lifespan))
+	request.GetSession().SetExpiresAt(oauth2.AccessToken, v.at.UTC().Add(g.lifespan))
 
 	return nil
 }
 
-// check runs every read-only check of the grant, in the order IF-02 gives them codes.
-func (g *vpGrant) check(ctx context.Context, request oauth2.AccessRequester) (checked, error) {
+// check runs every read-only check of the grant, in the order IF-02 gives them codes. With lock, the
+// challenge is read under its row lock, and the instant the checks use is taken only once the lock
+// is held, so a wait behind another transaction can never leave them judged at a stale time.
+func (g *vpGrant) check(ctx context.Context, request oauth2.AccessRequester, lock bool) (checked, error) {
 	client := request.GetClient()
 	if client == nil || client.IsPublic() {
 		return checked{}, oauth2.ErrInvalidClient.WithHint("The verified-presentation grant requires an authenticated confidential client.")
@@ -231,12 +243,18 @@ func (g *vpGrant) check(ctx context.Context, request oauth2.AccessRequester) (ch
 		return checked{}, oauth2.ErrInvalidRequest.WithHint("The audience is not registered for this client.")
 	}
 
-	now := time.Now()
+	read := g.store.stores.Challenges.GetChallenge
+	if lock {
+		read = g.store.stores.Challenges.LockChallenge
+	}
+
+	stored, err := read(ctx, challenge)
+
+	now := g.clock.now()
 	clientID := client.GetID()
 
 	outcome, verifyErr := if03.Verify(compact, g.vp.issuers, if03.Expect{ClientID: clientID, Challenge: challenge, Audience: audience}, now)
 
-	stored, err := g.store.stores.Challenges.GetChallenge(ctx, challenge)
 	if err != nil && !errors.Is(err, oauth2provider.ErrNotFound) {
 		return checked{}, oauth2.ErrServerError.WithWrap(err)
 	}
@@ -277,7 +295,7 @@ func (g *vpGrant) check(ctx context.Context, request oauth2.AccessRequester) (ch
 		return checked{}, err
 	}
 
-	return checked{outcome: outcome, challenge: challenge, audience: audience, scopes: scopes}, nil
+	return checked{outcome: outcome, challenge: challenge, audience: audience, scopes: scopes, at: now, challengeExpires: stored.ExpiresAt}, nil
 }
 
 // PopulateTokenEndpointResponse consumes the challenge, records the outcome consumed and issues the
@@ -297,7 +315,9 @@ func (g *vpGrant) PopulateTokenEndpointResponse(ctx context.Context, request oau
 		return oauth2.ErrInvalidDPoPProof.WithHint("The verified-presentation grant issues DPoP-bound tokens only and requires a DPoP proof.")
 	}
 
-	v, err := g.check(ctx, request)
+	// The challenge's row lock is taken first; every check is then made again at an instant taken
+	// after it is held.
+	v, err := g.check(ctx, request, true)
 	if err != nil {
 		return err
 	}
@@ -305,7 +325,7 @@ func (g *vpGrant) PopulateTokenEndpointResponse(ctx context.Context, request oau
 	clientID := request.GetClient().GetID()
 	stores := g.store.stores
 
-	if err = stores.Challenges.ConsumeChallenge(ctx, v.challenge, clientID, v.audience); err != nil {
+	if err = stores.Challenges.ConsumeChallenge(ctx, v.challenge, clientID, v.audience, v.at); err != nil {
 		if !errors.Is(err, oauth2provider.ErrConsumed) {
 			return oauth2.ErrServerError.WithWrap(err)
 		}
@@ -333,13 +353,19 @@ func (g *vpGrant) PopulateTokenEndpointResponse(ctx context.Context, request oau
 		CredentialRefs: v.outcome.CredentialRefs,
 		VerifiedAt:     v.outcome.VerifiedAt,
 		ExpiresAt:      v.outcome.ExpiresAt,
-	})
+	}, v.at)
 	if errors.Is(err, oauth2provider.ErrConsumed) {
 		return refuseCred(oauth2provider.CodeCredOutcomeConsumed)
 	}
 
 	if err != nil {
 		return oauth2.ErrServerError.WithWrap(err)
+	}
+
+	// The outcome insert may have waited on another transaction: validity is judged once more, now,
+	// before anything is signed.
+	if later := g.clock.now(); !later.Before(v.outcome.ExpiresAt) || !later.Before(v.challengeExpires) {
+		return refuseCred(oauth2provider.CodeCredOutcomeExpired)
 	}
 
 	for _, scope := range v.scopes {
@@ -460,7 +486,7 @@ func (p *provider) ChallengeHandler() http.Handler {
 			Value:     base64.RawURLEncoding.EncodeToString(raw),
 			ClientID:  client.GetID(),
 			Audience:  audience,
-			ExpiresAt: time.Now().Add(oauth2provider.ChallengeLifetime),
+			ExpiresAt: p.clock.now().Add(oauth2provider.ChallengeLifetime),
 		}
 
 		if err = p.store.stores.Challenges.CreateChallenge(ctx, challenge); err != nil {
@@ -487,4 +513,39 @@ func single(form url.Values, name string) (string, bool) {
 	}
 
 	return values[0], true
+}
+
+// delegatingAuth is the registration endpoint's authentication with the registrar delegation
+// ceiling: a registration request authenticated by a registrar's token may grant the scopes that
+// token carries and, in addition, the scopes RegistrationConfig.DelegableScopes names for that
+// registrar. Only registration consults it; the registrar's token itself is unchanged, and the
+// library still refuses the registration scope whatever the ceiling says.
+type delegatingAuth struct {
+	inner     oauth2.ClientRegistrationEndpointAuthStrategy
+	delegable map[string][]string
+}
+
+func (d *delegatingAuth) AuthenticateClientRegistrationRequest(ctx context.Context, r *http.Request, id string) (oauth2.Requester, error) {
+	requester, err := d.inner.AuthenticateClientRegistrationRequest(ctx, r, id)
+	if err != nil || id != "" || requester == nil || requester.GetClient() == nil {
+		return requester, err
+	}
+
+	extra := d.delegable[requester.GetClient().GetID()]
+	authenticated, ok := requester.(*oauth2.Request)
+
+	if len(extra) == 0 || !ok {
+		return requester, nil
+	}
+
+	ceiling := *authenticated
+	ceiling.GrantedScope = slices.Clone(authenticated.GrantedScope)
+
+	for _, scope := range extra {
+		if !slices.Contains(ceiling.GrantedScope, scope) {
+			ceiling.GrantedScope = append(ceiling.GrantedScope, scope)
+		}
+	}
+
+	return &ceiling, nil
 }

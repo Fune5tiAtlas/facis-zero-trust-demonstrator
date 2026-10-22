@@ -44,6 +44,12 @@ type TokenRecord struct {
 	// OutcomeID is the IF-03 outcome a verified-presentation grant issued the
 	// token on, empty for every other grant. A store keeps it unique.
 	OutcomeID string
+
+	// GrantType is the grant the token was issued through, empty for a
+	// registration access token. A store refuses a token of
+	// VerifiedPresentationGrantType without an OutcomeID, and an OutcomeID on
+	// a token of any other grant.
+	GrantType string
 }
 
 // TokenStore persists token records by token signature. The signature is
@@ -119,12 +125,17 @@ type ChallengeStore interface {
 	// CreateChallenge stores a new challenge; an existing value is an error, never overwritten.
 	CreateChallenge(ctx context.Context, challenge Challenge) error
 
+	// GetChallenge reads a challenge without locking it.
 	GetChallenge(ctx context.Context, value string) (Challenge, error)
 
-	// ConsumeChallenge marks the challenge consumed when it is bound to clientID and audience,
-	// unconsumed and unexpired by the store's clock. Otherwise it returns ErrConsumed and changes
+	// LockChallenge reads a challenge and, with a transaction context, holds it locked against
+	// every other transaction's LockChallenge and ConsumeChallenge until the transaction ends.
+	LockChallenge(ctx context.Context, value string) (Challenge, error)
+
+	// ConsumeChallenge marks the challenge consumed at the instant at when it is bound to clientID
+	// and audience, unconsumed and expires after at. Otherwise it returns ErrConsumed and changes
 	// nothing. Of concurrent callers for one challenge, at most one succeeds.
-	ConsumeChallenge(ctx context.Context, value, clientID, audience string) error
+	ConsumeChallenge(ctx context.Context, value, clientID, audience string, at time.Time) error
 }
 
 // VerifiedOutcome is a verified IF-03 outcome as the grant records it.
@@ -142,9 +153,9 @@ type VerifiedOutcome struct {
 
 // OutcomeStore is the ledger of consumed outcomes. A recorded outcome is never reset or deleted.
 type OutcomeStore interface {
-	// ConsumeOutcome records the outcome as verified and consumed. An outcome id recorded before is
-	// ErrConsumed. Of concurrent callers for one outcome id, at most one succeeds.
-	ConsumeOutcome(ctx context.Context, outcome VerifiedOutcome) error
+	// ConsumeOutcome records the outcome as verified and consumed at the instant at. An outcome id
+	// recorded before is ErrConsumed. Of concurrent callers for one outcome id, at most one succeeds.
+	ConsumeOutcome(ctx context.Context, outcome VerifiedOutcome, at time.Time) error
 }
 
 // Transactor runs store calls in one transaction. BeginTx returns a context that carries the

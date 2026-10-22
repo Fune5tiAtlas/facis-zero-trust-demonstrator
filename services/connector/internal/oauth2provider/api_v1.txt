@@ -14,9 +14,10 @@ type Challenge struct, field 3 ExpiresAt time.Time
 type Challenge struct, field 4 ConsumedAt time.Time
 const ChallengeLifetime time.Duration = 120000000000
 type ChallengeStore interface
-type ChallengeStore interface, ConsumeChallenge(context.Context, string, string, string) error
+type ChallengeStore interface, ConsumeChallenge(context.Context, string, string, string, time.Time) error
 type ChallengeStore interface, CreateChallenge(context.Context, Challenge) error
 type ChallengeStore interface, GetChallenge(context.Context, string) (Challenge, error)
+type ChallengeStore interface, LockChallenge(context.Context, string) (Challenge, error)
 type ClaimScopes struct
 type ClaimScopes struct, field 0 Role string
 type ClaimScopes struct, field 1 Entitlement string
@@ -90,7 +91,7 @@ method (*Error) Unwrap() error
 const MaxDPoPProofWindow time.Duration = 90000000000
 func NewError(Code, int, error) *Error
 type OutcomeStore interface
-type OutcomeStore interface, ConsumeOutcome(context.Context, VerifiedOutcome) error
+type OutcomeStore interface, ConsumeOutcome(context.Context, VerifiedOutcome, time.Time) error
 type Provider interface
 type Provider interface, ChallengeHandler() net/http.Handler
 type Provider interface, RegistrationHandler() net/http.Handler
@@ -101,6 +102,7 @@ type RegistrationConfig struct
 type RegistrationConfig struct, field 0 Secret []byte
 type RegistrationConfig struct, field 1 EndpointURL string
 type RegistrationConfig struct, field 2 GrantTypes []string
+type RegistrationConfig struct, field 3 DelegableScopes map[string][]string
 const RegistrationScope untyped string = "connector:client_registration"
 type ResourceAccess struct
 type ResourceAccess struct, field 0 ClientID string
@@ -127,6 +129,7 @@ type TokenRecord struct, field 6 GrantedAudience []string
 type TokenRecord struct, field 7 Session []byte
 type TokenRecord struct, field 8 ExpiresAt time.Time
 type TokenRecord struct, field 9 OutcomeID string
+type TokenRecord struct, field 10 GrantType string
 type TokenSigner interface
 type TokenSigner interface, KeyID() string
 type TokenSigner interface, Public() *crypto/ecdsa.PublicKey

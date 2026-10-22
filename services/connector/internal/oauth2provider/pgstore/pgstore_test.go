@@ -206,14 +206,14 @@ func TestTransactions_ConsumeChallengeOutcomeAndTokenTogether(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		err = stores.Challenges.ConsumeChallenge(txCtx, outcome.Challenge, "c", outcome.Audience)
+		err = stores.Challenges.ConsumeChallenge(txCtx, outcome.Challenge, "c", outcome.Audience, now)
 		if err == nil {
-			err = stores.Outcomes.ConsumeOutcome(txCtx, outcome)
+			err = stores.Outcomes.ConsumeOutcome(txCtx, outcome, now)
 		}
 		if err == nil {
 			err = stores.AccessTokens.CreateToken(txCtx, "sig", oauth2provider.TokenRecord{
 				RequestID: "r", ClientID: "c", RequestedAt: now, Session: []byte("{}"), ExpiresAt: now.Add(time.Minute),
-				OutcomeID: outcome.ID,
+				OutcomeID: outcome.ID, GrantType: oauth2provider.VerifiedPresentationGrantType,
 			})
 		}
 		if err != nil || !commit {
@@ -242,14 +242,15 @@ func TestTransactions_ConsumeChallengeOutcomeAndTokenTogether(t *testing.T) {
 		t.Errorf("token after commit: %+v, %v", got, err)
 	}
 
-	if err := stores.Challenges.ConsumeChallenge(ctx, outcome.Challenge, "c", outcome.Audience); !errors.Is(err, oauth2provider.ErrConsumed) {
+	if err := stores.Challenges.ConsumeChallenge(ctx, outcome.Challenge, "c", outcome.Audience, now); !errors.Is(err, oauth2provider.ErrConsumed) {
 		t.Errorf("second challenge consumption: %v, want ErrConsumed", err)
 	}
-	if err := stores.Outcomes.ConsumeOutcome(ctx, outcome); !errors.Is(err, oauth2provider.ErrConsumed) {
+	if err := stores.Outcomes.ConsumeOutcome(ctx, outcome, now); !errors.Is(err, oauth2provider.ErrConsumed) {
 		t.Errorf("second outcome consumption: %v, want ErrConsumed", err)
 	}
 	if err := stores.AccessTokens.CreateToken(ctx, "sig2", oauth2provider.TokenRecord{
 		RequestID: "r2", ClientID: "c", RequestedAt: now, Session: []byte("{}"), ExpiresAt: now.Add(time.Minute), OutcomeID: outcome.ID,
+		GrantType: oauth2provider.VerifiedPresentationGrantType,
 	}); err == nil {
 		t.Error("a second token on one outcome id was stored")
 	}
@@ -259,7 +260,7 @@ func TestTransactions_ConsumeChallengeOutcomeAndTokenTogether(t *testing.T) {
 func TestChallenges_ConsumptionChecksBindingAndExpiry(t *testing.T) {
 	ctx := t.Context()
 	now := time.Now()
-	stores := New(newPool(t), func() time.Time { return now })
+	stores := New(newPool(t), nil)
 
 	if err := stores.Clients.CreateClient(ctx, oauth2provider.Client{ID: "c"}); err != nil {
 		t.Fatal(err)
@@ -271,13 +272,12 @@ func TestChallenges_ConsumptionChecksBindingAndExpiry(t *testing.T) {
 	}
 
 	for name, args := range map[string][2]string{"other client": {"x", "aud"}, "other audience": {"c", "x"}} {
-		if err := stores.Challenges.ConsumeChallenge(ctx, "ch", args[0], args[1]); !errors.Is(err, oauth2provider.ErrConsumed) {
+		if err := stores.Challenges.ConsumeChallenge(ctx, "ch", args[0], args[1], now); !errors.Is(err, oauth2provider.ErrConsumed) {
 			t.Errorf("%s: %v, want refused", name, err)
 		}
 	}
 
-	now = now.Add(2 * time.Minute)
-	if err := stores.Challenges.ConsumeChallenge(ctx, "ch", "c", "aud"); !errors.Is(err, oauth2provider.ErrConsumed) {
+	if err := stores.Challenges.ConsumeChallenge(ctx, "ch", "c", "aud", now.Add(2*time.Minute)); !errors.Is(err, oauth2provider.ErrConsumed) {
 		t.Errorf("expired: %v, want refused", err)
 	}
 	if _, err := stores.Challenges.GetChallenge(ctx, "absent"); !errors.Is(err, oauth2provider.ErrNotFound) {
@@ -290,7 +290,7 @@ func TestSweep_KeepsConsumedChallenges(t *testing.T) {
 	ctx := t.Context()
 	pool := newPool(t)
 	now := time.Now()
-	stores := New(pool, func() time.Time { return now.Add(-time.Hour) })
+	stores := New(pool, nil)
 
 	if err := stores.Clients.CreateClient(ctx, oauth2provider.Client{ID: "c"}); err != nil {
 		t.Fatal(err)
@@ -300,7 +300,7 @@ func TestSweep_KeepsConsumedChallenges(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := stores.Challenges.ConsumeChallenge(ctx, "used", "c", "a"); err != nil {
+	if err := stores.Challenges.ConsumeChallenge(ctx, "used", "c", "a", now.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -312,5 +312,43 @@ func TestSweep_KeepsConsumedChallenges(t *testing.T) {
 	}
 	if c, err := stores.Challenges.GetChallenge(ctx, "used"); err != nil || c.ConsumedAt.IsZero() {
 		t.Errorf("consumed challenge: %+v, %v; want kept", c, err)
+	}
+}
+
+// The database holds a verified-presentation token to its outcome: one without an outcome, or an
+// outcome on any other token, is refused by a constraint, through the store and in plain SQL.
+func TestTokens_VerifiedPresentationTokenNeedsItsOutcome(t *testing.T) {
+	ctx := t.Context()
+	pool := newPool(t)
+	stores := New(pool, nil)
+	now := time.Now()
+
+	if err := stores.Clients.CreateClient(ctx, oauth2provider.Client{ID: "c"}); err != nil {
+		t.Fatal(err)
+	}
+
+	record := oauth2provider.TokenRecord{
+		RequestID: "r", ClientID: "c", RequestedAt: now, Session: []byte("{}"), ExpiresAt: now.Add(time.Minute),
+		GrantType: oauth2provider.VerifiedPresentationGrantType,
+	}
+	if err := stores.AccessTokens.CreateToken(ctx, "vp-no-outcome", record); err == nil {
+		t.Error("store: a verified-presentation token without an outcome was stored")
+	}
+
+	if _, err := pool.Exec(ctx, `INSERT INTO oauth2_token (kind, signature, request_id, client_id, requested_at, session,
+		expires_at, grant_type) VALUES ('access', 'raw', 'r', 'c', now(), '{}', now() + interval '1 minute', $1)`,
+		oauth2provider.VerifiedPresentationGrantType); err == nil {
+		t.Error("SQL: a verified-presentation token without an outcome was inserted")
+	}
+
+	if _, err := pool.Exec(ctx, `INSERT INTO verified_outcome (outcome_id, issuer, client_id, challenge, audience, status,
+		claims, verified_at, expires_at) VALUES ('00000000-0000-4000-8000-000000000009', 'i', 'c', 'ch', 'a', 'verified',
+		'{}', now(), now())`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO oauth2_token (kind, signature, request_id, client_id, requested_at, session,
+		expires_at, grant_type, outcome_id) VALUES ('access', 'cc', 'r', 'c', now(), '{}', now() + interval '1 minute',
+		'client_credentials', '00000000-0000-4000-8000-000000000009')`); err == nil {
+		t.Error("SQL: a client_credentials token carrying an outcome was inserted")
 	}
 }

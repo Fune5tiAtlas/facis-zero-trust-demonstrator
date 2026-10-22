@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"authelia.com/provider/oauth2"
@@ -35,6 +36,16 @@ func newLibraryConfig(cfg oauth2provider.Config) (*oauth2.Config, error) {
 
 	if cfg.Registration.EndpointURL == "" {
 		return nil, errors.New("oauth2provider: Config.Registration.EndpointURL is required")
+	}
+
+	for registrar, scopes := range cfg.Registration.DelegableScopes {
+		for _, scope := range scopes {
+			// Registration authority is never delegable: it would let registered clients register
+			// further clients.
+			if registrar == "" || scope == "" || strings.ContainsAny(scope, " \t") || scope == oauth2provider.RegistrationScope {
+				return nil, fmt.Errorf("oauth2provider: Config.Registration.DelegableScopes: %q cannot delegate scope %q", registrar, scope)
+			}
+		}
 	}
 
 	if cfg.AccessTokenSigner != nil {

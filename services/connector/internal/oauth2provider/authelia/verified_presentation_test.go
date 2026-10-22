@@ -19,11 +19,14 @@ import (
 	"testing"
 	"time"
 
+	"authelia.com/provider/oauth2"
+
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/if03"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/jose"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/dpoptest"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/oauth2provider"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/oauth2provider/memstore"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/signing"
 )
 
@@ -126,13 +129,19 @@ func (h *vpHarness) seedVPClient(id string, grantTypes ...string) {
 func (h *vpHarness) challenge(clientID string, form url.Values) result {
 	h.t.Helper()
 
+	return h.challengeWithSecret(clientID, testSecret, form)
+}
+
+func (h *vpHarness) challengeWithSecret(clientID, secret string, form url.Values) result {
+	h.t.Helper()
+
 	request, err := http.NewRequest(http.MethodPost, h.challengeURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		h.t.Fatal(err)
 	}
 
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.SetBasicAuth(clientID, testSecret)
+	request.SetBasicAuth(url.QueryEscape(clientID), url.QueryEscape(secret))
 
 	return h.do(request)
 }
@@ -856,24 +865,352 @@ func (r *recordingTokens) CreateToken(ctx context.Context, signature string, rec
 	return r.TokenStore.CreateToken(ctx, signature, record)
 }
 
-// Registration may admit the grant when the deployment offers it.
-func TestVP_RegistrationMayOfferTheGrant(t *testing.T) {
+// A registrar delegates a verified-presentation scope through registration, from a ceiling the
+// server configures for it, though its own token cannot carry that scope: the registered client
+// then obtains a challenge and a token through the grant, and is refused the same scope through
+// client_credentials. A registrar without the ceiling cannot register the scope.
+func TestVP_RegistrarDelegatesAVPScopeThroughRegistration(t *testing.T) {
+	grants := []string{"client_credentials", oauth2provider.VerifiedPresentationGrantType}
+
 	h := newVPHarness(t, func(c *oauth2provider.Config) {
-		c.Registration.GrantTypes = []string{"client_credentials", oauth2provider.VerifiedPresentationGrantType}
+		c.Registration.GrantTypes = grants
+		c.Registration.DelegableScopes = map[string][]string{"registrar": {vpScope}}
 	})
 
-	token := seedRegistrar(t, h.harness)
+	registrar := seedRegistrar(t, h.harness)
 
-	got := h.registerWith(token, map[string]any{
-		"grant_types": []string{oauth2provider.VerifiedPresentationGrantType},
-		"scope":       resourceScope,
-	})
-	if got.status != http.StatusCreated {
-		t.Fatalf("register: status %d, body %v", got.status, got.body)
+	// The registrar's own token cannot carry the scope: client_credentials never issues it.
+	if got := h.token("registrar", h.tokenProof(dpoptest.NewKey(t)), []string{vpScope}, resourceAudience); got.status != http.StatusBadRequest {
+		t.Errorf("registrar asking for the scope: status %d body %v, want 400", got.status, got.body)
 	}
 
-	client, err := h.stores.Clients.GetClient(t.Context(), got.str("client_id"))
-	if err != nil || len(client.GrantTypes) != 1 || client.GrantTypes[0] != oauth2provider.VerifiedPresentationGrantType {
-		t.Errorf("registered client: %+v, %v", client, err)
+	registered := h.registerWith(registrar, map[string]any{"grant_types": grants, "scope": vpScope})
+	if registered.status != http.StatusCreated {
+		t.Fatalf("register: status %d, body %v", registered.status, registered.body)
+	}
+
+	id, secret := registered.str("client_id"), registered.str("client_secret")
+
+	challenged := h.challengeWithSecret(id, secret, url.Values{"audience": {resourceAudience}})
+	if challenged.status != http.StatusOK {
+		t.Fatalf("challenge: status %d, body %v", challenged.status, challenged.body)
+	}
+
+	challenge := challenged.str("challenge")
+	issued := h.tokenWithSecret(id, secret, h.tokenProof(dpoptest.NewKey(t)), url.Values{
+		"grant_type": {oauth2provider.VerifiedPresentationGrantType},
+		"outcome":    {h.sign(verifiedOutcome(id, challenge, resourceAudience))}, "challenge": {challenge}, "audience": {resourceAudience},
+	})
+	if issued.status != http.StatusOK || issued.str("scope") != vpScope {
+		t.Fatalf("grant: status %d, body %v", issued.status, issued.body)
+	}
+
+	cc := h.tokenWithSecret(id, secret, h.tokenProof(dpoptest.NewKey(t)), url.Values{
+		"grant_type": {"client_credentials"}, "scope": {vpScope}, "audience": {resourceAudience},
+	})
+	if cc.status != http.StatusBadRequest || cc.str("error") != "invalid_scope" {
+		t.Errorf("the scope through client_credentials: status %d body %v, want 400 invalid_scope", cc.status, cc.body)
+	}
+
+	// Without the ceiling the same registration is refused.
+	plain := newVPHarness(t, func(c *oauth2provider.Config) { c.Registration.GrantTypes = grants })
+	refused := plain.registerWith(seedRegistrar(t, plain.harness), map[string]any{"grant_types": grants, "scope": vpScope})
+
+	if refused.status != http.StatusBadRequest || refused.reason() != oauth2provider.CodeRegistrationRejected {
+		t.Errorf("registrar without the ceiling: status %d body %v, want 400 %q", refused.status, refused.body, oauth2provider.CodeRegistrationRejected)
+	}
+}
+
+// The registration authority is never delegable.
+func TestVP_RegistrationScopeIsNeverDelegable(t *testing.T) {
+	cfg := oauth2provider.Config{
+		Secret: []byte("token-signing-secret-at-least-32-bytes!"),
+		Registration: oauth2provider.RegistrationConfig{
+			Secret: []byte("registration-secret-at-least-32-bytes!!"), EndpointURL: "https://connector.example/register",
+			DelegableScopes: map[string][]string{"registrar": {oauth2provider.RegistrationScope}},
+		},
+	}
+
+	if _, err := newLibraryConfig(cfg); err == nil {
+		t.Error("the registration scope was accepted as delegable")
+	}
+}
+
+// waitFor fails the test when f does not return within a bound: a request left waiting on a lock
+// that was never released would otherwise hang the suite.
+func waitFor[T any](t *testing.T, what string, f func() T) T {
+	t.Helper()
+
+	done := make(chan T, 1)
+	go func() { done <- f() }()
+
+	select {
+	case v := <-done:
+		return v
+	case <-time.After(20 * time.Second):
+		t.Fatalf("%s did not finish: a lock or transaction was left open", what)
+
+		var zero T
+
+		return zero
+	}
+}
+
+// A request that passed its checks and then waited behind another transaction holding the
+// challenge is judged again once it holds the lock: when the outcome and the challenge expired
+// during the wait, it is refused as expired, nothing is consumed and nothing is signed.
+func TestVP_ExpiryIsJudgedAfterTheChallengeLock(t *testing.T) {
+	h := newVPHarness(t, nil)
+	h.seedVPClient(vpClient)
+
+	challenge := h.newChallenge(vpClient, resourceAudience)
+	o := verifiedOutcome(vpClient, challenge, resourceAudience)
+	compact := h.sign(o)
+	proof := h.tokenProof(dpoptest.NewKey(t))
+
+	// Another transaction holds the challenge: a row lock on PostgreSQL, the store's one
+	// transaction in memory.
+	var release func()
+
+	if h.pool != nil {
+		tx, err := h.pool.Begin(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err = tx.Exec(t.Context(), `SELECT 1 FROM oauth2_challenge WHERE challenge = $1 FOR UPDATE`, challenge); err != nil {
+			t.Fatal(err)
+		}
+
+		release = func() { _ = tx.Rollback(context.Background()) }
+	} else {
+		txCtx, err := h.stores.Transactions.BeginTx(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		release = func() { _ = h.stores.Transactions.Rollback(txCtx) }
+	}
+
+	results := make(chan result, 1)
+	go func() { results <- h.grant(vpClient, proof, compact, challenge, resourceAudience) }()
+
+	// The request has passed its first checks and is waiting.
+	if h.pool != nil {
+		deadline := time.Now().Add(10 * time.Second)
+
+		for waiting := 0; waiting == 0; {
+			if time.Now().After(deadline) {
+				t.Fatal("the request never waited on the challenge lock")
+			}
+
+			_ = h.pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_locks WHERE NOT granted`).Scan(&waiting)
+			time.Sleep(10 * time.Millisecond)
+		}
+	} else {
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	h.advanceClock(10 * time.Minute) // past the outcome's and the challenge's expiry
+	release()
+
+	got := waitFor(t, "the waiting request", func() result { return <-results })
+	wantRefused(t, "expired while waiting", got, http.StatusBadRequest, oauth2provider.CodeCredOutcomeExpired, o, compact)
+
+	if n := h.signer.signed.Load(); n != 0 {
+		t.Errorf("%d tokens signed", n)
+	}
+
+	if stored, err := h.stores.Challenges.GetChallenge(t.Context(), challenge); err != nil || !stored.ConsumedAt.IsZero() {
+		t.Errorf("challenge: %+v, %v; want unconsumed", stored, err)
+	}
+
+	if h.pool != nil {
+		var ledger, tokens int
+		_ = h.pool.QueryRow(t.Context(), `SELECT (SELECT count(*) FROM verified_outcome), (SELECT count(*) FROM oauth2_token WHERE outcome_id IS NOT NULL)`).Scan(&ledger, &tokens)
+
+		if ledger != 0 || tokens != 0 {
+			t.Errorf("%d ledger rows and %d outcome tokens committed, want none", ledger, tokens)
+		}
+	}
+}
+
+// The store adapter refuses a verified-presentation token without its outcome, and an outcome on a
+// token of another grant, before the store sees either.
+func TestVP_AdapterRefusesAVPTokenWithoutItsOutcome(t *testing.T) {
+	recorder := &recordingTokens{TokenStore: memstore.New(nil).AccessTokens}
+	adapter := &storeAdapter{stores: oauth2provider.Stores{AccessTokens: recorder}}
+
+	session := &oauth2.DefaultSession{}
+	session.SetExpiresAt(oauth2.AccessToken, time.Now().Add(time.Minute))
+	request := &oauth2.Request{ID: "r", Client: &oauth2.DefaultClient{ID: vpClient}, Session: session}
+
+	vpCtx := withGrant(t.Context(), oauth2provider.VerifiedPresentationGrantType)
+
+	for name, ctx := range map[string]context.Context{
+		"grant without outcome":     vpCtx,
+		"grant with an empty one":   withOutcomeID(vpCtx, ""),
+		"outcome on another grant":  withOutcomeID(withGrant(t.Context(), "client_credentials"), newOutcomeID()),
+		"outcome without any grant": withOutcomeID(t.Context(), newOutcomeID()),
+	} {
+		if err := adapter.CreateAccessTokenSession(ctx, "sig-"+name, request); err == nil {
+			t.Errorf("%s: stored", name)
+		}
+	}
+
+	if recorder.signature != "" {
+		t.Errorf("the store was reached with %q", recorder.signature)
+	}
+
+	if err := adapter.CreateAccessTokenSession(withOutcomeID(vpCtx, newOutcomeID()), "sig", request); err != nil {
+		t.Errorf("a verified-presentation token with its outcome: %v", err)
+	}
+}
+
+// commitFault makes Commit fail: before committing, leaving the transaction open, or after it
+// committed.
+type commitFault struct {
+	oauth2provider.Transactor
+
+	afterCommit bool
+	armed       atomic.Bool
+}
+
+func (c *commitFault) Commit(ctx context.Context) error {
+	if !c.armed.Swap(false) {
+		return c.Transactor.Commit(ctx)
+	}
+
+	if c.afterCommit {
+		if err := c.Transactor.Commit(ctx); err != nil {
+			return err
+		}
+	}
+
+	return errors.New("injected commit failure")
+}
+
+// A commit that fails without settling is cleaned up before the 500 is written: nothing stays
+// consumed or locked, and the same outcome is served next.
+func TestVP_FailedCommitIsRolledBack(t *testing.T) {
+	h := newVPHarness(t, nil)
+	fault := &commitFault{Transactor: h.stores.Transactions}
+	h.stores.Transactions = fault
+	h.restart()
+	h.seedVPClient(vpClient)
+
+	challenge := h.newChallenge(vpClient, resourceAudience)
+	o := verifiedOutcome(vpClient, challenge, resourceAudience)
+	compact := h.sign(o)
+
+	fault.armed.Store(true)
+	wantRefused(t, "commit failed", h.grant(vpClient, h.tokenProof(dpoptest.NewKey(t)), compact, challenge, resourceAudience),
+		http.StatusInternalServerError, oauth2provider.CodeServerError, o, compact)
+
+	got := waitFor(t, "the retry", func() result {
+		return h.grant(vpClient, h.tokenProof(dpoptest.NewKey(t)), compact, challenge, resourceAudience)
+	})
+	if got.status != http.StatusOK {
+		t.Errorf("retry: status %d, body %v; want the rolled-back consumption served", got.status, got.body)
+	}
+}
+
+// A commit that committed and then reported an error is answered 500 without the token, and the
+// consumption stands: it is never reset to compensate, so the outcome cannot be used again.
+func TestVP_CommitWithUnknownOutcomeKeepsTheConsumption(t *testing.T) {
+	h := newVPHarness(t, nil)
+	fault := &commitFault{Transactor: h.stores.Transactions, afterCommit: true}
+	h.stores.Transactions = fault
+	h.restart()
+	h.seedVPClient(vpClient)
+
+	challenge := h.newChallenge(vpClient, resourceAudience)
+	o := verifiedOutcome(vpClient, challenge, resourceAudience)
+	compact := h.sign(o)
+
+	fault.armed.Store(true)
+	got := h.grant(vpClient, h.tokenProof(dpoptest.NewKey(t)), compact, challenge, resourceAudience)
+	wantRefused(t, "commit reported failure", got, http.StatusInternalServerError, oauth2provider.CodeServerError, o, compact)
+
+	if got.str("access_token") != "" {
+		t.Error("the token was delivered after a commit error")
+	}
+
+	if stored, err := h.stores.Challenges.GetChallenge(t.Context(), challenge); err != nil || stored.ConsumedAt.IsZero() {
+		t.Errorf("challenge: %+v, %v; want still consumed", stored, err)
+	}
+
+	wantRefused(t, "retry", waitFor(t, "the retry", func() result {
+		return h.grant(vpClient, h.tokenProof(dpoptest.NewKey(t)), compact, challenge, resourceAudience)
+	}), http.StatusBadRequest, oauth2provider.CodeCredOutcomeConsumed, o, compact)
+
+	if h.pool != nil {
+		var ledger int
+		_ = h.pool.QueryRow(t.Context(), `SELECT count(*) FROM verified_outcome WHERE outcome_id = $1 AND consumed_at IS NOT NULL`, o["outcome_id"]).Scan(&ledger)
+
+		if ledger != 1 {
+			t.Errorf("%d consumed ledger rows, want 1", ledger)
+		}
+	}
+}
+
+// panickingTokens panics on the next token insert, after the grant consumed the challenge and the
+// outcome.
+type panickingTokens struct {
+	oauth2provider.TokenStore
+
+	armed atomic.Bool
+}
+
+func (p *panickingTokens) CreateToken(ctx context.Context, signature string, record oauth2provider.TokenRecord) error {
+	if p.armed.Swap(false) {
+		panic("injected panic after consumption")
+	}
+
+	return p.TokenStore.CreateToken(ctx, signature, record)
+}
+
+// A panic after consumption still rolls the transaction back: nothing stays consumed or locked.
+func TestVP_PanicAfterConsumptionRollsBack(t *testing.T) {
+	h := newVPHarness(t, nil)
+	tokens := &panickingTokens{TokenStore: h.stores.AccessTokens}
+	h.stores.AccessTokens = tokens
+	h.restart()
+	h.seedVPClient(vpClient)
+
+	challenge := h.newChallenge(vpClient, resourceAudience)
+	compact := h.sign(verifiedOutcome(vpClient, challenge, resourceAudience))
+
+	form := url.Values{
+		"grant_type": {oauth2provider.VerifiedPresentationGrantType},
+		"outcome":    {compact}, "challenge": {challenge}, "audience": {resourceAudience},
+	}
+	request := httptest.NewRequest(http.MethodPost, h.tokenURL, strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("DPoP", h.tokenProof(dpoptest.NewKey(t)))
+	request.SetBasicAuth(vpClient, testSecret)
+
+	tokens.armed.Store(true)
+
+	panicked := func() (recovered any) {
+		defer func() { recovered = recover() }()
+
+		h.provider.TokenHandler().ServeHTTP(httptest.NewRecorder(), request)
+
+		return nil
+	}()
+	if panicked == nil {
+		t.Fatal("the injected panic did not happen")
+	}
+
+	if stored, err := h.stores.Challenges.GetChallenge(t.Context(), challenge); err != nil || !stored.ConsumedAt.IsZero() {
+		t.Errorf("challenge after the panic: %+v, %v; want unconsumed", stored, err)
+	}
+
+	got := waitFor(t, "the retry", func() result {
+		return h.grant(vpClient, h.tokenProof(dpoptest.NewKey(t)), compact, challenge, resourceAudience)
+	})
+	if got.status != http.StatusOK {
+		t.Errorf("retry: status %d, body %v", got.status, got.body)
 	}
 }

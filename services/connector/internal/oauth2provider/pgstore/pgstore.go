@@ -40,8 +40,8 @@ func New(pool *pgxpool.Pool, now func() time.Time) oauth2provider.Stores {
 		RegistrationTokens: &tokens{pool: pool, kind: "registration"},
 		DPoPNonces:         &nonces{pool: pool, now: now},
 		DPoPReplay:         replayStore{replay.NewPostgres(pool)},
-		Challenges:         &challenges{pool: pool, now: now},
-		Outcomes:           &outcomes{pool: pool, now: now},
+		Challenges:         &challenges{pool: pool},
+		Outcomes:           &outcomes{pool: pool},
 		Transactions:       transactor{pool: pool},
 	}
 }
@@ -106,10 +106,8 @@ func (t transactor) Rollback(ctx context.Context) error {
 	return nil
 }
 
-type challenges struct {
-	pool *pgxpool.Pool
-	now  func() time.Time
-}
+// challenges compare expiry against the instant the caller passes, the provider's one clock.
+type challenges struct{ pool *pgxpool.Pool }
 
 func (s *challenges) CreateChallenge(ctx context.Context, c oauth2provider.Challenge) error {
 	if _, err := db(ctx, s.pool).Exec(ctx, `INSERT INTO oauth2_challenge (challenge, client_id, audience, expires_at)
@@ -121,11 +119,21 @@ func (s *challenges) CreateChallenge(ctx context.Context, c oauth2provider.Chall
 }
 
 func (s *challenges) GetChallenge(ctx context.Context, value string) (oauth2provider.Challenge, error) {
+	return s.read(ctx, value, "")
+}
+
+// LockChallenge takes the row lock, which a concurrent consumer of the same challenge holds until
+// its transaction ends.
+func (s *challenges) LockChallenge(ctx context.Context, value string) (oauth2provider.Challenge, error) {
+	return s.read(ctx, value, " FOR UPDATE")
+}
+
+func (s *challenges) read(ctx context.Context, value, lock string) (oauth2provider.Challenge, error) {
 	c := oauth2provider.Challenge{Value: value}
 
 	var consumed *time.Time
 	err := db(ctx, s.pool).QueryRow(ctx, `SELECT client_id, audience, expires_at, consumed_at
-		FROM oauth2_challenge WHERE challenge = $1`, value).Scan(&c.ClientID, &c.Audience, &c.ExpiresAt, &consumed)
+		FROM oauth2_challenge WHERE challenge = $1`+lock, value).Scan(&c.ClientID, &c.Audience, &c.ExpiresAt, &consumed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return oauth2provider.Challenge{}, oauth2provider.ErrNotFound
 	}
@@ -141,9 +149,7 @@ func (s *challenges) GetChallenge(ctx context.Context, value string) (oauth2prov
 
 // ConsumeChallenge is one conditional update: a concurrent consumer of the same row waits for the
 // row lock and then finds it consumed.
-func (s *challenges) ConsumeChallenge(ctx context.Context, value, clientID, audience string) error {
-	now := s.now()
-
+func (s *challenges) ConsumeChallenge(ctx context.Context, value, clientID, audience string, now time.Time) error {
 	tag, err := db(ctx, s.pool).Exec(ctx, `UPDATE oauth2_challenge SET consumed_at = $4
 		WHERE challenge = $1 AND client_id = $2 AND audience = $3 AND consumed_at IS NULL AND expires_at > $4`,
 		value, clientID, audience, now)
@@ -157,14 +163,11 @@ func (s *challenges) ConsumeChallenge(ctx context.Context, value, clientID, audi
 	return nil
 }
 
-type outcomes struct {
-	pool *pgxpool.Pool
-	now  func() time.Time
-}
+type outcomes struct{ pool *pgxpool.Pool }
 
 // ConsumeOutcome inserts the outcome already consumed. The primary key makes a second insert of
 // one outcome id a no-op, which a concurrent inserter observes once the first commits.
-func (s *outcomes) ConsumeOutcome(ctx context.Context, o oauth2provider.VerifiedOutcome) error {
+func (s *outcomes) ConsumeOutcome(ctx context.Context, o oauth2provider.VerifiedOutcome, at time.Time) error {
 	var refs any
 	if o.CredentialRefs != nil {
 		refs = o.CredentialRefs
@@ -174,7 +177,7 @@ func (s *outcomes) ConsumeOutcome(ctx context.Context, o oauth2provider.Verified
 		status, claims, credential_refs, verified_at, expires_at, received_at, consumed_at)
 		VALUES ($1, $2, $3, $4, $5, 'verified', $6, $7, $8, $9, $10, $10)
 		ON CONFLICT (outcome_id) DO NOTHING`,
-		o.ID, o.Issuer, o.ClientID, o.Challenge, o.Audience, string(o.Claims), refs, o.VerifiedAt, o.ExpiresAt, s.now())
+		o.ID, o.Issuer, o.ClientID, o.Challenge, o.Audience, string(o.Claims), refs, o.VerifiedAt, o.ExpiresAt, at)
 	if err != nil {
 		return fmt.Errorf("consume outcome: %w", err)
 	}
@@ -265,11 +268,11 @@ func (s *tokens) CreateToken(ctx context.Context, signature string, r oauth2prov
 	}
 
 	_, err := db(ctx, s.pool).Exec(ctx, `INSERT INTO oauth2_token (kind, signature, request_id, client_id, requested_at,
-		requested_scopes, granted_scopes, requested_audience, granted_audience, session, expires_at, outcome_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		requested_scopes, granted_scopes, requested_audience, granted_audience, session, expires_at, outcome_id, grant_type)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		s.kind, signature, r.RequestID, r.ClientID, r.RequestedAt,
 		nonNil(r.RequestedScopes), nonNil(r.GrantedScopes), nonNil(r.RequestedAudience), nonNil(r.GrantedAudience),
-		r.Session, r.ExpiresAt, nullString(r.OutcomeID))
+		r.Session, r.ExpiresAt, nullString(r.OutcomeID), r.GrantType)
 	if err != nil {
 		return fmt.Errorf("create %s token: %w", s.kind, err)
 	}
@@ -280,10 +283,10 @@ func (s *tokens) CreateToken(ctx context.Context, signature string, r oauth2prov
 func (s *tokens) GetToken(ctx context.Context, signature string) (oauth2provider.TokenRecord, error) {
 	var r oauth2provider.TokenRecord
 	err := db(ctx, s.pool).QueryRow(ctx, `SELECT request_id, client_id, requested_at, requested_scopes, granted_scopes,
-		requested_audience, granted_audience, session, expires_at, coalesce(outcome_id::text, '')
+		requested_audience, granted_audience, session, expires_at, coalesce(outcome_id::text, ''), grant_type
 		FROM oauth2_token WHERE kind = $1 AND signature = $2`, s.kind, signature).
 		Scan(&r.RequestID, &r.ClientID, &r.RequestedAt, &r.RequestedScopes, &r.GrantedScopes,
-			&r.RequestedAudience, &r.GrantedAudience, &r.Session, &r.ExpiresAt, &r.OutcomeID)
+			&r.RequestedAudience, &r.GrantedAudience, &r.Session, &r.ExpiresAt, &r.OutcomeID, &r.GrantType)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return oauth2provider.TokenRecord{}, oauth2provider.ErrNotFound
 	}

@@ -247,8 +247,9 @@ components:
         scope:
           type: string
           description: >-
-            Space-separated; within the registration token's scopes, and never
-            connector:client_registration itself.
+            Space-separated; within the registration token's scopes or the delegation ceiling the
+            server configures for the registrar (how a verified-presentation scope is registered,
+            since no token carries one), and never connector:client_registration itself.
         dpop_bound_access_tokens:
           type: boolean
     error:

@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
+	"time"
 
 	"authelia.com/provider/oauth2"
 	"authelia.com/provider/oauth2/compose"
@@ -38,6 +40,8 @@ type provider struct {
 
 	// vp is the verified-presentation grant's configuration, nil when the grant is not enabled.
 	vp *verifiedPresentation
+
+	clock *clock
 }
 
 // coreStrategy is what the adapter needs of the token strategy: the HMAC one for opaque tokens or
@@ -77,6 +81,8 @@ func New(cfg oauth2provider.Config, stores oauth2provider.Stores) (oauth2provide
 
 	config.DPoPStrategy = dpop
 
+	clk := &clock{now: time.Now}
+
 	var vpScopes map[string]bool
 	if vp != nil {
 		vpScopes = vp.vpScopes
@@ -100,6 +106,7 @@ func New(cfg oauth2provider.Config, stores oauth2provider.Stores) (oauth2provide
 				vp:           vp,
 				store:        store,
 				lifespan:     config.GetAccessTokenLifespan(context.Background()),
+				clock:        clk,
 			}
 		})
 	}
@@ -111,11 +118,14 @@ func New(cfg oauth2provider.Config, stores oauth2provider.Stores) (oauth2provide
 		return nil, fmt.Errorf("oauth2provider: the library composed %T, not its provider", lib)
 	}
 
-	config.RFC7591ClientRegistrationEndpointAuthStrategy = rfc7591.NewDefaultEndpointAuthStrategy(config, store, strategy, strategy)
+	config.RFC7591ClientRegistrationEndpointAuthStrategy = &delegatingAuth{
+		inner:     rfc7591.NewDefaultEndpointAuthStrategy(config, store, strategy, strategy),
+		delegable: cfg.Registration.DelegableScopes,
+	}
 
 	return &provider{
 		config: config, store: store, strategy: strategy, dpop: dpop, lib: lib, fosite: fosite,
-		signed: cfg.AccessTokenSigner != nil, vp: vp,
+		signed: cfg.AccessTokenSigner != nil, vp: vp, clock: clk,
 	}, nil
 }
 
@@ -154,44 +164,12 @@ func (p *provider) TokenHandler() http.Handler {
 			return
 		}
 
-		responseCtx := ctx
+		// The validated grant goes with the token record, independently of anything the grant
+		// handler adds, so the store can hold a verified-presentation token to its outcome.
+		ctx = withGrant(ctx, strings.Join(request.GetGrantTypes(), " "))
 
-		transactional := request.GetGrantTypes().ExactOne(vpGrantType)
-		if transactional {
-			if responseCtx, err = p.store.BeginTX(ctx); err != nil {
-				refuse(request, oauth2.ErrServerError.WithWrap(err))
-
-				return
-			}
-
-			finished := false
-
-			// Rolls back on a panic too; rolling back is a no-op once finished.
-			defer func() {
-				if !finished {
-					_ = p.store.Rollback(responseCtx)
-				}
-			}()
-
-			response, err := p.lib.NewAccessResponse(responseCtx, request)
-			if err == nil {
-				if err = p.store.Commit(responseCtx); err != nil {
-					err = oauth2.ErrServerError.WithWrap(err)
-				}
-			} else {
-				_ = p.store.Rollback(responseCtx)
-			}
-
-			finished = true
-
-			// The transaction is settled before anything is written.
-			if err != nil {
-				refuse(request, err)
-
-				return
-			}
-
-			p.lib.WriteAccessResponse(ctx, w, request, response)
+		if request.GetGrantTypes().ExactOne(vpGrantType) {
+			p.serveTransactional(ctx, w, request, refuse)
 
 			return
 		}
@@ -205,6 +183,49 @@ func (p *provider) TokenHandler() http.Handler {
 
 		p.lib.WriteAccessResponse(ctx, w, request, response)
 	})
+}
+
+// serveTransactional issues a verified-presentation token inside one transaction. NewAccessResponse
+// runs in it; the transaction is settled - committed, or rolled back - before any response is
+// written. A commit that reports an error may still have committed: the request is then answered
+// 500 without the token, and the consumption stands. Nothing ever resets a consumption to
+// compensate. The deferred cleanup covers a panic.
+func (p *provider) serveTransactional(ctx context.Context, w http.ResponseWriter, request oauth2.AccessRequester, refuse func(oauth2.AccessRequester, error)) {
+	txCtx, err := p.store.BeginTX(ctx)
+	if err != nil {
+		refuse(request, oauth2.ErrServerError.WithWrap(err))
+
+		return
+	}
+
+	settled := false
+
+	defer func() {
+		if !settled {
+			_ = p.store.Rollback(txCtx)
+		}
+	}()
+
+	response, err := p.lib.NewAccessResponse(txCtx, request)
+	if err == nil {
+		if err = p.store.Commit(txCtx); err == nil {
+			settled = true
+			p.lib.WriteAccessResponse(ctx, w, request, response)
+
+			return
+		}
+
+		err = oauth2.ErrServerError.WithWrap(err)
+	}
+
+	// Cleanup runs before the error is written, after a failed commit as well: a transactor whose
+	// commit failed without settling must not keep its writes or locks. Rolling back a transaction
+	// that did commit changes nothing.
+	if rollbackErr := p.store.Rollback(txCtx); rollbackErr == nil {
+		settled = true
+	}
+
+	refuse(request, err)
 }
 
 // RegistrationHandler implements oauth2provider.Provider.

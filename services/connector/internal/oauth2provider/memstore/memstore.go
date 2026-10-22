@@ -2,8 +2,10 @@
 // stores. Nothing is persisted: it is meant for tests and local development.
 //
 // Transactions are serialised and undo-logged: one transaction runs at a time, and a rollback
-// undoes the client, token, challenge and outcome writes made with its context. Its writes are
-// visible to readers outside it before it commits.
+// undoes the token creations, challenge creations and consumptions, and outcome consumptions made
+// with its context. Nothing else is transactional: client changes and token deletions take effect
+// at once and are not undone. A transaction's writes are visible to readers outside it before it
+// commits. That is all the verified-presentation grant needs.
 package memstore
 
 import (
@@ -29,7 +31,7 @@ func New(now func() time.Time) oauth2provider.Stores {
 		RegistrationTokens: &tokenStore{tokens: map[string]oauth2provider.TokenRecord{}, outcomes: map[string]bool{}},
 		DPoPNonces:         &expiringSet{now: now, entries: map[string]time.Time{}},
 		DPoPReplay:         &replayStore{set: expiringSet{now: now, entries: map[string]time.Time{}}},
-		Challenges:         &challengeStore{now: now, challenges: map[string]oauth2provider.Challenge{}},
+		Challenges:         &challengeStore{challenges: map[string]oauth2provider.Challenge{}},
 		Outcomes:           &outcomeStore{outcomes: map[string]oauth2provider.VerifiedOutcome{}},
 		Transactions:       &transactor{},
 	}
@@ -97,7 +99,6 @@ func onRollback(ctx context.Context, undo func()) {
 
 type challengeStore struct {
 	mu         sync.Mutex
-	now        func() time.Time
 	challenges map[string]oauth2provider.Challenge
 }
 
@@ -127,11 +128,14 @@ func (s *challengeStore) GetChallenge(_ context.Context, value string) (oauth2pr
 	return c, nil
 }
 
-func (s *challengeStore) ConsumeChallenge(ctx context.Context, value, clientID, audience string) error {
+// LockChallenge is GetChallenge: a transaction already excludes every other one.
+func (s *challengeStore) LockChallenge(ctx context.Context, value string) (oauth2provider.Challenge, error) {
+	return s.GetChallenge(ctx, value)
+}
+
+func (s *challengeStore) ConsumeChallenge(ctx context.Context, value, clientID, audience string, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	now := s.now()
 
 	c, ok := s.challenges[value]
 	if !ok || c.ClientID != clientID || c.Audience != audience || !c.ConsumedAt.IsZero() || !now.Before(c.ExpiresAt) {
@@ -151,7 +155,7 @@ type outcomeStore struct {
 	outcomes map[string]oauth2provider.VerifiedOutcome
 }
 
-func (s *outcomeStore) ConsumeOutcome(ctx context.Context, o oauth2provider.VerifiedOutcome) error {
+func (s *outcomeStore) ConsumeOutcome(ctx context.Context, o oauth2provider.VerifiedOutcome, _ time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -223,10 +227,15 @@ type tokenStore struct {
 	outcomes map[string]bool
 }
 
-// CreateToken keeps an outcome id unique, as the database does.
+// CreateToken keeps the database's rules: an outcome id is unique, a verified-presentation token
+// has one and no other token does.
 func (s *tokenStore) CreateToken(ctx context.Context, signature string, record oauth2provider.TokenRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if (record.GrantType == oauth2provider.VerifiedPresentationGrantType) != (record.OutcomeID != "") {
+		return errors.New("create token: a verified-presentation token has an outcome id and no other token does")
+	}
 
 	if record.OutcomeID != "" {
 		if s.outcomes[record.OutcomeID] {

@@ -34,7 +34,13 @@ var (
 type (
 	inTxKey      struct{}
 	outcomeIDKey struct{}
+	grantKey     struct{}
 )
+
+// withGrant records the grant TokenHandler validated, which the token record keeps.
+func withGrant(ctx context.Context, grant string) context.Context {
+	return context.WithValue(ctx, grantKey{}, grant)
+}
 
 // BeginTX implements the library's storage.Transactional over Stores.Transactions. Every store call
 // made with the returned context, nonces and replay records excepted, is part of the transaction.
@@ -156,9 +162,13 @@ func (s *storeAdapter) DeleteClientRegistrationTokenSession(ctx context.Context,
 // createToken persists what is needed to validate the token later. The
 // request form is deliberately left out: it can carry client credentials.
 func createToken(ctx context.Context, store oauth2provider.TokenStore, signature string, request oauth2.Requester) error {
-	outcomeID, onOutcome := ctx.Value(outcomeIDKey{}).(string)
-	if onOutcome && outcomeID == "" {
-		return errors.New("a token issued on an outcome needs the outcome id")
+	outcomeID, _ := ctx.Value(outcomeIDKey{}).(string)
+	grant, _ := ctx.Value(grantKey{}).(string)
+
+	// The grant comes from TokenHandler, the outcome from the grant handler: each is checked against
+	// the other, so neither alone can produce a verified-presentation token without its outcome.
+	if (grant == oauth2provider.VerifiedPresentationGrantType) != (outcomeID != "") {
+		return errors.New("a verified-presentation token needs its outcome id, and no other token may carry one")
 	}
 
 	session, expiresAt, err := encodeSession(request.GetSession(), outcomeID)
@@ -177,6 +187,7 @@ func createToken(ctx context.Context, store oauth2provider.TokenStore, signature
 		Session:           session,
 		ExpiresAt:         expiresAt,
 		OutcomeID:         outcomeID,
+		GrantType:         grant,
 	})
 }
 

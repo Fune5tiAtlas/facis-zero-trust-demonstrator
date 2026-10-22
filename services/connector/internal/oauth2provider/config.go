@@ -123,4 +123,11 @@ type RegistrationConfig struct {
 
 	// GrantTypes restricts the grant types a client may register for.
 	GrantTypes []string
+
+	// DelegableScopes is, per registrar client id, the scopes that registrar may grant to the
+	// clients it registers, in addition to the scopes of the token it registers with. It is
+	// consulted by registration only: the registrar itself is never issued these scopes. It is how
+	// a client is registered for a verified-presentation scope, which client_credentials never
+	// issues. RegistrationScope is never delegable.
+	DelegableScopes map[string][]string
 }
