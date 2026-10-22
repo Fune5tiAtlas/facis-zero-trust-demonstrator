@@ -37,7 +37,7 @@ import (
 // token store, services/token-store/internal/schema) that this build needs. A test keeps it equal to
 // the newest migration file, so a new migration makes whoever adds it decide whether the connector
 // needs it.
-const schemaVersion = 2
+const schemaVersion = 3
 
 // D8: a proof is acceptable for lifespan + skew after iat and iat may lie skew ahead, so a lost replay
 // record exposes 60 s + 2·30 s.
@@ -224,7 +224,7 @@ func (s *server) apiRoutes(provider oauth2provider.Provider, signer oauth2provid
 	mux.Handle("POST /oauth2/token", provider.TokenHandler())
 	mux.Handle("POST /oauth2/register", provider.RegistrationHandler())
 	mux.Handle("GET /.well-known/jwks.json", jwksHandler(signer))
-	// The challenge endpoint (P5) is one line here, beside the token endpoint it feeds.
+	mux.Handle("POST /oauth2/challenge", provider.ChallengeHandler())
 	return s.correlate(bounded(mux))
 }
 
