@@ -1,6 +1,10 @@
 package oauth2provider
 
-import "time"
+import (
+	"context"
+	"crypto/ecdsa"
+	"time"
+)
 
 // RegistrationScope is the scope an access token must carry, together with
 // the registration endpoint as its audience, to register a client.
@@ -21,6 +25,30 @@ type Config struct {
 
 	DPoP         DPoPConfig
 	Registration RegistrationConfig
+
+	// Issuer is the iss claim of signed access tokens. Required when
+	// AccessTokenSigner is set, unused otherwise.
+	Issuer string
+
+	// AccessTokenSigner, when set, makes access tokens RFC 9068 JWTs signed
+	// with ES256 by this signer, and AccessTokenLifespan defaults to five
+	// minutes. When nil, access tokens are opaque and signed with Secret.
+	// Registration access tokens are opaque either way.
+	AccessTokenSigner TokenSigner
+}
+
+// TokenSigner signs access tokens with an ECDSA P-256 key whose private half
+// may be held outside the process.
+type TokenSigner interface {
+	// KeyID is the kid of the signing key, as published in the key set.
+	KeyID() string
+
+	// Public is the signing key's public half.
+	Public() *ecdsa.PublicKey
+
+	// Sign signs the JWS signing input with ES256 and returns the 64-byte
+	// R||S signature. ctx is the context of the request being served.
+	Sign(ctx context.Context, signingInput []byte) ([]byte, error)
 }
 
 // DPoPConfig configures RFC 9449 behaviour.

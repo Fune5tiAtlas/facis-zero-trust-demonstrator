@@ -36,6 +36,8 @@ type Config struct, field 0 Secret []byte
 type Config struct, field 1 AccessTokenLifespan time.Duration
 type Config struct, field 2 DPoP DPoPConfig
 type Config struct, field 3 Registration RegistrationConfig
+type Config struct, field 4 Issuer string
+type Config struct, field 5 AccessTokenSigner TokenSigner
 type DPoPConfig struct
 type DPoPConfig struct, field 0 Enforce bool
 type DPoPConfig struct, field 1 NonceRequired bool
@@ -96,6 +98,10 @@ type TokenRecord struct, field 5 RequestedAudience []string
 type TokenRecord struct, field 6 GrantedAudience []string
 type TokenRecord struct, field 7 Session []byte
 type TokenRecord struct, field 8 ExpiresAt time.Time
+type TokenSigner interface
+type TokenSigner interface, KeyID() string
+type TokenSigner interface, Public() *crypto/ecdsa.PublicKey
+type TokenSigner interface, Sign(context.Context, []byte) ([]byte, error)
 type TokenStore interface
 type TokenStore interface, CreateToken(context.Context, string, TokenRecord) error
 type TokenStore interface, DeleteToken(context.Context, string) error
