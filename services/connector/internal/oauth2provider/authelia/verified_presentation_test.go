@@ -1004,7 +1004,9 @@ func TestVP_ExpiryIsJudgedAfterTheChallengeLock(t *testing.T) {
 				t.Fatal("the request never waited on the challenge lock")
 			}
 
-			_ = h.pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_locks WHERE NOT granted`).Scan(&waiting)
+			// Scoped to this test's database: the server is shared with other tests.
+			_ = h.pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_stat_activity
+				WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting)
 			time.Sleep(10 * time.Millisecond)
 		}
 	} else {
