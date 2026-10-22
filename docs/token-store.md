@@ -107,12 +107,13 @@ ever restarts the pod. `/readyz` answers 200 only when every dependency is there
 the store needs, 503 otherwise, and names what it found:
 
 ```json
-{"ready": false, "checks": {"postgres": "ok", "openbao": "sealed"}}
+{"ready": false, "checks": {"postgres": "ok", "openbao": "sealed", "signing_key": "ok"}}
 ```
 
 The words are the whole vocabulary: `ok`, `unreachable`, `schema_behind` and `schema_drift` for
-PostgreSQL; `ok`, `unreachable`, `uninitialized` and `sealed` for the key-value store. Nothing a
-dependency says, no address and no credential, reaches the body. Both checks run at once under
+PostgreSQL; `ok`, `unreachable`, `uninitialized` and `sealed` for the key-value store; `ok`,
+`unreachable`, `missing`, `mismatch` and `unconfigured` for the signing keys. Nothing a
+dependency says, no address and no credential, reaches the body. The three checks run at once under
 the readiness budget, and a check that has not answered when the budget ends counts as
 `unreachable`, whatever it is doing. One evaluation runs at a time: callers that arrive while it
 runs share its result, so a burst of `/readyz` on the published port costs one connection and one
@@ -129,10 +130,14 @@ ends gets its cut-off words but records no transition. A service that was asked 
 `{"ready": false, "draining": true, ...}` whatever the dependencies say.
 
 The contract describes a ready store as one where "PostgreSQL is reachable, migrations are
-current and every active key reference resolves". The last clause presupposes a reachable
-key-value store and belongs to key custody, which follows; until then readiness is the first two
-clauses and the key-value store being usable. The store fails closed either way: not ready means
-no traffic.
+current and every active key reference resolves". The last clause is the `signing_key` check
+(D9): every `active` row of `signing_key` is read, and its `key_ref` must name a version of the
+configured transit key whose public key has the row's `jkt` as RFC 7638 thumbprint. A version
+transit does not have, or a malformed reference, is `missing`; another key or another thumbprint
+is `mismatch`; active rows with no transit key configured (no `--acquire-config`) are
+`unconfigured`; a database or transit that does not answer is `unreachable`. No active row is
+`ok`: a store that has not yet acquired holds no reference. Only public keys enter the process. The
+store fails closed: not ready means no traffic.
 
 ### Records and correlation
 

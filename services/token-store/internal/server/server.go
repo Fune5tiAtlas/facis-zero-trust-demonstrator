@@ -127,7 +127,8 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*Server, error) {
 		}
 		s.renewal = &renew.Worker{DB: pool, Acquirer: acquirer, Routes: *a, Instance: instance, Log: log}
 	}
-	s.ready = &readiness{timeout: cfg.ReadinessTimeout, postgres: s.checkPostgres, openbao: s.checkOpenBao}
+	s.ready = &readiness{timeout: cfg.ReadinessTimeout, postgres: s.checkPostgres, openbao: s.checkOpenBao,
+		signingKey: s.checkSigningKey}
 
 	s.apiLn, err = net.Listen("tcp", cfg.Addr)
 	if err != nil {

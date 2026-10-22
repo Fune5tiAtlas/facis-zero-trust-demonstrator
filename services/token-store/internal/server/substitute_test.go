@@ -30,6 +30,7 @@ import (
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/acquire"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/acquire/acquiretest"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/caller"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/keys"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/testsupport"
 )
 
@@ -678,5 +679,62 @@ func TestSubstitute_StoreFailuresAre503AndAPeerRefusalIs409(t *testing.T) {
 	}
 	if !strings.Contains(e.logs.String(), "CRED-OUTCOME-SIGNATURE") {
 		t.Error("the peer's refusal reason was not logged")
+	}
+}
+
+// Readiness resolves every active signing_key reference through transit (D9): a reference to a
+// real version with its thumbprint is ready; a version transit does not have, or another
+// thumbprint, is not; references with no transit key configured are not either.
+func TestReadyz_ResolvesActiveSigningKeys(t *testing.T) {
+	e := newSubEnv(t, false)
+	s, _ := e.server()
+	ctx := t.Context()
+	signing := func() string {
+		t.Helper()
+		rep := s.ready.run(ctx)
+		if rep.Ready != (rep.Checks.SigningKey == checkOK) {
+			t.Fatalf("ready %v with signing_key %q: %+v", rep.Ready, rep.Checks.SigningKey, rep.Checks)
+		}
+		return rep.Checks.SigningKey
+	}
+	if w := signing(); w != checkOK {
+		t.Fatalf("no active reference: %q", w)
+	}
+	kv, jkt, err := keys.Keys{Signer: e.bao, Name: e.loaded.SigningKey}.Ensure(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.poolA.Exec(ctx, `INSERT INTO signing_key (key_ref, jkt, alg, state) VALUES ($1, $2, 'ES256', 'active')`,
+		kv.Ref(), jkt); err != nil {
+		t.Fatal(err)
+	}
+	if w := signing(); w != checkOK {
+		t.Fatalf("a valid reference: %q", w)
+	}
+	set := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := e.poolA.Exec(ctx, sql, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set(`UPDATE signing_key SET jkt = $1`, strings.Repeat("A", 43))
+	if w := signing(); w != checkMismatch {
+		t.Errorf("another thumbprint: %q, want %q", w, checkMismatch)
+	}
+	set(`UPDATE signing_key SET jkt = $1, key_ref = $2`, jkt, transit.KeyVersion{Name: kv.Name, Version: kv.Version + 7}.Ref())
+	if w := signing(); w != checkMissing {
+		t.Errorf("a version transit does not have: %q, want %q", w, checkMissing)
+	}
+	set(`UPDATE signing_key SET key_ref = $1`, kv.Ref())
+	if w := signing(); w != checkOK {
+		t.Fatalf("restored: %q", w)
+	}
+	s.cfg.Acquisition = nil
+	if w := signing(); w != checkUnconfigured {
+		t.Errorf("no transit key configured: %q, want %q", w, checkUnconfigured)
+	}
+	set(`UPDATE signing_key SET state = 'retired', retired_at = now()`)
+	if w := signing(); w != checkOK {
+		t.Errorf("only a retired reference: %q", w)
 	}
 }
