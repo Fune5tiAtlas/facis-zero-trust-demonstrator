@@ -1,0 +1,322 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+)
+
+func serveEnv(values map[string]string) func(string) string {
+	return func(name string) string { return values[name] }
+}
+
+const testDatabase = "postgres://u:hunter2@127.0.0.1:1/x?sslmode=disable&connect_timeout=1"
+
+// required is a complete environment; each case removes or overrides what it tests.
+func required(over map[string]string) func(string) string {
+	env := map[string]string{
+		"CONNECTOR_DATABASE_URL":             testDatabase,
+		"CONNECTOR_OPENBAO_URL":              "http://127.0.0.1:1",
+		"CONNECTOR_OPENBAO_TOKEN_FILE":       "/run/bao-token",
+		"CONNECTOR_ISSUER":                   "https://connector.example",
+		"CONNECTOR_SIGNING_KEY":              "connector-at",
+		"CONNECTOR_SIGNING_KEY_VERSION":      "1",
+		"CONNECTOR_REGISTRATION_ENDPOINT":    "https://connector.example/oauth2/register",
+		"CONNECTOR_TOKEN_SECRET_FILE":        "/run/token-secret",
+		"CONNECTOR_REGISTRATION_SECRET_FILE": "/run/registration-secret",
+	}
+	for k, v := range over {
+		if v == "" {
+			delete(env, k)
+		} else {
+			env[k] = v
+		}
+	}
+	return serveEnv(env)
+}
+
+func TestParseServe(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    []string
+		env     func(string) string
+		wantErr string
+		check   func(t *testing.T, c config)
+	}{
+		{name: "defaults", env: required(nil), check: func(t *testing.T, c config) {
+			if c.addr != ":8080" || c.opsAddr != ":9090" || c.accessTokenLifespan != 300*time.Second || !c.dpopEnforce || !c.dpopNonce ||
+				c.readinessTimeout != 2*time.Second || c.drainDelay != 5*time.Second || c.shutdownTimeout != 10*time.Second || c.signingKeyVersion != 1 {
+				t.Errorf("defaults: %+v", c)
+			}
+		}},
+		{name: "environment fills every flag", env: required(map[string]string{
+			"CONNECTOR_ADDR": ":1", "CONNECTOR_OPS_ADDR": ":2", "CONNECTOR_SIGNING_KEY_VERSION": "7",
+			"CONNECTOR_ACCESS_TOKEN_LIFESPAN": "1m", "CONNECTOR_DPOP_ENFORCE": "false", "CONNECTOR_DPOP_NONCE": "0",
+			"CONNECTOR_READINESS_TIMEOUT": "750ms", "CONNECTOR_DRAIN_DELAY": "0s", "CONNECTOR_SHUTDOWN_TIMEOUT": "3s", "CONNECTOR_LOG_LEVEL": "debug",
+		}), check: func(t *testing.T, c config) {
+			if c.addr != ":1" || c.opsAddr != ":2" || c.signingKeyVersion != 7 || c.accessTokenLifespan != time.Minute || c.dpopEnforce || c.dpopNonce ||
+				c.readinessTimeout != 750*time.Millisecond || c.drainDelay != 0 || c.shutdownTimeout != 3*time.Second ||
+				c.openBaoTokenFile != "/run/bao-token" || c.tokenSecretFile != "/run/token-secret" {
+				t.Errorf("from the environment: %+v", c)
+			}
+		}},
+		{name: "flag beats environment", args: []string{"--addr", ":7", "--signing-key-version", "3", "--dpop-nonce=false", "--readiness-timeout", "1s"},
+			env: required(map[string]string{"CONNECTOR_ADDR": ":1", "CONNECTOR_DPOP_NONCE": "true", "CONNECTOR_READINESS_TIMEOUT": "soon"}),
+			check: func(t *testing.T, c config) {
+				if c.addr != ":7" || c.signingKeyVersion != 3 || c.dpopNonce || c.readinessTimeout != time.Second {
+					t.Errorf("flags: %+v", c)
+				}
+			}},
+		{name: "no database", env: required(map[string]string{"CONNECTOR_DATABASE_URL": ""}), wantErr: "--database-url"},
+		{name: "no OpenBao", env: required(map[string]string{"CONNECTOR_OPENBAO_URL": ""}), wantErr: "--openbao-url"},
+		{name: "no OpenBao token file", env: required(map[string]string{"CONNECTOR_OPENBAO_TOKEN_FILE": ""}), wantErr: "--openbao-token-file"},
+		{name: "no issuer", env: required(map[string]string{"CONNECTOR_ISSUER": ""}), wantErr: "--issuer"},
+		{name: "no signing key", env: required(map[string]string{"CONNECTOR_SIGNING_KEY": ""}), wantErr: "--signing-key"},
+		{name: "no key version", env: required(map[string]string{"CONNECTOR_SIGNING_KEY_VERSION": ""}), wantErr: "--signing-key-version"},
+		{name: "no registration endpoint", env: required(map[string]string{"CONNECTOR_REGISTRATION_ENDPOINT": ""}), wantErr: "--registration-endpoint"},
+		{name: "no token secret file", env: required(map[string]string{"CONNECTOR_TOKEN_SECRET_FILE": ""}), wantErr: "--token-secret-file"},
+		{name: "no registration secret file", env: required(map[string]string{"CONNECTOR_REGISTRATION_SECRET_FILE": ""}), wantErr: "--registration-secret-file"},
+		{name: "issuer over http", args: []string{"--issuer", "http://connector.example"}, env: required(nil), wantErr: "https://"},
+		{name: "relative registration endpoint", args: []string{"--registration-endpoint", "/oauth2/register"}, env: required(nil), wantErr: "absolute"},
+		{name: "OpenBao with a path", args: []string{"--openbao-url", "http://bao:8200/v1"}, env: required(nil), wantErr: "http(s)://host"},
+		{name: "zero lifespan", args: []string{"--access-token-lifespan", "0"}, env: required(nil), wantErr: "lifespan"},
+		{name: "negative drain delay", args: []string{"--drain-delay", "-1s"}, env: required(nil), wantErr: "drain delay"},
+		{name: "bad bool in the environment", env: required(map[string]string{"CONNECTOR_DPOP_ENFORCE": "maybe"}), wantErr: "CONNECTOR_DPOP_ENFORCE"},
+		{name: "bad version in the environment", env: required(map[string]string{"CONNECTOR_SIGNING_KEY_VERSION": "v1"}), wantErr: "CONNECTOR_SIGNING_KEY_VERSION"},
+		{name: "bad level", args: []string{"--log-level", "loud"}, env: required(nil), wantErr: "--log-level"},
+		{name: "help", args: []string{"-h"}, env: required(nil), wantErr: "help requested"},
+		{name: "stray argument", args: []string{"extra"}, env: required(nil), wantErr: "unexpected argument"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var errOut bytes.Buffer
+			got, err := parseServe(tc.args, tc.env, &errOut)
+			if strings.Contains(errOut.String(), "hunter2") {
+				t.Errorf("the database URL reached the usage text:\n%s", errOut.String())
+			}
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.check(t, got.cfg)
+		})
+	}
+}
+
+// schemaVersion follows the token store's migrations: a new migration fails this test until someone
+// decides whether the connector needs it.
+func TestSchemaVersionIsTheNewestMigration(t *testing.T) {
+	files, err := filepath.Glob("../token-store/internal/schema/migrations/*.up.sql")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no migrations: %v", err)
+	}
+	if len(files) != schemaVersion {
+		t.Errorf("schemaVersion is %d, the token store has %d migrations", schemaVersion, len(files))
+	}
+}
+
+// syncBuffer collects records written from other goroutines.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// writeFile writes content to a new file under the test's directory and returns its path.
+func writeFile(t *testing.T, name, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+const (
+	canaryTokenSecret        = "canary-token-secret-0123456789abcdef\n"
+	canaryRegistrationSecret = "canary-registration-secret-0123456789"
+)
+
+// baseArgs are the serve arguments every run shares; later arguments override them.
+func baseArgs(t *testing.T, database, openbao string) []string {
+	return []string{"serve", "--addr", "127.0.0.1:0", "--ops-addr", "127.0.0.1:0",
+		"--database-url", database, "--openbao-url", openbao,
+		"--openbao-token-file", writeFile(t, "bao-token", "dev-token-not-used\n"),
+		"--issuer", "https://connector.example", "--signing-key", "connector-at", "--signing-key-version", "1",
+		"--registration-endpoint", "https://connector.example/oauth2/register",
+		"--token-secret-file", writeFile(t, "token-secret", canaryTokenSecret),
+		"--registration-secret-file", writeFile(t, "registration-secret", canaryRegistrationSecret),
+		"--drain-delay", "300ms", "--shutdown-timeout", "2s"}
+}
+
+func TestServeRefusesMissingOrShortSecrets(t *testing.T) {
+	for name, override := range map[string][]string{
+		"missing token secret":        {"--token-secret-file", filepath.Join(t.TempDir(), "absent")},
+		"short registration secret":   {"--registration-secret-file", writeFile(t, "short", "only-31-bytes-long-0123456789ab\n")},
+		"the same secret for both":    {"--registration-secret-file", writeFile(t, "same", canaryTokenSecret)},
+		"short token secret, no line": {"--token-secret-file", writeFile(t, "short", "x")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var out, errOut syncBuffer
+			code := run(append(baseArgs(t, testDatabase, "http://127.0.0.1:1"), override...), &out, &errOut)
+			if code != exitFailed {
+				t.Fatalf("exit %d, want %d\n%s%s", code, exitFailed, out.String(), errOut.String())
+			}
+			logs := out.String() + errOut.String()
+			if !strings.Contains(logs, "starting the connector") {
+				t.Errorf("the refusal was not recorded:\n%s", logs)
+			}
+			for _, secret := range []string{"hunter2", strings.TrimSpace(canaryTokenSecret), canaryRegistrationSecret, "only-31-bytes"} {
+				if strings.Contains(logs, secret) {
+					t.Errorf("%q reached the output:\n%s", secret, logs)
+				}
+			}
+		})
+	}
+}
+
+// running is a serve started by start.
+type running struct {
+	addr, opsAddr string
+	out, errOut   *syncBuffer
+	exit          chan int
+	sawDraining   bool // /readyz answered draining after the signal
+}
+
+// start runs serve in the background and waits for it to report its listeners.
+func start(t *testing.T, args []string) *running {
+	t.Helper()
+	r := &running{out: &syncBuffer{}, errOut: &syncBuffer{}, exit: make(chan int, 1)}
+	go func() { r.exit <- run(args, r.out, r.errOut) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for r.opsAddr == "" && time.Now().Before(deadline) {
+		for _, line := range strings.Split(r.out.String(), "\n") {
+			var raw struct {
+				Msg     string `json:"msg"`
+				Addr    string `json:"addr"`
+				OpsAddr string `json:"ops_addr"`
+			}
+			if json.Unmarshal([]byte(line), &raw) == nil && raw.Msg == "connector listening" {
+				r.addr, r.opsAddr = raw.Addr, raw.OpsAddr
+			}
+		}
+		select {
+		case code := <-r.exit:
+			t.Fatalf("serve exited with %d:\n%s%s", code, r.out.String(), r.errOut.String())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	if r.opsAddr == "" {
+		t.Fatalf("serve never reported listening:\n%s%s", r.out.String(), r.errOut.String())
+	}
+	return r
+}
+
+// stop sends SIGTERM to the running serve and returns its exit code. The signal is for serve's own
+// handler; it is sent only while serve runs.
+func (r *running) stop(t *testing.T) int {
+	t.Helper()
+	select {
+	case code := <-r.exit:
+		t.Fatalf("serve exited with %d before the signal:\n%s", code, r.out.String())
+	default:
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	// The listeners stay open for the drain delay while readiness already says draining.
+	for range 20 {
+		if code, _, body := get(t, "http://"+r.opsAddr+"/readyz"); code == http.StatusServiceUnavailable && strings.Contains(body, `"draining":true`) {
+			r.sawDraining = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case code := <-r.exit:
+		return code
+	case <-time.After(15 * time.Second):
+		t.Fatal("serve did not exit after SIGTERM")
+		return -1
+	}
+}
+
+func get(t *testing.T, url string, header ...string) (int, http.Header, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i+1 < len(header); i += 2 {
+		req.Header.Set(header[i], header[i+1])
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, resp.Header, string(body)
+}
+
+// With nothing there the connector still starts, stays alive and not ready, serves no token, and
+// stops on SIGTERM: readiness turns to draining at once, then the process exits 0.
+func TestServeStartsWithoutDependenciesAndDrains(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	openbao := "http://" + ln.Addr().String()
+	_ = ln.Close() // nothing listens there now
+
+	r := start(t, baseArgs(t, testDatabase, openbao))
+	if code, _, _ := get(t, "http://"+r.opsAddr+"/healthz"); code != http.StatusOK {
+		t.Errorf("healthz %d", code)
+	}
+	code, hdr, body := get(t, "http://"+r.opsAddr+"/readyz", "X-Request-Id", "cli-probe")
+	if code != http.StatusServiceUnavailable || !strings.Contains(body, `"postgres":"unreachable"`) ||
+		!strings.Contains(body, `"openbao":"unreachable"`) || hdr.Get("X-Request-Id") != "cli-probe" {
+		t.Errorf("readyz %d %s", code, body)
+	}
+	if code, _, _ := get(t, "http://"+r.addr+"/.well-known/jwks.json"); code != http.StatusServiceUnavailable {
+		t.Errorf("jwks before the signer: %d, want 503", code)
+	}
+	if code := r.stop(t); code != exitOK || !r.sawDraining {
+		t.Errorf("exit %d after SIGTERM, readiness drained: %v\n%s", code, r.sawDraining, r.out.String())
+	}
+	logs := r.out.String() + r.errOut.String()
+	if strings.Contains(logs, "hunter2") {
+		t.Errorf("the database password reached the output:\n%s", logs)
+	}
+	for _, want := range []string{`"correlation_id":"cli-probe"`, `"service":"connector"`, `"msg":"signer not ready, retrying"`,
+		`"msg":"draining"`, `"msg":"connector stopped"`} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("records lack %s:\n%s", want, logs)
+		}
+	}
+}
