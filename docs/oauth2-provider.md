@@ -256,6 +256,10 @@ line break in a secret file is not part of the secret.
 | `--registration-endpoint` | `CONNECTOR_REGISTRATION_ENDPOINT` | required | Absolute URL of `POST /oauth2/register` as clients reach it; also the audience a registration token must carry |
 | `--token-secret-file` | `CONNECTOR_TOKEN_SECRET_FILE` | required | File holding the HMAC secret of opaque tokens, 32 bytes or more |
 | `--registration-secret-file` | `CONNECTOR_REGISTRATION_SECRET_FILE` | required | File holding the HMAC secret of registration access tokens, 32 bytes or more, different from the other |
+| `--registrar-id` | `CONNECTOR_REGISTRAR_ID` | required | Client id of the registrar, seeded at start (below) |
+| `--registrar-secret-file` | `CONNECTOR_REGISTRAR_SECRET_FILE` | required | File holding the registrar's client secret, 32 bytes or more |
+| `--registrar-scopes` | `CONNECTOR_REGISTRAR_SCOPES` | required | Comma-separated scopes of the registrar; must include `connector:client_registration`, plus the scopes registered clients may receive |
+| `--registrar-audiences` | `CONNECTOR_REGISTRAR_AUDIENCES` | required | Comma-separated audiences of the registrar: the registration endpoint plus the resource audiences registered clients may name. A registrar token can carry no other, and a client can only register an audience its registrar token carries |
 | `--access-token-lifespan` | `CONNECTOR_ACCESS_TOKEN_LIFESPAN` | `300s` | Lifetime of an access token |
 | `--dpop-enforce` | `CONNECTOR_DPOP_ENFORCE` | `true` | Require a proof from every client (`--dpop-enforce=false` to relax) |
 | `--dpop-nonce` | `CONNECTOR_DPOP_NONCE` | `true` | Challenge with a server nonce |
@@ -265,7 +269,25 @@ line break in a secret file is not part of the secret.
 | `--log-level` | `CONNECTOR_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 
 The DPoP proof window is fixed at 60 s lifespan and 30 s skew. A missing, short or shared secret
-file stops the process at start with exit 1; a usage error exits 2; a clean stop exits 0.
+file stops the process at start with exit 1; a usage error exits 2; a clean stop exits 0. A
+database URL that cannot be parsed is refused as "invalid database configuration" and nothing
+more: the driver's own error repeats the URL with only best-effort masking of the password.
+
+### Registrar bootstrap
+
+Registration takes a token for the registration endpoint (above), so a fresh deployment needs one
+client that can get such a token: the registrar (D12). At start the connector seeds it in the
+background, retrying while the database is not there: client id `--registrar-id`, grant type
+`client_credentials`, DPoP-bound, the configured scopes and audiences, and the secret from
+`--registrar-secret-file` stored as a bcrypt hash (default cost). If the client already exists with
+exactly these settings (the secret verifies against the stored hash, same scopes, audiences, grant
+type and binding) nothing is written. If it exists with any other setting, it is never overwritten:
+the connector logs `registrar client exists with other settings; not overwriting it, not becoming
+ready` and stays not ready until an operator resolves it and restarts it.
+
+The registrar asks for a token with a DPoP proof, `scope` including `connector:client_registration`
+and `audience` naming the registration endpoint and the resource audience the new client will
+register, then posts the client's metadata to `/oauth2/register` with that token.
 
 ### Endpoints
 
@@ -285,10 +307,10 @@ in the background, retrying with backoff up to 30 s, and until that succeeds eve
 health ones answers 503 and readiness is red; a connector started before OpenBao, or before the key
 version exists, starts, stays up and becomes ready on its own.
 
-`/readyz` answers 200 only when all three checks say `ok`, 503 otherwise, with the checks' words:
+`/readyz` answers 200 only when all four checks say `ok`, 503 otherwise, with the checks' words:
 
 ```json
-{"ready": false, "checks": {"postgres": "ok", "openbao": "ok", "signing_key": "missing"}}
+{"ready": false, "checks": {"postgres": "ok", "openbao": "ok", "signing_key": "missing", "registrar": "ok"}}
 ```
 
 - `postgres`: `ok`, `unreachable`, or `schema_behind` when the newest version in `schema_migrations`
@@ -300,8 +322,11 @@ version exists, starts, stays up and becomes ready on its own.
 - `signing_key`: the pinned version is read again and its RFC 7638 thumbprint must equal the
   signer's `kid`: `ok`, `missing` (no such version), `mismatch`, `pending` (signer not built yet) or
   `unreachable`.
+- `registrar`: the bootstrap's outcome, `ok`, `pending` (not seeded yet) or `conflict` (exists with
+  other settings).
 
-The three run at once under the readiness budget; only a change of outcome is logged. On SIGTERM
+The signer and the route table built on it are published together, so readiness can never be green
+while the API still answers 503. The first three checks run at once under the readiness budget; only a change of outcome is logged. On SIGTERM
 `/readyz` answers 503 with `"draining": true` at once, both listeners keep answering for the drain
 delay, then drain within the shutdown timeout, are force-closed if that runs out, and the pool closes.
 
