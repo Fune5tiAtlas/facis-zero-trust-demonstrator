@@ -2,8 +2,19 @@
 package dpopproof
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/jose"
@@ -55,15 +66,175 @@ var (
 	ErrInvalid  = errors.New("dpop: invalid proof")
 	ErrMismatch = errors.New("dpop: proof does not match the request")
 	ErrReplayed = errors.New("dpop: proof replayed")
+
+	// ErrKeyMismatch is the ErrMismatch for a proof key whose thumbprint is not Expect.JKT.
+	ErrKeyMismatch = fmt.Errorf("%w: proof key is not the bound key", ErrMismatch)
 )
 
-// Build signs a proof with key.
+// Build signs a proof with key. A zero IAT means now.
 func Build(ctx context.Context, key Key, c Claims) (string, error) {
-	panic("dpopproof.Build: implemented in P4a")
+	if c.JTI == "" {
+		raw := make([]byte, 16)
+		if _, err := rand.Read(raw); err != nil {
+			return "", fmt.Errorf("dpop: generate jti: %w", err)
+		}
+		c.JTI = base64.RawURLEncoding.EncodeToString(raw)
+	}
+	if c.IAT.IsZero() {
+		c.IAT = time.Now()
+	}
+	payload, err := json.Marshal(wireClaims{JTI: c.JTI, HTM: c.HTM, HTU: c.HTU, IAT: c.IAT.Unix(), ATH: c.ATH, Nonce: c.Nonce})
+	if err != nil {
+		return "", fmt.Errorf("dpop: encode claims: %w", err)
+	}
+	jwk := key.JWK()
+	return jose.Sign(ctx, jose.Header{Typ: Typ, JWK: &jwk}, payload, key.Sign)
 }
 
 // Verify checks the proof against want and policy at now, then records it in store; a store error
 // fails closed.
 func Verify(ctx context.Context, proof string, want Expect, policy Policy, now time.Time, store replay.Store) (Verified, error) {
-	panic("dpopproof.Verify: implemented in P4a")
+	if store == nil {
+		return Verified{}, errors.New("dpop: no replay store")
+	}
+	if len(proof) > maxProofSize {
+		return Verified{}, fmt.Errorf("%w: proof too large", ErrInvalid)
+	}
+	h, payload, err := jose.Verify(proof, jose.HeaderPolicy{Typ: Typ, JWKNeeded: true}, func(h jose.Header) (*ecdsa.PublicKey, error) {
+		return h.JWK.PublicKey()
+	})
+	if err != nil {
+		return Verified{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	jkt, err := h.JWK.Thumbprint()
+	if err != nil {
+		return Verified{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+
+	c, err := parseClaims(payload)
+	if err != nil {
+		return Verified{}, err
+	}
+
+	if c.HTM != want.Method {
+		return Verified{}, fmt.Errorf("%w: htm", ErrMismatch)
+	}
+	htu, err := normalizeURI(c.HTU)
+	if err != nil {
+		return Verified{}, fmt.Errorf("%w: htu: %w", ErrInvalid, err)
+	}
+	wantURI, err := normalizeURI(want.URI)
+	if err != nil || htu != wantURI {
+		return Verified{}, fmt.Errorf("%w: htu", ErrMismatch)
+	}
+
+	if c.IAT.After(now.Add(policy.Skew)) {
+		return Verified{}, fmt.Errorf("%w: iat in the future", ErrInvalid)
+	}
+	notAfter := c.IAT.Add(policy.Lifespan + policy.Skew)
+	if now.After(notAfter) {
+		return Verified{}, fmt.Errorf("%w: proof expired", ErrInvalid)
+	}
+
+	// ath binds the proof to exactly one token: required when one is expected, refused when none is.
+	if want.AccessToken != "" {
+		digest := sha256.Sum256([]byte(want.AccessToken))
+		if !equal(c.ATH, base64.RawURLEncoding.EncodeToString(digest[:])) {
+			return Verified{}, fmt.Errorf("%w: ath", ErrMismatch)
+		}
+	} else if c.ATH != "" {
+		return Verified{}, fmt.Errorf("%w: ath without an access token", ErrMismatch)
+	}
+	if want.JKT != "" && !equal(jkt, want.JKT) {
+		return Verified{}, ErrKeyMismatch
+	}
+	if want.Nonce != "" && !equal(c.Nonce, want.Nonce) {
+		return Verified{}, fmt.Errorf("%w: nonce", ErrMismatch)
+	}
+
+	fresh, err := store.TryUse(ctx, replay.Use{JKT: jkt, Method: c.HTM, URI: htu, JTI: c.JTI, NotAfter: notAfter})
+	if err != nil {
+		return Verified{}, fmt.Errorf("dpop: replay check failed: %w", err)
+	}
+	if !fresh {
+		return Verified{}, ErrReplayed
+	}
+	return Verified{JKT: jkt, Claims: c, NotAfter: notAfter}, nil
 }
+
+// normalizeURI is the htu comparison form (RFC 9449 4.3, RFC 3986 6.2.2-6.2.3): an absolute http or
+// https URI with lowercase scheme and host, without the default port, query, fragment or userinfo,
+// and with an empty path as "/".
+func normalizeURI(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if (scheme != "http" && scheme != "https") || u.Host == "" || u.User != nil || u.Opaque != "" {
+		return "", errors.New("not an absolute http(s) URI")
+	}
+	host, port := strings.ToLower(u.Hostname()), u.Port()
+	if host == "" {
+		return "", errors.New("no host")
+	}
+	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+		port = ""
+	}
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	if port != "" {
+		host += ":" + port
+	}
+	path := u.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	return scheme + "://" + host + path, nil
+}
+
+const (
+	maxProofSize = 8 << 10
+	maxJTI       = 256
+)
+
+type wireClaims struct {
+	JTI   string `json:"jti"`
+	HTM   string `json:"htm"`
+	HTU   string `json:"htu"`
+	IAT   int64  `json:"iat"`
+	ATH   string `json:"ath,omitempty"`
+	Nonce string `json:"nonce,omitempty"`
+}
+
+func parseClaims(payload []byte) (Claims, error) {
+	members, err := jose.ParseObject(payload)
+	if err != nil {
+		return Claims{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	var c Claims
+	for _, f := range []struct {
+		name     string
+		dst      *string
+		required bool
+	}{{"jti", &c.JTI, true}, {"htm", &c.HTM, true}, {"htu", &c.HTU, true}, {"ath", &c.ATH, false}, {"nonce", &c.Nonce, false}} {
+		v, present, ok := jose.String(members, f.name)
+		if (present && !ok) || (f.required && v == "") {
+			return Claims{}, fmt.Errorf("%w: claim %s", ErrInvalid, f.name)
+		}
+		*f.dst = v
+	}
+	if len(c.JTI) > maxJTI {
+		return Claims{}, fmt.Errorf("%w: jti too long", ErrInvalid)
+	}
+	// ponytail: iat must be an integer; a fractional NumericDate is refused, none of our minters emit one.
+	iat, err := strconv.ParseInt(string(bytes.TrimSpace(members["iat"])), 10, 64)
+	if err != nil || iat <= 0 {
+		return Claims{}, fmt.Errorf("%w: claim iat", ErrInvalid)
+	}
+	c.IAT = time.Unix(iat, 0)
+	return c, nil
+}
+
+func equal(a, b string) bool { return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1 }

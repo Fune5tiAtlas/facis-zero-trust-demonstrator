@@ -4,9 +4,19 @@
 package jose
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"math/big"
+	"strings"
+	"unicode/utf8"
 )
 
 // AlgES256 is the only signature algorithm accepted or produced.
@@ -48,21 +58,290 @@ var (
 	ErrSignature = errors.New("jose: signature does not verify")
 )
 
-// Sign builds a compact JWS of payload with header h.
+// Sign builds a compact JWS of payload with header h. The header alg is always ES256.
 func Sign(ctx context.Context, h Header, payload []byte, sign SignFunc) (string, error) {
-	panic("jose.Sign: implemented in P4a")
+	h.Alg = AlgES256
+	header, err := json.Marshal(h)
+	if err != nil {
+		return "", fmt.Errorf("jose: encode header: %w", err)
+	}
+	signingInput := b64(header) + "." + b64(payload)
+	sig, err := sign(ctx, []byte(signingInput))
+	if err != nil {
+		return "", fmt.Errorf("jose: sign: %w", err)
+	}
+	if len(sig) != sigSize {
+		return "", fmt.Errorf("jose: signer returned %d bytes, want %d", len(sig), sigSize)
+	}
+	return signingInput + "." + b64(sig), nil
 }
 
 // Verify checks the compact JWS against policy and the key from key, and returns its header and payload.
 func Verify(token string, policy HeaderPolicy, key KeyFunc) (Header, []byte, error) {
-	panic("jose.Verify: implemented in P4a")
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return Header{}, nil, fmt.Errorf("%w: want three parts", ErrMalformed)
+	}
+	rawHeader, err := decodeB64(parts[0])
+	if err != nil {
+		return Header{}, nil, fmt.Errorf("%w: header encoding", ErrMalformed)
+	}
+	payload, err := decodeB64(parts[1])
+	if err != nil {
+		return Header{}, nil, fmt.Errorf("%w: payload encoding", ErrMalformed)
+	}
+	sig, err := decodeB64(parts[2])
+	if err != nil {
+		return Header{}, nil, fmt.Errorf("%w: signature encoding", ErrMalformed)
+	}
+
+	h, err := parseHeader(rawHeader, policy)
+	if err != nil {
+		return Header{}, nil, err
+	}
+
+	pub, err := key(h)
+	if err != nil {
+		return Header{}, nil, fmt.Errorf("%w: key: %w", ErrSignature, err)
+	}
+	if pub == nil || pub.Curve != elliptic.P256() {
+		return Header{}, nil, fmt.Errorf("%w: key is not P-256", ErrSignature)
+	}
+
+	if len(sig) != sigSize {
+		return Header{}, nil, fmt.Errorf("%w: signature length", ErrSignature)
+	}
+	r := new(big.Int).SetBytes(sig[:32])
+	s := new(big.Int).SetBytes(sig[32:])
+	n := elliptic.P256().Params().N
+	if r.Sign() <= 0 || s.Sign() <= 0 || r.Cmp(n) >= 0 || s.Cmp(n) >= 0 {
+		return Header{}, nil, fmt.Errorf("%w: R or S out of range", ErrSignature)
+	}
+	// ponytail: ES256 (RFC 7518 3.4) has no low-S rule, so the (R, N-S) twin also verifies; proof
+	// replay is keyed on jti, never on the signature bytes.
+	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+	if !ecdsa.Verify(pub, digest[:], r, s) {
+		return Header{}, nil, ErrSignature
+	}
+	return h, payload, nil
 }
 
-// PublicJWK returns the public JWK of k.
-func PublicJWK(k *ecdsa.PublicKey) JWK { panic("jose.PublicJWK: implemented in P4a") }
+// PublicJWK returns the public JWK of k. A key that is not a valid P-256 point yields the zero JWK.
+func PublicJWK(k *ecdsa.PublicKey) JWK {
+	if k == nil || k.Curve != elliptic.P256() {
+		return JWK{}
+	}
+	point, err := k.Bytes()
+	if err != nil || len(point) != 1+2*coordSize {
+		return JWK{}
+	}
+	return JWK{Kty: "EC", Crv: "P-256", X: b64(point[1 : 1+coordSize]), Y: b64(point[1+coordSize:])}
+}
 
 // Thumbprint returns the RFC 7638 SHA-256 thumbprint of j, base64url without padding.
-func (j JWK) Thumbprint() (string, error) { panic("jose.JWK.Thumbprint: implemented in P4a") }
+func (j JWK) Thumbprint() (string, error) {
+	if _, err := j.PublicKey(); err != nil {
+		return "", err
+	}
+	// RFC 7638 3.2: the required EC members in lexicographic order, no whitespace. X and Y were just
+	// validated as strict base64url, which needs no JSON escaping.
+	canonical := `{"crv":"P-256","kty":"EC","x":"` + j.X + `","y":"` + j.Y + `"}`
+	digest := sha256.Sum256([]byte(canonical))
+	return b64(digest[:]), nil
+}
 
 // PublicKey returns j as an ECDSA P-256 public key, refusing any other curve or an off-curve point.
-func (j JWK) PublicKey() (*ecdsa.PublicKey, error) { panic("jose.JWK.PublicKey: implemented in P4a") }
+func (j JWK) PublicKey() (*ecdsa.PublicKey, error) {
+	if j.Kty != "EC" || j.Crv != "P-256" {
+		return nil, fmt.Errorf("%w: jwk is not an EC P-256 key", ErrHeader)
+	}
+	x, errX := decodeB64(j.X)
+	y, errY := decodeB64(j.Y)
+	if errX != nil || errY != nil || len(x) != coordSize || len(y) != coordSize {
+		return nil, fmt.Errorf("%w: jwk coordinates must be 32-byte base64url", ErrHeader)
+	}
+	point := append(append([]byte{4}, x...), y...)
+	pub, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), point)
+	if err != nil {
+		return nil, fmt.Errorf("%w: jwk point is not on P-256", ErrHeader)
+	}
+	return pub, nil
+}
+
+// ParseObject decodes data as one strict JSON object: valid UTF-8, no duplicate member names at any
+// depth, nothing after the object. It returns the top-level members undecoded. Every JSON object the
+// token path reads from a peer (headers, claims, keys) goes through it.
+func ParseObject(data []byte) (map[string]json.RawMessage, error) {
+	if !utf8.Valid(data) {
+		return nil, fmt.Errorf("%w: not UTF-8", ErrMalformed)
+	}
+	trimmed := bytes.TrimLeft(data, " \t\r\n")
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, fmt.Errorf("%w: not a JSON object", ErrMalformed)
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := checkValue(dec, 0); err != nil {
+		return nil, err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, fmt.Errorf("%w: data after the JSON object", ErrMalformed)
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(data, &members); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrMalformed, err)
+	}
+	return members, nil
+}
+
+// String returns members[name] when it is a JSON string; present reports whether the member exists.
+// A member that exists but is not a string yields ok=false.
+func String(members map[string]json.RawMessage, name string) (value string, present, ok bool) {
+	raw, present := members[name]
+	if !present {
+		return "", false, false
+	}
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || raw[0] != '"' {
+		return "", true, false
+	}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", true, false
+	}
+	return value, true, true
+}
+
+const (
+	sigSize   = 64
+	coordSize = 32
+	maxDepth  = 16
+)
+
+var (
+	headerMembers = map[string]bool{"alg": true, "typ": true, "kid": true, "jwk": true}
+	jwkMembers    = map[string]bool{"kty": true, "crv": true, "x": true, "y": true, "kid": true}
+)
+
+func parseHeader(raw []byte, policy HeaderPolicy) (Header, error) {
+	members, err := ParseObject(raw)
+	if err != nil {
+		return Header{}, err
+	}
+	for name := range members {
+		if !headerMembers[name] {
+			return Header{}, fmt.Errorf("%w: member %q", ErrHeader, name)
+		}
+	}
+
+	var h Header
+	var present, ok bool
+	if h.Alg, present, ok = String(members, "alg"); !ok || h.Alg != AlgES256 {
+		return Header{}, fmt.Errorf("%w: alg must be %s", ErrHeader, AlgES256)
+	}
+	if h.Typ, present, ok = String(members, "typ"); present != (policy.Typ != "") || (present && !ok) || h.Typ != policy.Typ {
+		return Header{}, fmt.Errorf("%w: typ must be %q", ErrHeader, policy.Typ)
+	}
+	if h.Kid, present, ok = String(members, "kid"); (present && (!ok || h.Kid == "")) || (policy.KidNeeded && !present) {
+		return Header{}, fmt.Errorf("%w: kid", ErrHeader)
+	}
+
+	rawJWK, present := members["jwk"]
+	if present != policy.JWKNeeded {
+		return Header{}, fmt.Errorf("%w: jwk presence", ErrHeader)
+	}
+	if present {
+		jwk, err := parseJWK(rawJWK)
+		if err != nil {
+			return Header{}, err
+		}
+		h.JWK = &jwk
+	}
+	return h, nil
+}
+
+// parseJWK accepts a public P-256 key with members kty, crv, x, y and optionally kid; any other
+// member, private ones (d) included, is refused.
+func parseJWK(raw []byte) (JWK, error) {
+	members, err := ParseObject(raw)
+	if err != nil {
+		return JWK{}, fmt.Errorf("%w: jwk: %w", ErrHeader, err)
+	}
+	for name := range members {
+		if !jwkMembers[name] {
+			return JWK{}, fmt.Errorf("%w: jwk member %q", ErrHeader, name)
+		}
+	}
+	var j JWK
+	fields := []struct {
+		name     string
+		dst      *string
+		optional bool
+	}{{"kty", &j.Kty, false}, {"crv", &j.Crv, false}, {"x", &j.X, false}, {"y", &j.Y, false}, {"kid", &j.Kid, true}}
+	for _, f := range fields {
+		v, present, ok := String(members, f.name)
+		if (present && !ok) || (!present && !f.optional) {
+			return JWK{}, fmt.Errorf("%w: jwk member %q", ErrHeader, f.name)
+		}
+		*f.dst = v
+	}
+	if _, err := j.PublicKey(); err != nil {
+		return JWK{}, err
+	}
+	return j, nil
+}
+
+// checkValue consumes one JSON value from dec, refusing duplicate object member names.
+func checkValue(dec *json.Decoder, depth int) error {
+	if depth > maxDepth {
+		return fmt.Errorf("%w: JSON nested too deeply", ErrMalformed)
+	}
+	tok, err := dec.Token()
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrMalformed, err)
+	}
+	delim, isDelim := tok.(json.Delim)
+	if !isDelim {
+		return nil
+	}
+	switch delim {
+	case '{':
+		seen := map[string]bool{}
+		for dec.More() {
+			tok, err := dec.Token()
+			if err != nil {
+				return fmt.Errorf("%w: %v", ErrMalformed, err)
+			}
+			name, _ := tok.(string)
+			if seen[name] {
+				return fmt.Errorf("%w: duplicate member %q", ErrMalformed, name)
+			}
+			seen[name] = true
+			if err := checkValue(dec, depth+1); err != nil {
+				return err
+			}
+		}
+	case '[':
+		for dec.More() {
+			if err := checkValue(dec, depth+1); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := dec.Token(); err != nil { // the closing delimiter
+		return fmt.Errorf("%w: %v", ErrMalformed, err)
+	}
+	return nil
+}
+
+// decodeB64 is strict base64url without padding. The alphabet check matters: encoding/base64 skips
+// CR and LF, which would let two different strings decode to the same bytes.
+func decodeB64(s string) ([]byte, error) {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return nil, ErrMalformed
+		}
+	}
+	return base64.RawURLEncoding.Strict().DecodeString(s)
+}
+
+func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
