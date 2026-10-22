@@ -354,7 +354,10 @@ func (s *server) seedRegistrar(ctx context.Context) (same bool, err error) {
 		return false, err
 	}
 	sorted := func(v []string) []string { return slices.Sorted(slices.Values(v)) }
-	return bcrypt.CompareHashAndPassword(stored.SecretHash, s.registrarSecret) == nil &&
+	// Metadata, when present, is what the provider reads instead of the columns below, so a
+	// provisioned registrar carries none: a row with any could grant more than the columns say.
+	return len(stored.Metadata) == 0 &&
+		bcrypt.CompareHashAndPassword(stored.SecretHash, s.registrarSecret) == nil &&
 		slices.Equal(sorted(stored.Scopes), sorted(s.registrar.Scopes)) &&
 		slices.Equal(sorted(stored.Audience), sorted(s.registrar.Audience)) &&
 		slices.Equal(stored.GrantTypes, s.registrar.GrantTypes) && stored.DPoPBound, nil

@@ -244,6 +244,18 @@ func TestServeBootstrapsTheRegistrarAndIssuesVerifiableTokens(t *testing.T) {
 	}
 	logs += otherLogs
 
+	// Columns as configured but metadata on the row: the provider would read the metadata, which can
+	// say more than the columns, so this is a conflict too.
+	if _, err := in.pool.Exec(t.Context(), `UPDATE oauth2_client SET metadata = '{"scope":"connector:client_registration resource.read resource.admin"}' WHERE client_id = $1`, "registrar"); err != nil {
+		t.Fatal(err)
+	}
+	withMetadata := start(t, args)
+	waitFor(t, withMetadata, `"registrar":"conflict"`)
+	if code := withMetadata.stop(t); code != exitOK {
+		t.Errorf("restart with metadata: exit %d", code)
+	}
+	logs += withMetadata.out.String() + withMetadata.errOut.String()
+
 	canaries := map[string]string{
 		"database URL": in.dsn, "postgres scheme": "postgres://", "OpenBao token": in.baoToken,
 		"token secret": strings.TrimSpace(canaryTokenSecret), "registration secret": canaryRegistrationSecret,
