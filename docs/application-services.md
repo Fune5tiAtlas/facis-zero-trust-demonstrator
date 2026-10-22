@@ -98,9 +98,13 @@ For each `/demo` call in token mode the adapter calls `TokenSession.Authorize(ct
 | Resource 401 | 403 | `denied` | `TOKEN_REJECTED` |
 | Resource 403 | 403 | `denied` | `TOKEN_FORBIDDEN` |
 | Resource 503 | 503 | `unavailable` | `TOKEN_RESOURCE_UNAVAILABLE` |
-| Resource answer contains this request's `Authorization` value, bare token or DPoP proof (raw or in any decoded JSON string) | 502 | `error` | `TOKEN_CREDENTIAL_ECHOED` |
-| Resource 200 | 200 | `success` | the Resource's scope-table reason, after the same contract validation as `http-sample` |
+| Resource answer repeats a JSON member name in any object, at any depth (compared after unescaping) | 502 | `error` | `TOKEN_RESOURCE_DUPLICATE_MEMBER` |
+| Resource answer contains this request's `Authorization` value, bare token or DPoP proof, or a standard or URL-safe base64 encoding of one (raw, in any decoded JSON string, or in the result about to be returned) | 502 | `error` | `TOKEN_CREDENTIAL_ECHOED` |
+| Resource answer is not valid against the token-mode contract, including the strict success shape below | 502 | `error` | `TOKEN_RESOURCE_INVALID` |
+| Resource 200 | 200 | `success` | the Resource's scope-table reason |
 | Other documented Resource answers | as for `http-sample` | as for `http-sample` | the Resource's reason |
+
+Token-mode success data must have the documented shape exactly: `resource`, `action` and either `report` (`id`, `title`, `content`) or `summary` (`id`, `title`, `summary`), with no other key. `id` is at most 64 bytes of `A-Z`, `0-9` and `-`; `title` is at most 128 bytes and the text at most 512; no whitespace-separated word may be longer than 32 bytes. This refuses an encoded credential carried whole in a free-form field. A credential split into short fragments is not detected; the bounds only limit how much can be carried. The credential checks run on the body before decoding and again on the result as it will be returned.
 
 The bodies of 401, 403 and 503 answers are not read into the result. For every other answer the Resource's `explanation` is replaced by a fixed local text, so no upstream text is forwarded in token mode.
 

@@ -3,6 +3,7 @@ package participant
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -710,5 +711,170 @@ func TestResetAtRetryBoundaryNeverStartsExtraRun(t *testing.T) {
 		if calls := boot.callCount(); calls != 1 {
 			t.Fatalf("iteration %d: %d Runs, want 1", i, calls)
 		}
+	}
+}
+
+// rawResource answers 200 with the exact body body builds, which sees the request's credential headers.
+func rawResource(t *testing.T, body func(*http.Request) string) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body(r))
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+func unicodeEscaped(value string) string {
+	var out strings.Builder
+	for _, r := range value {
+		fmt.Fprintf(&out, `\u%04x`, r)
+	}
+	return out.String()
+}
+
+func tokenBody(safeData string) string {
+	return `{"requestId":"req-strict","correlationId":"req-strict","source":"sample","mode":"token","outcome":"success",` +
+		`"reasonCode":"RESOURCE_REPORT_RETURNED","explanation":"ok","timestamp":"2026-10-21T09:00:00Z","safeData":` + safeData + `}`
+}
+
+func reportData(id, title, content string) string {
+	return `{"resource":"sample-report","action":"read","report":{"id":"` + id + `","title":"` + title + `","content":"` + content + `"}}`
+}
+
+func TestTokenAdapterRefusesAmbiguousOrFreeFormSuccessBodies(t *testing.T) {
+	t.Parallel()
+
+	bareToken := func(r *http.Request) string {
+		_, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
+		return token
+	}
+	tests := []struct {
+		name       string
+		body       func(*http.Request) string
+		reasonCode string
+	}{
+		{
+			// Decoding into any keeps the last safeData ({}), the struct decode keeps the first; the
+			// escaped canary is invisible to a raw byte match.
+			name: "duplicate top-level safeData hiding an escaped canary",
+			body: func(r *http.Request) string {
+				body := tokenBody(reportData("FACIS-SAMPLE-REPORT-001", "Sample report", unicodeEscaped(bareToken(r))))
+				return strings.TrimSuffix(body, "}") + `,"safeData":{}}`
+			},
+			reasonCode: ReasonTokenDuplicateMember,
+		},
+		{
+			name: "duplicate member nested in the report",
+			body: func(*http.Request) string {
+				return tokenBody(`{"resource":"sample-report","action":"read","report":{"id":"A","title":"T","content":"C","id":"B"}}`)
+			},
+			reasonCode: ReasonTokenDuplicateMember,
+		},
+		{
+			name: "duplicate member inside an array element",
+			body: func(*http.Request) string {
+				return strings.TrimSuffix(tokenBody(reportData("FACIS-SAMPLE-REPORT-001", "Sample report", "Local sample data.")), "}") +
+					`,"extra":[{"k":1,"k":2}]}`
+			},
+			reasonCode: ReasonTokenDuplicateMember,
+		},
+		{
+			name: "unknown key in report data",
+			body: func(*http.Request) string {
+				return tokenBody(`{"resource":"sample-report","action":"read","report":{"id":"FACIS-SAMPLE-REPORT-001","title":"T","content":"C","note":"x"}}`)
+			},
+			reasonCode: ReasonTokenResourceInvalid,
+		},
+		{
+			name: "unknown key beside report data",
+			body: func(*http.Request) string {
+				return tokenBody(`{"resource":"sample-report","action":"read","report":{"id":"FACIS-SAMPLE-REPORT-001","title":"T","content":"C"},"note":"x"}`)
+			},
+			reasonCode: ReasonTokenResourceInvalid,
+		},
+		{
+			name: "base64 of the token in a known field",
+			body: func(r *http.Request) string {
+				return tokenBody(reportData("FACIS-SAMPLE-REPORT-001", "Sample report", "data "+base64.StdEncoding.EncodeToString([]byte(bareToken(r)))))
+			},
+			reasonCode: ReasonTokenCredentialEchoed,
+		},
+		{
+			name: "base64url of the DPoP proof in a known field",
+			body: func(r *http.Request) string {
+				return tokenBody(reportData("FACIS-SAMPLE-REPORT-001", "Sample report", base64.RawURLEncoding.EncodeToString([]byte(r.Header.Get("DPoP")))))
+			},
+			reasonCode: ReasonTokenCredentialEchoed,
+		},
+		{
+			name: "long unbroken word in a known field",
+			body: func(*http.Request) string {
+				return tokenBody(reportData("FACIS-SAMPLE-REPORT-001", "Sample report", "data "+strings.Repeat("QUJD", 9)))
+			},
+			reasonCode: ReasonTokenResourceInvalid,
+		},
+		{
+			name: "id outside the seed alphabet",
+			body: func(*http.Request) string {
+				return tokenBody(reportData("facis.sample/001", "Sample report", "Local sample data."))
+			},
+			reasonCode: ReasonTokenResourceInvalid,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var logs bytes.Buffer
+			participant := readyParticipant(t, rawResource(t, test.body), &countingSession{}, &logs)
+			result, status := postDemo(t, participant, `{"resource":"sample-report","action":"read","requestId":"req-strict"}`)
+			assertDemoResultMode(t, result, status, http.StatusBadGateway, OutcomeError, test.reasonCode, ModeToken)
+			raw, _ := json.Marshal(result)
+			for _, leak := range []string{canaryToken, "proof-POST"} {
+				if strings.Contains(string(raw), leak) || strings.Contains(logs.String(), leak) {
+					t.Fatalf("%q forwarded; body %s logs %s", leak, raw, logs.String())
+				}
+			}
+			if len(result.SafeData) != 0 {
+				t.Fatalf("refused answer forwarded data: %+v", result.SafeData)
+			}
+		})
+	}
+
+	t.Run("documented seed shape is still accepted", func(t *testing.T) {
+		t.Parallel()
+		participant := readyParticipant(t, rawResource(t, func(*http.Request) string {
+			return tokenBody(reportData("FACIS-SAMPLE-REPORT-001", "FACIS deterministic sample report", "Local sample data for F04 / WP09 / ZT-75 testing only."))
+		}), &countingSession{}, io.Discard)
+		result, status := postDemo(t, participant, `{"resource":"sample-report","action":"read","requestId":"req-strict"}`)
+		assertDemoResultMode(t, result, status, http.StatusOK, OutcomeSuccess, "RESOURCE_REPORT_RETURNED", ModeToken)
+	})
+}
+
+func TestHasDuplicateMembers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		raw       string
+		duplicate bool
+		invalid   bool
+	}{
+		{name: "flat unique", raw: `{"a":1,"b":{"a":2}}`},
+		{name: "same name in sibling objects", raw: `[{"a":1},{"a":2}]`},
+		{name: "string value equal to a later key", raw: `{"a":"b","b":1}`},
+		{name: "top-level duplicate", raw: `{"a":1,"a":2}`, duplicate: true},
+		{name: "escaped duplicate", raw: `{"a":1,"a":2}`, duplicate: true},
+		{name: "deep duplicate after nested values", raw: `{"x":{"y":[1,{"z":[]}],"y":0}}`, duplicate: true},
+		{name: "malformed", raw: `{"a":`, invalid: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			duplicate, err := hasDuplicateMembers([]byte(test.raw))
+			if duplicate != test.duplicate || (err != nil) != test.invalid {
+				t.Fatalf("hasDuplicateMembers(%s) = %v, %v", test.raw, duplicate, err)
+			}
+		})
 	}
 }

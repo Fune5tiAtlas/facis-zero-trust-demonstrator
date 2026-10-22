@@ -3,8 +3,11 @@ package participant
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -18,6 +21,8 @@ const (
 	ReasonTokenForbidden           = "TOKEN_FORBIDDEN"
 	ReasonTokenResourceUnavailable = "TOKEN_RESOURCE_UNAVAILABLE"
 	ReasonTokenCredentialEchoed    = "TOKEN_CREDENTIAL_ECHOED"
+	ReasonTokenDuplicateMember     = "TOKEN_RESOURCE_DUPLICATE_MEMBER"
+	ReasonTokenResourceInvalid     = "TOKEN_RESOURCE_INVALID"
 )
 
 // tokenExplanations replaces every Resource explanation in token mode: upstream text is never forwarded.
@@ -83,38 +88,76 @@ func (a *TokenAdapter) Request(ctx context.Context, request AdapterRequest) (*Ad
 	}
 	raw, err := readResourceBody(response)
 	if err != nil {
-		return nil, err
+		return refusedAnswer(ReasonTokenResourceInvalid), nil
 	}
-	if echoesCredential(raw, authorization, proof) {
-		return tokenResult(OutcomeError, ReasonTokenCredentialEchoed, "The Resource answer contained this request's credentials and was discarded."), nil
+	// Duplicate members make different decoders see different values, so no later check could be
+	// trusted; refuse them before decoding anything.
+	if duplicate, err := hasDuplicateMembers(raw); err != nil {
+		return refusedAnswer(ReasonTokenResourceInvalid), nil
+	} else if duplicate {
+		return refusedAnswer(ReasonTokenDuplicateMember), nil
+	}
+	secrets := credentialForms(authorization, proof)
+	if echoesCredential(raw, secrets) {
+		return refusedAnswer(ReasonTokenCredentialEchoed), nil
 	}
 	result, err := decodeResourceBody(response.StatusCode, raw, request, ModeToken)
-	if err != nil {
-		return nil, err
+	if err != nil || !strictTokenSafeData(result) {
+		return refusedAnswer(ReasonTokenResourceInvalid), nil
 	}
 	result.Explanation = tokenFallbackExplanation
 	if text, ok := tokenExplanations[result.ReasonCode]; ok {
 		result.Explanation = text
 	}
+	// Final check on exactly what will be emitted.
+	emitted, err := json.Marshal(result)
+	if err != nil || echoesCredential(emitted, secrets) {
+		return refusedAnswer(ReasonTokenCredentialEchoed), nil
+	}
 	return result, nil
 }
 
-// echoesCredential reports whether the answer carries the Authorization value, the bare token or the
-// DPoP proof, either raw or inside any JSON string (which may hide it behind escapes).
-func echoesCredential(raw []byte, authorization, proof string) bool {
-	secrets := []string{authorization, proof}
+var refusedExplanations = map[string]string{
+	ReasonTokenResourceInvalid:  "The Resource answer did not match the documented token-mode contract and was discarded.",
+	ReasonTokenDuplicateMember:  "The Resource answer repeated a JSON member and was discarded.",
+	ReasonTokenCredentialEchoed: "The Resource answer contained this request's credentials and was discarded.",
+}
+
+func refusedAnswer(reason string) *AdapterResult {
+	return tokenResult(OutcomeError, reason, refusedExplanations[reason])
+}
+
+// credentialForms lists what must never come back: the Authorization value, the bare token, the proof,
+// and the standard and URL-safe base64 encodings (padded and raw) of each.
+// ponytail: catches whole-credential encodings only; arbitrary fragments are bounded by
+// strictTokenSafeData's word-length cap, not detected.
+func credentialForms(authorization, proof string) []string {
+	plain := []string{authorization, proof}
 	if _, token, ok := strings.Cut(authorization, " "); ok {
-		secrets = append(secrets, token)
+		plain = append(plain, token)
 	}
+	var forms []string
+	for _, value := range plain {
+		if value == "" {
+			continue
+		}
+		forms = append(forms, value)
+		for _, encoding := range []*base64.Encoding{base64.StdEncoding, base64.URLEncoding, base64.RawStdEncoding, base64.RawURLEncoding} {
+			forms = append(forms, encoding.EncodeToString([]byte(value)))
+		}
+	}
+	return forms
+}
+
+// echoesCredential reports whether raw, or any JSON string or member name in it after unescaping,
+// contains one of secrets. raw must be free of duplicate members for the decoded view to be complete.
+func echoesCredential(raw []byte, secrets []string) bool {
 	texts := []string{string(raw)}
 	var decoded any
 	if json.Unmarshal(raw, &decoded) == nil {
 		texts = appendStrings(texts, decoded)
 	}
 	for _, secret := range secrets {
-		if secret == "" {
-			continue
-		}
 		for _, text := range texts {
 			if strings.Contains(text, secret) {
 				return true
@@ -138,6 +181,99 @@ func appendStrings(out []string, value any) []string {
 		}
 	}
 	return out
+}
+
+// hasDuplicateMembers walks the JSON tokens and reports a member name repeated within one object, at
+// any depth. Names are compared after unescaping, so "a" and "\u0061" collide.
+func hasDuplicateMembers(raw []byte) (bool, error) {
+	type frame struct {
+		object    bool
+		expectKey bool
+		keys      map[string]bool
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var stack []*frame
+	valueDone := func() {
+		if len(stack) > 0 && stack[len(stack)-1].object {
+			stack[len(stack)-1].expectKey = true
+		}
+	}
+	for {
+		token, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			if len(stack) != 0 {
+				return false, io.ErrUnexpectedEOF
+			}
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if delim, ok := token.(json.Delim); ok {
+			switch delim {
+			case '{':
+				stack = append(stack, &frame{object: true, expectKey: true, keys: map[string]bool{}})
+			case '[':
+				stack = append(stack, &frame{})
+			default:
+				stack = stack[:len(stack)-1]
+				valueDone()
+			}
+			continue
+		}
+		if top := len(stack) - 1; top >= 0 && stack[top].object && stack[top].expectKey {
+			name, _ := token.(string)
+			if stack[top].keys[name] {
+				return true, nil
+			}
+			stack[top].keys[name] = true
+			stack[top].expectKey = false
+			continue
+		}
+		valueDone()
+	}
+}
+
+const (
+	maxTokenIDBytes    = 64
+	maxTokenTitleBytes = 128
+	maxTokenTextBytes  = 512
+	maxTokenWordBytes  = 32
+)
+
+// strictTokenSafeData narrows token-mode success data, already reduced to the documented keys by
+// sanitizeSafeData, to the seed's form: an id of A-Z, 0-9 and '-', bounded title and text, and no word
+// longer than maxTokenWordBytes, so an encoded credential cannot ride in a free-form field.
+func strictTokenSafeData(result *AdapterResult) bool {
+	if result.Outcome != OutcomeSuccess {
+		return len(result.SafeData) == 0
+	}
+	kind, textKey := "report", "content"
+	if _, ok := result.SafeData["summary"]; ok {
+		kind, textKey = "summary", "summary"
+	}
+	fields, ok := result.SafeData[kind].(map[string]any)
+	if !ok {
+		return false
+	}
+	id, _ := fields["id"].(string)
+	title, _ := fields["title"].(string)
+	text, _ := fields[textKey].(string)
+	if len(id) > maxTokenIDBytes || len(title) > maxTokenTitleBytes || len(text) > maxTokenTextBytes {
+		return false
+	}
+	for _, r := range id {
+		if (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	for _, word := range strings.Fields(title + " " + text) {
+		if len(word) > maxTokenWordBytes {
+			return false
+		}
+	}
+	return true
 }
 
 func tokenResult(outcome Outcome, reason, explanation string) *AdapterResult {
