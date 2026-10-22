@@ -337,3 +337,41 @@ func TestReadCredentialsIsStrict(t *testing.T) {
 		})
 	}
 }
+
+// A renewal that fails slowly is judged by the clock after it: the old token is not returned once it
+// has expired meanwhile, and the retry wait starts when the attempt ended.
+func TestConnectorSessionJudgesAFailedRenewalAfterIt(t *testing.T) {
+	target := "https://resource.test/demo"
+	setup := func(t *testing.T, during time.Duration) (*fakeClock, *fakeConnector, TokenSession) {
+		clock := &fakeClock{t: time.Now()}
+		f := newFakeConnector(t, clock.Now)
+		session, err := newBootstrap(t, f, clock, goodCredentials, nil).Run(t.Context(), func(State, string) {})
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.token = func(w http.ResponseWriter, _ string) bool {
+			clock.Advance(during)
+			w.WriteHeader(http.StatusBadGateway)
+			return true
+		}
+		clock.Advance(226 * time.Second) // due for renewal, 74 s before expiry
+		return clock, f, session
+	}
+
+	t.Run("expired during the attempt", func(t *testing.T) {
+		_, _, session := setup(t, 80*time.Second)
+		if a, p, err := session.Authorize(t.Context(), http.MethodPost, target); err == nil || a != "" || p != "" {
+			t.Fatalf("Authorize returned a token that expired during the failed renewal: %v", err)
+		}
+	})
+	t.Run("retry wait starts after the attempt", func(t *testing.T) {
+		clock, f, session := setup(t, 10*time.Second)
+		if _, _, err := session.Authorize(t.Context(), http.MethodPost, target); err != nil {
+			t.Fatalf("token still valid: %v", err)
+		}
+		clock.Advance(renewRetry - time.Second) // 4 s after the attempt ended, 14 s after it began
+		if _, _, err := session.Authorize(t.Context(), http.MethodPost, target); err != nil || f.grants.Load() != 2 {
+			t.Fatalf("renewal retried %d grants before renewRetry passed since the failure: %v", f.grants.Load(), err)
+		}
+	})
+}

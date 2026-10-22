@@ -108,7 +108,7 @@ type connectorSession struct {
 // the grant is run again first, by one caller at a time; while that fails the current token is used
 // until it expires, and the grant is tried again at most every renewRetry.
 func (s *connectorSession) Authorize(ctx context.Context, method, target string) (string, string, error) {
-	token, err := s.current(ctx)
+	token, expires, err := s.current(ctx)
 	if err != nil {
 		return "", "", err
 	}
@@ -116,27 +116,31 @@ func (s *connectorSession) Authorize(ctx context.Context, method, target string)
 	if err != nil {
 		return "", "", errors.New("participant: proof not signed")
 	}
+	// Never hand out a token that has expired by the time this returns.
+	if !s.b.now().Before(expires) {
+		return "", "", errExpired
+	}
 	return "DPoP " + token, proof, nil
 }
 
-func (s *connectorSession) current(ctx context.Context) (string, error) {
+// errExpired is Authorize's answer when no unexpired token is at hand.
+var errExpired = errors.New("participant: token expired; renewal failed")
+
+// current returns the token to use and its expiry, renewing it first when it is due. The clock is
+// read again after a renewal attempt, which can take as long as the network does: the retry wait
+// starts from then, and expiry is judged then.
+func (s *connectorSession) current(ctx context.Context) (string, time.Time, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := s.b.now()
-	if now.Before(s.renewAt) || now.Before(s.retryAt) {
-		if now.Before(s.expires) {
-			return s.token, nil
+	if now := s.b.now(); !now.Before(s.renewAt) && !now.Before(s.retryAt) {
+		if err := s.acquire(ctx, nil); err != nil {
+			s.retryAt = s.b.now().Add(renewRetry)
 		}
-		return "", errors.New("participant: token expired; renewal failed")
 	}
-	if err := s.acquire(ctx, nil); err != nil {
-		s.retryAt = now.Add(renewRetry)
-		if now.Before(s.expires) {
-			return s.token, nil
-		}
-		return "", errors.New("participant: token expired; renewal failed")
+	if !s.b.now().Before(s.expires) {
+		return "", time.Time{}, errExpired
 	}
-	return s.token, nil
+	return s.token, s.expires, nil
 }
 
 // acquire runs challenge, outcome, grant and checks under the bootstrap's grant lock and stores the
