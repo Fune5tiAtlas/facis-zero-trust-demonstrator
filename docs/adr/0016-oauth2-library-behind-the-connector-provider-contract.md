@@ -1,7 +1,7 @@
 # ADR-0016: OAuth2 library behind the connector's provider contract
 
-- **Status:** Proposed. One dependent item remains open: moving issuance to signed access tokens
-  (see Open items).
+- **Status:** Proposed. Decisions 1 to 5 are implemented, signed access tokens included; what
+  remains open is signing-key rotation and deployment (see Open items).
 - **Date:** 2026-10-05
 - **Deciders:** Delivery team, from the OAuth2 library evaluation of September 2026 and its
   follow-up comparison of library versions. Confirmation by the deciders of ADR-0003 is pending.
@@ -102,7 +102,7 @@ same contract.
 
 ### 5. Access-token format
 
-Access tokens are to be **signed tokens** (RFC 9068, `typ: at+jwt`) carrying the key binding as
+Access tokens are **signed tokens** (RFC 9068, `typ: at+jwt`) carrying the key binding as
 `cnf.jkt`, so that a protected resource validates the signature against the connector's published
 key set and the DPoP proof against the token, without a call back to the connector.
 
@@ -140,6 +140,8 @@ contract: the signer and the issuer in the configuration. Details in
   it means publishing the new key next to the old one in the key set for at least the longest token
   lifetime before signing with it; the resource-side verifier (`internal/tokenverify`) already accepts
   several keys and refreshes on an unknown `kid`. The procedure is not automated yet.
+- **Deployment.** The connector runs from its image (`deployment/docker/connector`); no chart
+  deploys it into a zone yet.
 
 ## References
 

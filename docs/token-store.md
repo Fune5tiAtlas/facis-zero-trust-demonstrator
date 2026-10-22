@@ -8,8 +8,9 @@ PostgreSQL database that it shares with the connector's OAuth2 surface
 ([Connector OAuth2 provider](oauth2-provider.md)), whose clients and issued tokens live in the same
 schema, and on the zone's key-value store ([Secrets](secrets.md)) for its key material. This page
 describes that database and how its schema is applied, the service that stands on it (its
-configuration, its liveness and readiness, its records and its identity), and how all of it is
-verified; the service's endpoints are documented as they land.
+configuration, its liveness and readiness, its records and its identity), its endpoints (the
+replay check and substitution, with acquisition and renewal behind them), and how all of it is
+verified.
 
 ## One database, two owners
 
@@ -329,7 +330,8 @@ caller's context; no private key enters the process.
 | COMMIT was sent and any other answer came back: none, a transport error, or a server error. A server error is not proof of a rollback: a FATAL termination can arrive after the commit took effect | The value is kept until reconciliation decides. It waits until the transaction has ended (the transaction holds an advisory lock on `token_id` from its first statement; `statement_timeout` 5 s and `idle_in_transaction_session_timeout` 10 s bound it), then, in an explicit READ COMMITTED transaction and in a statement after the wait, reads `upstream_token` by `token_id`: a row means the token is active; no row means the value is deleted, while the lock is still held (`ACQ-ACTIVATION-FAILED`). A COMMIT refused with a deferred-constraint violation or a serialization failure ends here with no row. If it cannot tell, or the caller's context ends first (reconciliation runs under it; a caller already gone does not reconcile at all), the value stays (`ACQ-COMMIT-UNKNOWN`) for the sweep |
 | A KV value under the prefix has no row | The orphan sweep first checks the value's age by its KV `created_time` (more than 10 minutes, longer than any transaction can stay open), then takes the same advisory lock in READ COMMITTED, checks again that no row exists, and deletes the value before releasing the lock, so an activation that committed after the sweep first looked keeps its value. A value with a row, in any state, is never touched (`upstream.orphan_deleted`, `ACQ-ORPHAN-DELETED`) |
 
-Only a committed `active` row permits substitution. Audit rows carry the route, the peer zone, the
+Only a committed live row permits substitution: the route's `active` row, or its committed
+`renewing` row, which stays the route's token until its replacement commits. Audit rows carry the route, the peer zone, the
 audience, the outcome and token ids and the reason code; never the token, a proof, the client secret
 or the outcome.
 
@@ -540,6 +542,6 @@ second live row is refused by the index; and `Run` renews and sweeps orphans on 
 
 ## What follows
 
-Key custody against the key-value store, which is when "every active key reference resolves"
-joins readiness; and the lane from the guard to the store across the planes, each building on the
-tables, the queries and the service above.
+The lane from the guard to the store across the planes, and the deployment prerequisites of the
+replay check and substitution (the sidecar's `SANITIZE_SET` and the network policy, above), each
+building on the tables, the queries and the service above.

@@ -121,11 +121,12 @@ the proof's key. A proof is refused when
   `iat + ProofLifespan + ClockSkew`;
 - it has been used before.
 
-**Replay protection.** A proof is accepted once. The guarantee holds under concurrency: of one hundred
-simultaneous presentations of the same proof, exactly one is accepted and the rest are refused as
-replays. A `jti` is scoped to the URI and method the proof was made for, following RFC 9449 sections
-4.2 and 11.1, and additionally to the proof key and nonce. Reusing a `jti` in a new proof for another
-endpoint is therefore not a replay; presenting any proof a second time is.
+**Replay protection.** A proof is accepted once. The guarantee holds under concurrency: of one
+hundred simultaneous presentations of the same proof, exactly one is accepted and the rest are
+refused as replays. A `jti` is scoped to the URI and method the proof was made for, following RFC
+9449 sections 4.2 and 11.1, and additionally to the proof key (the in-memory store also to the
+nonce). Reusing a `jti` in a new proof for another endpoint is therefore not a replay; presenting
+any proof a second time is.
 
 **Server nonce.** With `NonceRequired`, a request without a nonce is answered with `400`
 `use_dpop_nonce` and a `DPoP-Nonce` header. Retrying with that nonce succeeds. A nonce the server did
@@ -333,7 +334,11 @@ The replay store receives a proof's identity as separate values — key thumbpri
 target URI, `jti` and nonce — together with the proof's `iat` and the instant it stops being
 acceptable. It decides atomically whether the proof was seen before; two uses are the same proof
 when thumbprint, method, URI and `jti` are equal, and a store may also distinguish by nonce, as the
-in-memory one does.
+in-memory one does. `pgstore` records the use in the zone's shared `proof_jti` table
+(`internal/replay`), the record the token store's replay check uses and a resource-side verifier
+(`internal/tokenverify`) can be given, with the URI normalised once more by `dpopproof.NormalizeURI`
+(the provider keeps an empty port, the shared form does not), so a proof seen by one is seen by all;
+a URI that has no such form fails closed.
 
 ## Running the connector
 
@@ -552,8 +557,9 @@ back into its default session.
 
 ## Limitations
 
-- Replay detection is still in memory, so a proof can be replayed once against another replica or after a
-  restart. Clients, issued tokens and nonces are in PostgreSQL (`pgstore`, below).
+- `memstore` keeps replay detection, like everything else, in one process: with it a proof can be
+  replayed once against another replica or after a restart. `connector serve` uses `pgstore`, whose
+  replay record is the zone's shared `proof_jti` table in PostgreSQL.
 - Only the `client_credentials` and verified-presentation grants and `client_secret_basic` client
   authentication are wired.
   Client authentication by signed assertion is refused.
@@ -562,7 +568,8 @@ back into its default session.
   lead nowhere yet.
 - Without `AccessTokenSigner`, access tokens are opaque and validated by lookup, so a protected
   resource can only validate them through the connector. The key set handler that publishes the
-  signer's public key is not part of this layer.
+  signer's public key is not part of this layer: `connector serve` serves it at
+  `/.well-known/jwks.json`.
 - The proof URI is reconstructed from the request. Behind a proxy the scheme is taken from
   `X-Forwarded-Proto`, so that header must be set by a trusted hop only.
 - The pinned `authelia.com/provider/oauth2` v0.3.2 requires Go 1.27.x.
