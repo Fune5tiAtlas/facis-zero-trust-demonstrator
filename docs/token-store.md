@@ -257,9 +257,110 @@ on PostgreSQL 16.10 (the pinned image): with one row in each table, `kill -9` of
 postmaster reinitialise and recover, both tables came back empty, and `pg_postmaster_start_time()`
 was unchanged. Expired records are swept every minute.
 
+## Acquisition of upstream tokens
+
+The store obtains the token it substitutes on a route from the peer zone's Connector through the
+verified-presentation grant ([IF-02 v1.1](api-docs.md#if-02-connector-authorization-surface),
+[Connector OAuth2 provider](oauth2-provider.md#verified-presentation-grant)). The code is
+`services/token-store/internal/acquire`; `Acquirer.Acquire(ctx, route)` is what substitution and
+renewal call, and there is no HTTP endpoint for it.
+
+**Order.** For one route `(peer_zone, audience, tenant)`:
+
+1. `POST /oauth2/challenge` at the peer Connector with the route's client credentials
+   (`client_secret_basic`) and the route's audience.
+2. The route's `OutcomeSource` returns a signed IF-03 outcome for that challenge.
+3. The store verifies the outcome with `internal/if03` against its own trusted issuers (the peer's
+   verifier keys) and the expected client, challenge and audience, and records its receipt in its
+   own `verified_outcome`, status `verified`, unconsumed. An outcome it has seen before is refused
+   (`CRED-OUTCOME-CONSUMED`) and never sent.
+4. `POST /oauth2/token` with `grant_type=urn:facis:params:oauth:grant-type:verified-presentation`,
+   the outcome, the challenge and the audience, and a fresh DPoP proof signed by the store's key
+   through transit. A `use_dpop_nonce` answer is retried once with the server's nonce.
+5. The answer must be `token_type` DPoP and the access token's payload must carry `cnf.jkt` equal to
+   `signing_key.jkt`, the route's audience in `aud`, and an `exp` in the future. Only the payload is
+   read: the signature is checked by the peer's resources (`internal/tokenverify`).
+6. The token value is written to KV v2 at `ztd/token-store/upstream/<token_id>`, create-only.
+7. One transaction consumes the receipt (conditionally: unconsumed, verified, for the route's audience
+   and not expired at the store's clock) and inserts the `upstream_token` row `active` with
+   `token_ref` (the KV path), `key_ref`, the token's `iat` and `exp`, and `renew_after` at 75 % of
+   its lifetime, together with the `upstream.acquired` audit row.
+
+**The store's key.** The store's DPoP key is its transit key (`signing_key` in the configuration),
+created non-exportable if missing; its latest version is used, and a `signing_key` row
+`transit:<name>:v<version>` with the version's thumbprint is created if missing (idempotent; a row
+with another thumbprint or a retired one stops acquisition). Proofs are signed by transit with the
+caller's context; no private key enters the process.
+
+**Recovery (D10).**
+
+| What happened | What the store does |
+|---|---|
+| The peer's answer to the grant was lost or unreadable (transport error, cut connection, 5xx, a body that is not a token response) | Terminal for that outcome: audit `upstream.failed` `ACQ-PEER-RESPONSE-LOST`, the receipt stays unconsumed. The next attempt uses a fresh challenge and outcome; a consumed outcome is never reused, and the peer's consumption is never reset |
+| The peer refused the grant | Audit `upstream.refused` with the peer's `CRED-OUTCOME-*` reason (or `ACQ-PEER-REFUSED`); nothing activated |
+| The issued token fails a check of step 5 | Audit `upstream.refused` `ACQ-TOKEN-INVALID` with the failed check (`token_type`, `cnf.jkt`, `aud`, `exp`, `format`); nothing written |
+| The KV write fails | Nothing activated (`ACQ-KV-WRITE`). A value written despite the error has no row and is swept |
+| The transaction is confirmed rolled back: an error before COMMIT was sent, the receipt no longer consumable (`ACQ-ACTIVATION-REFUSED`), or COMMIT answered with an error (`ACQ-ACTIVATION-FAILED`) | The KV value is deleted; audit `upstream.failed` |
+| COMMIT was sent and its acknowledgement lost | The value is kept. Reconciliation waits until the transaction has ended (it holds an advisory lock on `token_id` from its first statement; `statement_timeout` 5 s and `idle_in_transaction_session_timeout` 10 s bound it), then reads `upstream_token` by `token_id`: a row means the token is active, no row means the value is deleted. If it cannot tell, the value stays (`ACQ-COMMIT-UNKNOWN`) for the sweep |
+| A KV value under the prefix has no row | The orphan sweep deletes it once it is older than 10 minutes by its KV `created_time`, longer than any transaction can stay open; a value with a row, in any state, is never touched (`upstream.orphan_deleted`, `ACQ-ORPHAN-DELETED`) |
+
+Only a committed `active` row permits substitution. Audit rows carry the route, the peer zone, the
+audience, the outcome and token ids and the reason code; never the token, a proof, the client secret
+or the outcome.
+
+**Configuration.** A JSON file (`--acquire-config`, `TOKEN_STORE_ACQUIRE_CONFIG`) holds file paths,
+never secrets:
+
+```json
+{
+  "signing_key": "token-store",
+  "trusted_issuers": [
+    {"issuer": "https://verifier.zone-b.example", "kid": "verifier-1", "public_key_file": "/etc/token-store/verifier-1.pem"}
+  ],
+  "routes": [{
+    "name": "zone-b-api", "peer_zone": "zone-b", "audience": "https://api.zone-b.example", "tenant": "",
+    "connector_url": "https://connector.zone-b.example",
+    "client_id": "zone-a-token-store", "client_secret_file": "/var/run/secrets/zone-b-client/secret",
+    "fixture_outcomes": {"issuer": "https://verifier.zone-b.example", "kid": "verifier-1",
+                         "private_key_file": "/etc/token-store/fixture-key.pem", "role": "participant-operator",
+                         "entitlement": "write", "validity_seconds": 90}
+  }]
+}
+```
+
+`fixture_outcomes` is the fixture `OutcomeSource` for tests and the demo: it signs a verified IF-03
+outcome for each challenge with the configured key, a new `outcome_id` per call, valid 60 to 120 s
+(default 90 s). A route without an outcome source cannot be acquired. Unknown members are refused.
+
+**Commands.**
+
+```bash
+token-store acquire --route NAME   # acquire and activate one token; prints {"route","token_id","expires_at"}, never the token
+token-store sweep-orphans          # run the orphan sweep once; prints {"deleted": N}
+```
+
+Both take `--database-url`, `--openbao-url`, `--openbao-token-file` (the OpenBao token, read on every
+call, as for the connector) and `--acquire-config`, each defaulting to the `TOKEN_STORE_*` variable
+of the same name, and `--timeout` (default 1m). Exit 0 on success, 1 on a failed acquisition (the
+reason code is printed), 2 for a usage error.
+
+**Verification.** `go test ./services/token-store/internal/acquire` with
+`TOKEN_STORE_TEST_DATABASE_URL`, `TRANSIT_TEST_ADDR` and `TRANSIT_TEST_TOKEN` runs the real `connector` binary
+as zone B (built once per run and started as a subprocess on a migrated database of its own, with a
+transit signing key, the registrar, the trusted-issuers file and the scope map; the store's client is
+registered through the registrar's DCR with the delegated verified-presentation scope) against a
+zone-A database and OpenBao: the happy path including the nonce retry and the token accepted by
+`internal/tokenverify` with a proof from the store key; each `CRED-OUTCOME-*` refusal by the peer;
+an outcome A refuses itself; a lost and an unreadable answer followed by a fresh acquisition (the
+peer's ledger shows every outcome consumed once); a failed KV write; a receipt expired before the
+transaction; COMMIT acknowledged-but-lost, rolled back, refused and never delivered; the orphan sweep;
+the response checks; and a canary that no credential reaches logs, errors or audit rows.
+
 ## What follows
 
 Key custody against the key-value store, which is when "every active key reference resolves"
-joins readiness; substitution with the allow-list of its callers and routes; and the lane from the
+joins readiness; substitution with the allow-list of its callers and routes, which reads the active
+row acquisition leaves and calls `Acquire` on demand; renewal, which schedules `Acquire` and the
+orphan sweep; and the lane from the
 guard to the store across the planes, each building on the tables, the queries and the service
 above.
