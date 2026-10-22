@@ -127,14 +127,19 @@ verified-presentation grant, which consumes IF-03 outcomes:
   (`CRED-OUTCOME-EXPIRED`); the outcome and the challenge unconsumed (`CRED-OUTCOME-CONSUMED`). A
   refusal never repeats the outcome.
 - **Consumption.** The challenge, the outcome (recorded in `verified_outcome`) and the issued token
-  (`oauth2_token.outcome_id`) are written in one transaction, committed before the response is
+  (`oauth2_token.outcome_id`) are written in one transaction, which locks the challenge first and
+  judges validity at an instant taken after the lock is held, and is settled before the response is
   written. A second use of an outcome or a challenge is `CRED-OUTCOME-CONSUMED` and is never signed
-  again; of concurrent uses exactly one is issued a token.
+  again; of concurrent uses exactly one is issued a token. When the commit's outcome is unknown the
+  answer is `500` without the token and the consumption stands; the client starts again with a fresh
+  challenge and outcome.
 - **Scopes.** The outcome's `role` and `entitlement` map to scopes by configuration, limited to the
   client's registered scopes; claims that map to nothing are refused (`invalid_scope`). Those scopes
   are never issued through `client_credentials`. The token is an RFC 9068 JWT with `cnf.jkt` and the
   one `aud`.
-- **Registration.** A deployment may admit the grant type in dynamic registration.
+- **Registration.** A deployment may admit the grant type in dynamic registration. A registrar can
+  grant a client a verified-presentation scope only through a delegation ceiling the server
+  configures for it, since its own token can never carry such a scope.
 
 ## IF-03 — signed verification outcome
 

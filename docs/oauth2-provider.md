@@ -34,7 +34,7 @@ connector code ──depends on──▶ oauth2provider            contract: typ
 |---|---|
 | `oauth2provider` | The contract: `Provider`, `Config`, `Client`, the store interfaces and the reason codes. Imports no OAuth 2.0 library. |
 | `oauth2provider/authelia` | The implementation. The only package allowed to import the library; its exported API names no library type. |
-| `oauth2provider/memstore` | In-memory stores for tests and local development. Nothing is persisted. Transactions are serialised by one lock and undo-logged. |
+| `oauth2provider/memstore` | In-memory stores for tests and local development. Nothing is persisted. Transactions are serialised by one lock and undo-logged; they cover token creation and challenge and outcome consumption only, not client changes or token deletion. |
 | `signing` | Access-token signers: `Transit` over an OpenBao transit key, and `Local` over an in-process key for tests only. |
 | `oauth2provider/pgstore` | Clients, issued tokens, DPoP nonces, challenges and consumed outcomes in the zone's authorization database (`oauth2_client`, `oauth2_token`, `oauth2_dpop_nonce`, `oauth2_challenge`, `verified_outcome`; schema in the [token store](token-store.md)'s migrations). Validity is checked against the stores' clock, passed as a parameter. Its `Transactions` store runs a PostgreSQL transaction that every client, token, challenge and outcome call made with its context joins; nonce and replay writes never do. `Sweep` removes expired tokens, nonces and unconsumed challenges, never a consumed challenge or outcome. |
 | `dpoptest` | Test helper that mints DPoP proofs, including deliberately defective ones, using the standard library only. |
@@ -70,7 +70,10 @@ there is none); `Config.VerifiedPresentation` (field 6) with `VerifiedPresentati
 `Stores.Transactions` (fields 5 to 7) with the `ChallengeStore`, `OutcomeStore` and `Transactor`
 interfaces and the `Challenge` and `VerifiedOutcome` types; `ErrConsumed`;
 `VerifiedPresentationGrantType` and `ChallengeLifetime`; and the five `CodeCredOutcome*` reason
-codes.
+codes. With the review of that grant, before it was merged: `TokenRecord.GrantType` (field 10);
+`RegistrationConfig.DelegableScopes` (field 3); `ChallengeStore.LockChallenge`; and
+`ChallengeStore.ConsumeChallenge` and `OutcomeStore.ConsumeOutcome` take the instant they act at,
+so the provider's one clock decides every validity question.
 
 ```bash
 OAUTH2PROVIDER_API_UPDATE=1 go test -run TestContractAPIIsFrozen ./services/connector/internal/oauth2provider
@@ -221,16 +224,35 @@ the errors behind them carry fixed text only, never anything of the outcome.
 
 **Transaction.** `TokenHandler` begins a transaction only after `NewAccessRequest` has accepted a
 request of this grant, so client authentication, the DPoP proof and its nonce and replay records stay
-outside it. `NewAccessResponse` runs with the transaction's context; in it the grant checks that a
-DPoP binding was validated (a token without `cnf.jkt` is never issued), runs the checks above once
-more, consumes the challenge (one conditional update), inserts the outcome into `verified_outcome`
-already consumed (a second insert of one `outcome_id` is a no-op), signs the token and stores it with
-`oauth2_token.outcome_id`. The transaction commits after `NewAccessResponse` returns and before the
-response is written; any error, including a failed commit, rolls it back and is answered as an
-error. The store adapter implements the library's `storage.Transactional` by delegating to
-`Stores.Transactions`, and the grant refuses to run outside a transaction. Of concurrent requests
-with one outcome or one challenge exactly one is issued a token; the others wait for its row lock and
-are refused `CRED-OUTCOME-CONSUMED`. A refused request is never signed.
+outside it. `NewAccessResponse` runs with the transaction's context. In it the grant checks that a
+DPoP binding was validated (a token without `cnf.jkt` is never issued), then takes the challenge's
+row lock (`SELECT ... FOR UPDATE`) **before** anything is judged, and only then reads the clock: every
+check above runs again at that instant, so a request that waited behind another transaction is never
+judged at the time it started waiting. It then consumes the challenge (a conditional update at the
+same instant, passed to the database as a parameter), inserts the outcome into `verified_outcome`
+already consumed (a second insert of one `outcome_id` is a no-op), reads the clock once more and
+refuses `CRED-OUTCOME-EXPIRED` if the outcome or the challenge expired meanwhile, and only then signs
+the token and stores it with `oauth2_token.outcome_id` and its `grant_type`. Validity, the challenge's
+expiry and every instant written come from one clock, the provider's.
+
+The transaction is settled before any response is written. It commits after `NewAccessResponse`
+returns; on any error before that, it is rolled back and the error answered. A commit that reports
+an error is cleaned up the same way, since a transactor may fail without settling; but a commit can
+also have succeeded before its acknowledgement was lost. That request is answered `500 server_error`
+without the token, and the consumption stands: nothing resets a consumption to compensate, so the
+outcome and the challenge cannot be used again (IF-03, D10: the next attempt uses a fresh challenge
+and outcome). A panic during the transaction rolls it back as well. The store adapter implements the
+library's `storage.Transactional` by delegating to `Stores.Transactions`, and the grant refuses to
+run outside a transaction. Of concurrent requests with one outcome or one challenge exactly one is
+issued a token; the others wait for its row lock and are refused `CRED-OUTCOME-CONSUMED`. A refused
+request is never signed.
+
+**Token records.** `TokenHandler` records the grant it validated with every access token
+(`TokenRecord.GrantType`, `oauth2_token.grant_type`), independently of the grant handler that adds
+the outcome. A verified-presentation token without an outcome, or an outcome on any other token, is
+refused by the adapter before the store is called, by the in-memory store, and in PostgreSQL by the
+constraints `oauth2_token_vp_has_outcome` and `oauth2_token_outcome_only_vp`; `outcome_id` is unique
+and references `verified_outcome`.
 
 **Scopes.** `VerifiedPresentation.Scopes` maps an outcome's `role` and `entitlement`, compared exactly
 (an empty entitlement matches only an outcome without one), to scopes. What is issued is that list
@@ -245,7 +267,13 @@ or with a claim pair mapped twice. The token is the RFC 9068 JWT described below
 `client_id` the client, `aud` the one audience and `scope` the mapped scopes.
 
 **Registration.** `Registration.GrantTypes` may include the grant type, so a client can register for
-it dynamically.
+it dynamically. A client needs a mapped scope among its registered scopes to be issued it, and
+registration limits a new client's scopes to those of the registrar's token, which can never carry a
+verified-presentation scope (`client_credentials` refuses it). `Registration.DelegableScopes` closes
+that gap: per registrar client id, the scopes the server lets that registrar grant to the clients it
+registers, in addition to its token's. Only the registration endpoint consults it; the registrar is
+never issued those scopes itself, and the registration scope is never delegable (refused at start-up,
+and by the library whatever the ceiling).
 
 ## Reason codes
 
@@ -292,6 +320,7 @@ fails if the two lists differ.
 | `Registration.Secret` | Signs registration access tokens. At least 32 bytes and different from `Secret`. |
 | `Registration.EndpointURL` | Absolute URL of the registration endpoint; also the audience a token must carry there. |
 | `Registration.GrantTypes` | Grant types a client may register for. |
+| `Registration.DelegableScopes` | Per registrar client id, scopes it may grant to clients it registers beyond its token's scopes; never the registration scope. |
 | `VerifiedPresentation.TrustedIssuers` | IF-03 issuers and their P-256 keys by `kid`. Non-empty enables the grant. |
 | `VerifiedPresentation.Scopes` | Claims to scopes: `Role`, `Entitlement`, `Scopes` per entry. The challenge lifetime is fixed at 120 s (`ChallengeLifetime`). |
 
@@ -487,9 +516,6 @@ back into its default session.
   restart. Clients, issued tokens and nonces are in PostgreSQL (`pgstore`, below).
 - Only the `client_credentials` and verified-presentation grants and `client_secret_basic` client
   authentication are wired.
-- The database cannot tell a verified-presentation token from another access token, so "every such
-  token has an outcome" is enforced by the adapter (it refuses to store a token issued on an outcome
-  without its id) and by the tests, not by a constraint. Uniqueness of `outcome_id` is the database's.
   Client authentication by signed assertion is refused.
 - Registration management (RFC 7592) and token introspection are not exposed. A registration
   response nevertheless carries a registration access token and a client configuration URI, which

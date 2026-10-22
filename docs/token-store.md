@@ -15,7 +15,7 @@ verified; the service's endpoints are documented as they land.
 
 | Tables | Owner | What they hold |
 |---|---|---|
-| `oauth2_client`, `oauth2_token`, `oauth2_dpop_nonce` | the connector's OAuth2 surface | dynamically registered clients (secret as a bcrypt hash, the RFC 7591 metadata document as registered), issued access and registration tokens keyed by signature (a verified-presentation token with its unique `outcome_id`), server-issued DPoP nonces |
+| `oauth2_client`, `oauth2_token`, `oauth2_dpop_nonce` | the connector's OAuth2 surface | dynamically registered clients (secret as a bcrypt hash, the RFC 7591 metadata document as registered), issued access and registration tokens keyed by signature, with the grant they were issued through (a verified-presentation token always with its unique `outcome_id`, no other token with one), server-issued DPoP nonces |
 | `oauth2_challenge` | the connector's OAuth2 surface | single-use challenges of the verified-presentation grant, bound to a client and one audience, valid 120 s; a consumed one is never reset or deleted (migration 3) |
 | `signing_key` | the token store | references to the store's outbound signing keys in the key-value store, with their thumbprints; never key material |
 | `verified_outcome` | the token store; in the issuing zone, the connector | verification outcomes received over IF-03, consumed at most once. The connector records each outcome its verified-presentation grant consumes here, in the transaction that issues the token |
