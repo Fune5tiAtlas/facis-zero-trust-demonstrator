@@ -62,9 +62,10 @@ type harness struct {
 	// every seeded client is allowed: nothing for opaque tokens, resourceAudience for signed ones.
 	defaultAudience string
 
-	tokenURL    string
-	registerURL string
-	resourceURL string
+	tokenURL     string
+	registerURL  string
+	resourceURL  string
+	challengeURL string
 }
 
 func newHarness(t *testing.T, configure func(*oauth2provider.Config)) *harness {
@@ -84,6 +85,7 @@ func newHarness(t *testing.T, configure func(*oauth2provider.Config)) *harness {
 	h.tokenURL = server.URL + "/token"
 	h.registerURL = server.URL + "/register"
 	h.resourceURL = server.URL + "/resource"
+	h.challengeURL = server.URL + "/challenge"
 
 	cfg := oauth2provider.Config{
 		Secret: []byte("token-signing-secret-at-least-32-bytes!"),
@@ -144,6 +146,7 @@ func (h *harness) start() {
 	mux := http.NewServeMux()
 	mux.Handle("/token", provider.TokenHandler())
 	mux.Handle("/register", provider.RegistrationHandler())
+	mux.Handle("/challenge", provider.ChallengeHandler())
 	mux.HandleFunc("/resource", h.serveResource)
 	h.handler.Store(http.Handler(mux))
 }

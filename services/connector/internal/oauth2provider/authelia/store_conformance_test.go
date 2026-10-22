@@ -111,7 +111,7 @@ func TestSessionCodec_RoundTripKeepsBindingAndExpiry(t *testing.T) {
 	in.SetExpiresAt(oauth2.AccessToken, exp)
 	in.SetDPoPJWKThumbprint("jkt-1")
 
-	raw, gotExp, err := encodeSession(in)
+	raw, gotExp, err := encodeSession(in, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestSessionCodec_CrossesSessionTypes(t *testing.T) {
 		"jwt to default": {jwt, &oauth2.DefaultSession{}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			raw, _, err := encodeSession(tc.in)
+			raw, _, err := encodeSession(tc.in, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -173,7 +173,7 @@ func TestSessionCodec_RefusesWhatItCannotCarry(t *testing.T) {
 	exp := time.Now().Add(time.Hour)
 
 	t.Run("no expiry", func(t *testing.T) {
-		if _, _, err := encodeSession(&oauth2.DefaultSession{}); err == nil {
+		if _, _, err := encodeSession(&oauth2.DefaultSession{}, ""); err == nil {
 			t.Fatal("encoded a session without an expiry")
 		}
 	})
@@ -203,7 +203,7 @@ func TestSessionCodec_RefusesWhatItCannotCarry(t *testing.T) {
 		in.SetExpiresAt(oauth2.AccessToken, exp)
 		in.SetDPoPJWKThumbprint("jkt-1")
 
-		raw, _, err := encodeSession(in)
+		raw, _, err := encodeSession(in, "")
 		if err != nil {
 			t.Fatal(err)
 		}

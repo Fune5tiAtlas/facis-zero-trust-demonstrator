@@ -10,6 +10,7 @@ import (
 	hoauth2 "authelia.com/provider/oauth2/handler/oauth2"
 	"authelia.com/provider/oauth2/handler/rfc7591"
 	"authelia.com/provider/oauth2/handler/rfc9449"
+	"authelia.com/provider/oauth2/storage"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/oauth2provider"
 )
@@ -27,7 +28,55 @@ var (
 	_ hoauth2.AccessTokenStorage = (*storeAdapter)(nil)
 	_ rfc7591.Storage            = (*storeAdapter)(nil)
 	_ rfc9449.Storage            = (*storeAdapter)(nil)
+	_ storage.Transactional      = (*storeAdapter)(nil)
 )
+
+type (
+	inTxKey      struct{}
+	outcomeIDKey struct{}
+)
+
+// BeginTX implements the library's storage.Transactional over Stores.Transactions. Every store call
+// made with the returned context, nonces and replay records excepted, is part of the transaction.
+func (s *storeAdapter) BeginTX(ctx context.Context) (context.Context, error) {
+	if s.stores.Transactions == nil {
+		return nil, errors.New("the stores offer no transactions")
+	}
+
+	ctx, err := s.stores.Transactions.BeginTx(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return context.WithValue(ctx, inTxKey{}, true), nil
+}
+
+func (s *storeAdapter) Commit(ctx context.Context) error {
+	if !inTx(ctx) {
+		return errors.New("commit: no transaction")
+	}
+
+	return s.stores.Transactions.Commit(ctx)
+}
+
+func (s *storeAdapter) Rollback(ctx context.Context) error {
+	if !inTx(ctx) {
+		return errors.New("rollback: no transaction")
+	}
+
+	return s.stores.Transactions.Rollback(ctx)
+}
+
+func inTx(ctx context.Context) bool {
+	in, _ := ctx.Value(inTxKey{}).(bool)
+
+	return in
+}
+
+// withOutcomeID marks ctx as issuing a token on the outcome id, which the token record keeps.
+func withOutcomeID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, outcomeIDKey{}, id)
+}
 
 func (s *storeAdapter) GetClient(ctx context.Context, id string) (oauth2.Client, error) {
 	client, err := s.stores.Clients.GetClient(ctx, id)
@@ -107,7 +156,12 @@ func (s *storeAdapter) DeleteClientRegistrationTokenSession(ctx context.Context,
 // createToken persists what is needed to validate the token later. The
 // request form is deliberately left out: it can carry client credentials.
 func createToken(ctx context.Context, store oauth2provider.TokenStore, signature string, request oauth2.Requester) error {
-	session, expiresAt, err := encodeSession(request.GetSession())
+	outcomeID, onOutcome := ctx.Value(outcomeIDKey{}).(string)
+	if onOutcome && outcomeID == "" {
+		return errors.New("a token issued on an outcome needs the outcome id")
+	}
+
+	session, expiresAt, err := encodeSession(request.GetSession(), outcomeID)
 	if err != nil {
 		return err
 	}
@@ -122,6 +176,7 @@ func createToken(ctx context.Context, store oauth2provider.TokenStore, signature
 		GrantedAudience:   request.GetGrantedAudience(),
 		Session:           session,
 		ExpiresAt:         expiresAt,
+		OutcomeID:         outcomeID,
 	})
 }
 

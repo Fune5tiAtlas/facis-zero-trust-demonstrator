@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"time"
+
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/if03"
 )
 
 // RegistrationScope is the scope an access token must carry, together with
@@ -14,6 +16,13 @@ const RegistrationScope = "connector:client_registration"
 // its iat: DPoPConfig.ProofLifespan plus DPoPConfig.ClockSkew may not exceed
 // it. It bounds how long a replay store has to keep a record.
 const MaxDPoPProofWindow = 90 * time.Second
+
+// VerifiedPresentationGrantType is the grant type of the verified-presentation grant: an access
+// token issued on a signed IF-03 verification outcome.
+const VerifiedPresentationGrantType = "urn:facis:params:oauth:grant-type:verified-presentation"
+
+// ChallengeLifetime is how long a challenge from the challenge endpoint stays usable.
+const ChallengeLifetime = 120 * time.Second
 
 // Config configures a Provider.
 type Config struct {
@@ -35,6 +44,31 @@ type Config struct {
 	// minutes. When nil, access tokens are opaque and signed with Secret.
 	// Registration access tokens are opaque either way.
 	AccessTokenSigner TokenSigner
+
+	// VerifiedPresentation enables the verified-presentation grant and the
+	// challenge endpoint when its TrustedIssuers is non-empty.
+	VerifiedPresentation VerifiedPresentationConfig
+}
+
+// VerifiedPresentationConfig configures the verified-presentation grant. The grant issues signed
+// tokens only, so it needs Config.AccessTokenSigner, and it needs Stores.Challenges,
+// Stores.Outcomes and Stores.Transactions.
+type VerifiedPresentationConfig struct {
+	// TrustedIssuers are the IF-03 issuers whose outcomes are accepted, with their keys.
+	TrustedIssuers if03.Issuers
+
+	// Scopes maps an outcome's claims to the scopes the grant issues. An outcome whose claims match
+	// no entry is refused. These scopes are never issued through client_credentials.
+	Scopes []ClaimScopes
+}
+
+// ClaimScopes grants Scopes to an outcome whose role is Role and whose entitlement is Entitlement,
+// both compared exactly; an empty Entitlement matches only an outcome without one. What is issued is
+// further limited to the client's registered scopes.
+type ClaimScopes struct {
+	Role        string
+	Entitlement string
+	Scopes      []string
 }
 
 // TokenSigner signs access tokens with an ECDSA P-256 key whose private half

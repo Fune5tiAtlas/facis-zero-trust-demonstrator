@@ -301,39 +301,11 @@ func TestSignedTokens_TransitSigner(t *testing.T) {
 func checkWithTokenverify(t *testing.T, signer oauth2provider.TokenSigner, token string, key *dpoptest.Key) {
 	t.Helper()
 
-	jwk := jose.PublicJWK(signer.Public())
-	jwk.Kid = signer.KeyID()
-
-	keySet, err := json.Marshal(map[string]any{"keys": []any{map[string]string{
-		"kty": jwk.Kty, "crv": jwk.Crv, "x": jwk.X, "y": jwk.Y, "kid": jwk.Kid, "use": "sig",
-	}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	jwks := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(keySet)
-	}))
-	t.Cleanup(jwks.Close)
-
 	var offset atomic.Int64
 
+	now := func() time.Time { return time.Now().Add(time.Duration(offset.Load())) }
 	verifier := func(audience string) *tokenverify.Verifier {
-		v, err := tokenverify.New(tokenverify.Config{
-			Issuer:        "https://connector.example",
-			JWKSURL:       jwks.URL,
-			Audience:      audience,
-			PublicBaseURL: resourceBaseURL,
-			Scopes:        []string{resourceScope},
-			Replay:        &memReplay{seen: map[replay.Use]bool{}},
-			Now:           func() time.Time { return time.Now().Add(time.Duration(offset.Load())) },
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		return v
+		return newTokenverify(t, signer, audience, []string{resourceScope}, now)
 	}
 
 	request := func(proofKey *dpoptest.Key) *http.Request {
@@ -377,6 +349,43 @@ func checkWithTokenverify(t *testing.T, signer oauth2provider.TokenSigner, token
 	if _, err := v.Verify(request(key)); !errors.Is(err, tokenverify.ErrExpired) {
 		t.Errorf("expired token: err %v, want %v", err, tokenverify.ErrExpired)
 	}
+}
+
+// newTokenverify is the resource-side verifier for tokens signed by signer, with the key set served
+// from a test server.
+func newTokenverify(t *testing.T, signer oauth2provider.TokenSigner, audience string, scopes []string, now func() time.Time) *tokenverify.Verifier {
+	t.Helper()
+
+	jwk := jose.PublicJWK(signer.Public())
+	jwk.Kid = signer.KeyID()
+
+	keySet, err := json.Marshal(map[string]any{"keys": []any{map[string]string{
+		"kty": jwk.Kty, "crv": jwk.Crv, "x": jwk.X, "y": jwk.Y, "kid": jwk.Kid, "use": "sig",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	jwks := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(keySet)
+	}))
+	t.Cleanup(jwks.Close)
+
+	v, err := tokenverify.New(tokenverify.Config{
+		Issuer:        "https://connector.example",
+		JWKSURL:       jwks.URL,
+		Audience:      audience,
+		PublicBaseURL: resourceBaseURL,
+		Scopes:        scopes,
+		Replay:        &memReplay{seen: map[replay.Use]bool{}},
+		Now:           now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return v
 }
 
 func decodePart(t *testing.T, part string, v any) {

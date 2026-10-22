@@ -9,6 +9,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"authelia.com/provider/oauth2"
@@ -32,7 +33,11 @@ type provider struct {
 	strategy coreStrategy
 	dpop     *rfc9449.DefaultStrategy
 	lib      oauth2.Provider
+	fosite   *oauth2.Fosite
 	signed   bool
+
+	// vp is the verified-presentation grant's configuration, nil when the grant is not enabled.
+	vp *verifiedPresentation
 }
 
 // coreStrategy is what the adapter needs of the token strategy: the HMAC one for opaque tokens or
@@ -56,6 +61,11 @@ func New(cfg oauth2provider.Config, stores oauth2provider.Stores) (oauth2provide
 		return nil, err
 	}
 
+	vp, err := newVerifiedPresentation(cfg, stores)
+	if err != nil {
+		return nil, err
+	}
+
 	store := &storeAdapter{stores: stores, strategy: config.RFC7591ClientRegistrationStrategy, config: config}
 	hmac := hoauth2.NewHMACCoreStrategy(config, accessTokenPrefix)
 
@@ -67,15 +77,46 @@ func New(cfg oauth2provider.Config, stores oauth2provider.Stores) (oauth2provide
 
 	config.DPoPStrategy = dpop
 
-	lib := compose.Compose(config, store, strategy,
-		compose.OAuth2ClientCredentialsGrantFactory,
+	var vpScopes map[string]bool
+	if vp != nil {
+		vpScopes = vp.vpScopes
+	}
+
+	factories := []compose.Factory{
+		func(config oauth2.Configurator, storage, strategy any) any {
+			return &clientCredentials{
+				ClientCredentialsGrantHandler: compose.OAuth2ClientCredentialsGrantFactory(config, storage, strategy).(*hoauth2.ClientCredentialsGrantHandler),
+				vpScopes:                      vpScopes,
+			}
+		},
 		compose.DPoPTokenFactory,
 		compose.RFC7591ClientRegistrationFactory,
-	)
+	}
+
+	if vp != nil {
+		factories = append(factories, func(_ oauth2.Configurator, _, _ any) any {
+			return &vpGrant{
+				HandleHelper: &hoauth2.HandleHelper{AccessTokenStrategy: strategy, AccessTokenStorage: store, Config: config},
+				vp:           vp,
+				store:        store,
+				lifespan:     config.GetAccessTokenLifespan(context.Background()),
+			}
+		})
+	}
+
+	lib := compose.Compose(config, store, strategy, factories...)
+
+	fosite, ok := lib.(*oauth2.Fosite)
+	if !ok {
+		return nil, fmt.Errorf("oauth2provider: the library composed %T, not its provider", lib)
+	}
 
 	config.RFC7591ClientRegistrationEndpointAuthStrategy = rfc7591.NewDefaultEndpointAuthStrategy(config, store, strategy, strategy)
 
-	return &provider{config: config, store: store, strategy: strategy, dpop: dpop, lib: lib, signed: cfg.AccessTokenSigner != nil}, nil
+	return &provider{
+		config: config, store: store, strategy: strategy, dpop: dpop, lib: lib, fosite: fosite,
+		signed: cfg.AccessTokenSigner != nil, vp: vp,
+	}, nil
 }
 
 // newSession is the session a token request starts with: a JWT session when tokens are signed,
@@ -89,24 +130,75 @@ func (p *provider) newSession() oauth2.Session {
 }
 
 // TokenHandler implements oauth2provider.Provider.
+//
+// A verified-presentation request is validated by NewAccessRequest without writes (client
+// authentication, DPoP proof, nonce and replay records stay outside any transaction). Only then is a
+// transaction begun; NewAccessResponse runs in it, consuming the challenge and the outcome and
+// storing the token, and the transaction commits only after NewAccessResponse returned. The response
+// is written after the commit. Any error, a failed commit included, rolls back and is answered as an
+// error, so a token is never delivered on a consumption that did not persist.
 func (p *provider) TokenHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, outcome := withOutcome(r.Context())
 
-		request, err := p.lib.NewAccessRequest(ctx, r, p.newSession())
-		if err != nil {
+		refuse := func(request oauth2.AccessRequester, err error) {
 			writeWithReason(w, classify(err, outcome), func(rw http.ResponseWriter) {
 				p.lib.WriteAccessError(ctx, rw, request, err)
 			})
+		}
+
+		request, err := p.lib.NewAccessRequest(ctx, r, p.newSession())
+		if err != nil {
+			refuse(request, err)
+
+			return
+		}
+
+		responseCtx := ctx
+
+		transactional := request.GetGrantTypes().ExactOne(vpGrantType)
+		if transactional {
+			if responseCtx, err = p.store.BeginTX(ctx); err != nil {
+				refuse(request, oauth2.ErrServerError.WithWrap(err))
+
+				return
+			}
+
+			finished := false
+
+			// Rolls back on a panic too; rolling back is a no-op once finished.
+			defer func() {
+				if !finished {
+					_ = p.store.Rollback(responseCtx)
+				}
+			}()
+
+			response, err := p.lib.NewAccessResponse(responseCtx, request)
+			if err == nil {
+				if err = p.store.Commit(responseCtx); err != nil {
+					err = oauth2.ErrServerError.WithWrap(err)
+				}
+			} else {
+				_ = p.store.Rollback(responseCtx)
+			}
+
+			finished = true
+
+			// The transaction is settled before anything is written.
+			if err != nil {
+				refuse(request, err)
+
+				return
+			}
+
+			p.lib.WriteAccessResponse(ctx, w, request, response)
 
 			return
 		}
 
 		response, err := p.lib.NewAccessResponse(ctx, request)
 		if err != nil {
-			writeWithReason(w, classify(err, outcome), func(rw http.ResponseWriter) {
-				p.lib.WriteAccessError(ctx, rw, request, err)
-			})
+			refuse(request, err)
 
 			return
 		}

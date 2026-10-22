@@ -178,3 +178,139 @@ func TestSweep_RemovesOnlyExpiredRows(t *testing.T) {
 		t.Errorf("live token swept: %v", err)
 	}
 }
+
+// A grant transaction is all or nothing: rolled back, the challenge is unconsumed and neither the
+// outcome nor the token exists; committed, all three persist and a second consumption is refused.
+func TestTransactions_ConsumeChallengeOutcomeAndTokenTogether(t *testing.T) {
+	ctx := t.Context()
+	stores := New(newPool(t), nil)
+	now := time.Now()
+
+	if err := stores.Clients.CreateClient(ctx, oauth2provider.Client{ID: "c"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stores.Challenges.CreateChallenge(ctx, oauth2provider.Challenge{
+		Value: "challenge-0123456789", ClientID: "c", Audience: "https://b.example", ExpiresAt: now.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome := oauth2provider.VerifiedOutcome{
+		ID: "00000000-0000-4000-8000-000000000001", Issuer: "https://v.example", ClientID: "c",
+		Challenge: "challenge-0123456789", Audience: "https://b.example", Claims: json.RawMessage(`{"role":"r"}`),
+		CredentialRefs: []string{"urn:ref:1"}, VerifiedAt: now, ExpiresAt: now.Add(time.Minute),
+	}
+
+	grant := func(commit bool) error {
+		txCtx, err := stores.Transactions.BeginTx(ctx)
+		if err != nil {
+			return err
+		}
+		err = stores.Challenges.ConsumeChallenge(txCtx, outcome.Challenge, "c", outcome.Audience)
+		if err == nil {
+			err = stores.Outcomes.ConsumeOutcome(txCtx, outcome)
+		}
+		if err == nil {
+			err = stores.AccessTokens.CreateToken(txCtx, "sig", oauth2provider.TokenRecord{
+				RequestID: "r", ClientID: "c", RequestedAt: now, Session: []byte("{}"), ExpiresAt: now.Add(time.Minute),
+				OutcomeID: outcome.ID,
+			})
+		}
+		if err != nil || !commit {
+			if rbErr := stores.Transactions.Rollback(txCtx); rbErr != nil {
+				t.Fatal(rbErr)
+			}
+			return err
+		}
+		return stores.Transactions.Commit(txCtx)
+	}
+
+	if err := grant(false); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := stores.Challenges.GetChallenge(ctx, outcome.Challenge); err != nil || !c.ConsumedAt.IsZero() {
+		t.Errorf("challenge after rollback: %+v, %v", c, err)
+	}
+	if _, err := stores.AccessTokens.GetToken(ctx, "sig"); !errors.Is(err, oauth2provider.ErrNotFound) {
+		t.Errorf("token after rollback: %v", err)
+	}
+
+	if err := grant(true); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := stores.AccessTokens.GetToken(ctx, "sig"); err != nil || got.OutcomeID != outcome.ID {
+		t.Errorf("token after commit: %+v, %v", got, err)
+	}
+
+	if err := stores.Challenges.ConsumeChallenge(ctx, outcome.Challenge, "c", outcome.Audience); !errors.Is(err, oauth2provider.ErrConsumed) {
+		t.Errorf("second challenge consumption: %v, want ErrConsumed", err)
+	}
+	if err := stores.Outcomes.ConsumeOutcome(ctx, outcome); !errors.Is(err, oauth2provider.ErrConsumed) {
+		t.Errorf("second outcome consumption: %v, want ErrConsumed", err)
+	}
+	if err := stores.AccessTokens.CreateToken(ctx, "sig2", oauth2provider.TokenRecord{
+		RequestID: "r2", ClientID: "c", RequestedAt: now, Session: []byte("{}"), ExpiresAt: now.Add(time.Minute), OutcomeID: outcome.ID,
+	}); err == nil {
+		t.Error("a second token on one outcome id was stored")
+	}
+}
+
+// A challenge is consumed only by its client, for its audience, before it expires.
+func TestChallenges_ConsumptionChecksBindingAndExpiry(t *testing.T) {
+	ctx := t.Context()
+	now := time.Now()
+	stores := New(newPool(t), func() time.Time { return now })
+
+	if err := stores.Clients.CreateClient(ctx, oauth2provider.Client{ID: "c"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stores.Challenges.CreateChallenge(ctx, oauth2provider.Challenge{
+		Value: "ch", ClientID: "c", Audience: "aud", ExpiresAt: now.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, args := range map[string][2]string{"other client": {"x", "aud"}, "other audience": {"c", "x"}} {
+		if err := stores.Challenges.ConsumeChallenge(ctx, "ch", args[0], args[1]); !errors.Is(err, oauth2provider.ErrConsumed) {
+			t.Errorf("%s: %v, want refused", name, err)
+		}
+	}
+
+	now = now.Add(2 * time.Minute)
+	if err := stores.Challenges.ConsumeChallenge(ctx, "ch", "c", "aud"); !errors.Is(err, oauth2provider.ErrConsumed) {
+		t.Errorf("expired: %v, want refused", err)
+	}
+	if _, err := stores.Challenges.GetChallenge(ctx, "absent"); !errors.Is(err, oauth2provider.ErrNotFound) {
+		t.Errorf("absent challenge: %v", err)
+	}
+}
+
+// Sweep removes expired unconsumed challenges and keeps consumed ones, which guard against replay.
+func TestSweep_KeepsConsumedChallenges(t *testing.T) {
+	ctx := t.Context()
+	pool := newPool(t)
+	now := time.Now()
+	stores := New(pool, func() time.Time { return now.Add(-time.Hour) })
+
+	if err := stores.Clients.CreateClient(ctx, oauth2provider.Client{ID: "c"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{"unused", "used"} {
+		if err := stores.Challenges.CreateChallenge(ctx, oauth2provider.Challenge{Value: v, ClientID: "c", Audience: "a", ExpiresAt: now.Add(-time.Minute)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := stores.Challenges.ConsumeChallenge(ctx, "used", "c", "a"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Sweep(ctx, pool, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stores.Challenges.GetChallenge(ctx, "unused"); !errors.Is(err, oauth2provider.ErrNotFound) {
+		t.Errorf("expired unconsumed challenge kept: %v", err)
+	}
+	if c, err := stores.Challenges.GetChallenge(ctx, "used"); err != nil || c.ConsumedAt.IsZero() {
+		t.Errorf("consumed challenge: %+v, %v; want kept", c, err)
+	}
+}

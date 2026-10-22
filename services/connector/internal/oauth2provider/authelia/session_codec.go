@@ -24,6 +24,10 @@ type storedSession struct {
 	Subject string                         `json:"sub,omitempty"`
 	JKT     string                         `json:"jkt,omitempty"`
 	X5T     string                         `json:"x5t,omitempty"`
+
+	// OutcomeID is the IF-03 outcome a verified-presentation token was issued on. It is a record of
+	// provenance; nothing is restored from it.
+	OutcomeID string `json:"outcome_id,omitempty"`
 }
 
 // subjectSession is implemented by both of the library's session types.
@@ -38,7 +42,7 @@ type certBoundSession interface {
 }
 
 // encodeSession returns the stored form of session and the access token's expiry.
-func encodeSession(session oauth2.Session) ([]byte, time.Time, error) {
+func encodeSession(session oauth2.Session, outcomeID string) ([]byte, time.Time, error) {
 	if session == nil {
 		return nil, time.Time{}, errors.New("no session to store")
 	}
@@ -52,6 +56,8 @@ func encodeSession(session oauth2.Session) ([]byte, time.Time, error) {
 		V:       sessionVersion,
 		Expires: map[oauth2.TokenType]time.Time{oauth2.AccessToken: exp.UTC()},
 		Subject: session.GetSubject(),
+
+		OutcomeID: outcomeID,
 	}
 
 	if bound, ok := session.(oauth2.DPoPBoundSession); ok {
