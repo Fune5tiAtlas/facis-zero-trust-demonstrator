@@ -29,9 +29,17 @@ const accessTokenPrefix = "connector_%s_"
 type provider struct {
 	config   *oauth2.Config
 	store    *storeAdapter
-	strategy *hoauth2.HMACCoreStrategy
+	strategy coreStrategy
 	dpop     *rfc9449.DefaultStrategy
 	lib      oauth2.Provider
+	signed   bool
+}
+
+// coreStrategy is what the adapter needs of the token strategy: the HMAC one for opaque tokens or
+// signedStrategy.
+type coreStrategy interface {
+	hoauth2.AccessTokenStrategy
+	rfc7591.ClientRegistrationTokenStrategy
 }
 
 var _ oauth2provider.Provider = (*provider)(nil)
@@ -49,7 +57,12 @@ func New(cfg oauth2provider.Config, stores oauth2provider.Stores) (oauth2provide
 	}
 
 	store := &storeAdapter{stores: stores, strategy: config.RFC7591ClientRegistrationStrategy, config: config}
-	strategy := hoauth2.NewHMACCoreStrategy(config, accessTokenPrefix)
+	hmac := hoauth2.NewHMACCoreStrategy(config, accessTokenPrefix)
+
+	var strategy coreStrategy = hmac
+	if cfg.AccessTokenSigner != nil {
+		strategy = newSignedStrategy(config, hmac, cfg.AccessTokenSigner)
+	}
 	dpop := rfc9449.NewDefaultStrategy(config, store)
 
 	config.DPoPStrategy = dpop
@@ -62,7 +75,17 @@ func New(cfg oauth2provider.Config, stores oauth2provider.Stores) (oauth2provide
 
 	config.RFC7591ClientRegistrationEndpointAuthStrategy = rfc7591.NewDefaultEndpointAuthStrategy(config, store, strategy, strategy)
 
-	return &provider{config: config, store: store, strategy: strategy, dpop: dpop, lib: lib}, nil
+	return &provider{config: config, store: store, strategy: strategy, dpop: dpop, lib: lib, signed: cfg.AccessTokenSigner != nil}, nil
+}
+
+// newSession is the session a token request starts with: a JWT session when tokens are signed,
+// since the library takes the token's header and claims from it.
+func (p *provider) newSession() oauth2.Session {
+	if p.signed {
+		return &hoauth2.JWTSession{}
+	}
+
+	return &oauth2.DefaultSession{}
 }
 
 // TokenHandler implements oauth2provider.Provider.
@@ -70,7 +93,7 @@ func (p *provider) TokenHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, outcome := withOutcome(r.Context())
 
-		request, err := p.lib.NewAccessRequest(ctx, r, &oauth2.DefaultSession{})
+		request, err := p.lib.NewAccessRequest(ctx, r, p.newSession())
 		if err != nil {
 			writeWithReason(w, classify(err, outcome), func(rw http.ResponseWriter) {
 				p.lib.WriteAccessError(ctx, rw, request, err)

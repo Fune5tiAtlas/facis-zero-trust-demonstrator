@@ -14,35 +14,58 @@ import (
 )
 
 // A token bound to a key stays bound when the process restarts and reads it back from the store:
-// it still needs a proof by that key, with DPoP enforcement on and off.
+// it still needs a proof by that key, with DPoP enforcement on and off, for opaque and for signed
+// tokens whatever CONNECTOR_TEST_TOKENS says.
 func TestStore_BoundTokenStaysBoundAcrossRestart(t *testing.T) {
-	for name, enforce := range map[string]bool{"enforcement on": true, "enforcement off": false} {
-		t.Run(name, func(t *testing.T) {
-			h := newHarness(t, func(c *oauth2provider.Config) { c.DPoP.Enforce = enforce })
-			key := dpoptest.NewKey(t)
-			token := h.boundToken(key)
-
-			h.restart()
-
-			proof := dpoptest.Mint(t, key, dpoptest.Proof{Method: http.MethodGet, URL: h.resourceURL, AccessToken: token})
-			if got := h.resource("DPoP "+token, proof); got.status != http.StatusOK {
-				t.Fatalf("with its proof after restart: status %d, body %v", got.status, got.body)
+	for _, signed := range []bool{false, true} {
+		for name, enforce := range map[string]bool{"enforcement on": true, "enforcement off": false} {
+			if signed {
+				name = "jwt, " + name
+			} else {
+				name = "opaque, " + name
 			}
 
-			if got := h.resource("DPoP "+token, ""); got.status != http.StatusUnauthorized {
-				t.Errorf("without a proof after restart: status %d, want 401", got.status)
-			}
+			t.Run(name, func(t *testing.T) { boundTokenStaysBound(t, signed, enforce) })
+		}
+	}
+}
 
-			if got := h.resource("Bearer "+token, ""); got.status != http.StatusUnauthorized {
-				t.Errorf("as a bearer token after restart: status %d, want 401", got.status)
-			}
+func boundTokenStaysBound(t *testing.T, signed, enforce bool) {
+	h := newHarness(t, func(c *oauth2provider.Config) {
+		c.DPoP.Enforce = enforce
+		c.AccessTokenSigner = nil
 
-			thief := dpoptest.NewKey(t)
-			stolen := dpoptest.Mint(t, thief, dpoptest.Proof{Method: http.MethodGet, URL: h.resourceURL, AccessToken: token})
-			if got := h.resource("DPoP "+token, stolen); got.reason() != oauth2provider.CodeDPoPKeyMismatch {
-				t.Errorf("with another key after restart: reason %q, want %q", got.reason(), oauth2provider.CodeDPoPKeyMismatch)
-			}
-		})
+		if signed {
+			c.Issuer = "https://connector.example"
+			c.AccessTokenSigner = newTestSigner(t)
+		}
+	})
+	key := dpoptest.NewKey(t)
+	token := h.boundToken(key)
+
+	if isJWT := strings.Count(token, ".") == 2; isJWT != signed {
+		t.Fatalf("token %.16s… is a JWT: %v, want %v", token, isJWT, signed)
+	}
+
+	h.restart()
+
+	proof := dpoptest.Mint(t, key, dpoptest.Proof{Method: http.MethodGet, URL: h.resourceURL, AccessToken: token})
+	if got := h.resource("DPoP "+token, proof); got.status != http.StatusOK {
+		t.Fatalf("with its proof after restart: status %d, body %v", got.status, got.body)
+	}
+
+	if got := h.resource("DPoP "+token, ""); got.status != http.StatusUnauthorized {
+		t.Errorf("without a proof after restart: status %d, want 401", got.status)
+	}
+
+	if got := h.resource("Bearer "+token, ""); got.status != http.StatusUnauthorized {
+		t.Errorf("as a bearer token after restart: status %d, want 401", got.status)
+	}
+
+	thief := dpoptest.NewKey(t)
+	stolen := dpoptest.Mint(t, thief, dpoptest.Proof{Method: http.MethodGet, URL: h.resourceURL, AccessToken: token})
+	if got := h.resource("DPoP "+token, stolen); got.reason() != oauth2provider.CodeDPoPKeyMismatch {
+		t.Errorf("with another key after restart: reason %q, want %q", got.reason(), oauth2provider.CodeDPoPKeyMismatch)
 	}
 }
 

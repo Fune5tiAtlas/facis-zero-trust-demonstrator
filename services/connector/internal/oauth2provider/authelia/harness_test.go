@@ -3,6 +3,9 @@ package authelia
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -24,6 +27,7 @@ import (
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/oauth2provider"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/oauth2provider/memstore"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/oauth2provider/pgstore"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/signing"
 )
 
 const (
@@ -84,6 +88,15 @@ func newHarness(t *testing.T, configure func(*oauth2provider.Config)) *harness {
 			EndpointURL: h.registerURL,
 			GrantTypes:  []string{"client_credentials"},
 		},
+	}
+
+	switch kind := os.Getenv(tokensEnv); kind {
+	case "", "opaque":
+	case "jwt":
+		cfg.Issuer = server.URL
+		cfg.AccessTokenSigner = newTestSigner(t)
+	default:
+		t.Fatalf("%s=%q: want opaque or jwt", tokensEnv, kind)
 	}
 
 	if configure != nil {
@@ -384,4 +397,25 @@ func newStores(t *testing.T, now func() time.Time) (oauth2provider.Stores, *pgxp
 
 		return oauth2provider.Stores{}, nil
 	}
+}
+
+// tokensEnv selects the access tokens the conformance suite runs with: unset or "opaque" for opaque
+// tokens, "jwt" for RFC 9068 tokens signed by an in-process key. Every conformance test is a test of
+// both.
+const tokensEnv = "CONNECTOR_TEST_TOKENS"
+
+func newTestSigner(t *testing.T) *signing.Local {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	signer, err := signing.NewLocal(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return signer
 }
