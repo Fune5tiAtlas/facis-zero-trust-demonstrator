@@ -229,6 +229,101 @@ acceptable. It decides atomically whether the proof was seen before; two uses ar
 when thumbprint, method, URI and `jti` are equal, and a store may also distinguish by nonce, as the
 in-memory one does.
 
+## Running the connector
+
+`connector serve` (`services/connector`, image `deployment/docker/connector/Dockerfile`) runs the
+provider on the PostgreSQL stores (`pgstore`, replay included) with access tokens signed through
+`signing.Transit`. It has two plain-HTTP listeners and writes JSON records on stdout.
+
+### Configuration
+
+Every flag defaults to the environment variable of the same name; a flag set on the command line
+wins, and the environment fills in after parsing, so no value, the database URL above all, ever
+reaches the usage text. The database URL is never logged. Secrets never come from a flag or a
+variable: the OpenBao token and the two HMAC secrets are read from files, named below. A trailing
+line break in a secret file is not part of the secret.
+
+| Flag | Environment | Default | Meaning |
+|---|---|---|---|
+| `--addr` | `CONNECTOR_ADDR` | `:8080` | The API listener |
+| `--ops-addr` | `CONNECTOR_OPS_ADDR` | `:9090` | The ops listener the kubelet probes: `/healthz` and `/readyz` |
+| `--database-url` | `CONNECTOR_DATABASE_URL` | required | PostgreSQL connection URL of the zone's authorization database |
+| `--openbao-url` | `CONNECTOR_OPENBAO_URL` | required | OpenBao, `http(s)://host[:port]` and nothing more |
+| `--openbao-token-file` | `CONNECTOR_OPENBAO_TOKEN_FILE` | required | File holding the OpenBao token, read on every call, so a rotated token is picked up |
+| `--issuer` | `CONNECTOR_ISSUER` | required | `iss` of the access tokens, an `https://` URL |
+| `--signing-key` | `CONNECTOR_SIGNING_KEY` | required | Transit key that signs the access tokens |
+| `--signing-key-version` | `CONNECTOR_SIGNING_KEY_VERSION` | required | Pinned version of that key, 1 or more |
+| `--registration-endpoint` | `CONNECTOR_REGISTRATION_ENDPOINT` | required | Absolute URL of `POST /oauth2/register` as clients reach it; also the audience a registration token must carry |
+| `--token-secret-file` | `CONNECTOR_TOKEN_SECRET_FILE` | required | File holding the HMAC secret of opaque tokens, 32 bytes or more |
+| `--registration-secret-file` | `CONNECTOR_REGISTRATION_SECRET_FILE` | required | File holding the HMAC secret of registration access tokens, 32 bytes or more, different from the other |
+| `--access-token-lifespan` | `CONNECTOR_ACCESS_TOKEN_LIFESPAN` | `300s` | Lifetime of an access token |
+| `--dpop-enforce` | `CONNECTOR_DPOP_ENFORCE` | `true` | Require a proof from every client (`--dpop-enforce=false` to relax) |
+| `--dpop-nonce` | `CONNECTOR_DPOP_NONCE` | `true` | Challenge with a server nonce |
+| `--readiness-timeout` | `CONNECTOR_READINESS_TIMEOUT` | `2s` | Budget of one `/readyz` evaluation |
+| `--drain-delay` | `CONNECTOR_DRAIN_DELAY` | `5s` | On SIGTERM, how long `/readyz` answers 503 while the listeners stay open |
+| `--shutdown-timeout` | `CONNECTOR_SHUTDOWN_TIMEOUT` | `10s` | Drain of the listeners after that delay; what is still open then is closed |
+| `--log-level` | `CONNECTOR_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
+
+The DPoP proof window is fixed at 60 s lifespan and 30 s skew. A missing, short or shared secret
+file stops the process at start with exit 1; a usage error exits 2; a clean stop exits 0.
+
+### Endpoints
+
+| Listener | Path | Serves |
+|---|---|---|
+| API | `POST /oauth2/token` | The token endpoint (`Provider.TokenHandler`) |
+| API | `POST /oauth2/register` | Client registration (`Provider.RegistrationHandler`) |
+| API | `GET /.well-known/jwks.json` | The signing key as a JWK set: `kid` the signer's `KeyID()`, `use` `sig`, `alg` `ES256`; `Cache-Control: public, max-age=300` |
+| API and ops | `GET /healthz`, `GET /readyz` | Liveness and readiness |
+
+Every API request runs under a 5 s deadline, which bounds its database and transit calls.
+
+### Start, readiness and drain
+
+The connector never waits for its dependencies. It reads the pinned key's public half from transit
+in the background, retrying with backoff up to 30 s, and until that succeeds every API path but the
+health ones answers 503 and readiness is red; a connector started before OpenBao, or before the key
+version exists, starts, stays up and becomes ready on its own.
+
+`/readyz` answers 200 only when all three checks say `ok`, 503 otherwise, with the checks' words:
+
+```json
+{"ready": false, "checks": {"postgres": "ok", "openbao": "ok", "signing_key": "missing"}}
+```
+
+- `postgres`: `ok`, `unreachable`, or `schema_behind` when the newest version in `schema_migrations`
+  (written by `token-store migrate`) is below the one this build needs. The connector cannot import
+  the token store's migration runner, so it checks the version only; checksum drift is the token
+  store's readiness to report. A test keeps the needed version equal to the newest migration file,
+  so a new migration fails it until someone decides whether the connector needs that migration.
+- `openbao`: `/v1/sys/health`, `ok`, `unreachable`, `uninitialized` or `sealed`.
+- `signing_key`: the pinned version is read again and its RFC 7638 thumbprint must equal the
+  signer's `kid`: `ok`, `missing` (no such version), `mismatch`, `pending` (signer not built yet) or
+  `unreachable`.
+
+The three run at once under the readiness budget; only a change of outcome is logged. On SIGTERM
+`/readyz` answers 503 with `"draining": true` at once, both listeners keep answering for the drain
+delay, then drain within the shutdown timeout, are force-closed if that runs out, and the pool closes.
+
+### Upkeep
+
+As in the token store: the replay epoch sentinel (`replay_epoch`) is checked at start, every 10 s
+and whenever the pool opens a connection; a missing row is one warning naming the 120 s window in
+which a proof could be replayed once. Every minute `pgstore.Sweep` removes expired tokens and nonces
+and `replay.Sweep` expired proof records. Each of these database operations runs under a 2 s timeout.
+
+### Records
+
+One JSON object per line on stdout, with `service` `connector` and `instance` on all of them. A
+request's records carry its `correlation_id`: the caller's `x-request-id` when it is 1 to 128 visible
+ASCII characters, a minted one otherwise; the response echoes it. Every request ends with one
+`request` record (`method`, `path`, `status`, `duration_ms`). No header, query or body is logged, so
+no token, proof, client secret or `Authorization`/`DPoP` header reaches a record; a test runs the
+binary against PostgreSQL and OpenBao and checks the records for canary secrets.
+
+The challenge endpoint of the VP grant joins the route table in `services/connector/server.go`
+(`apiRoutes`) as one line beside the token endpoint.
+
 ## Running the conformance tests
 
 ```sh
@@ -260,6 +355,14 @@ OpenBao dev server, the same check runs on a token signed through `signing.Trans
 CONNECTOR_TEST_TOKENS=jwt go test -race ./services/connector/...
 TRANSIT_TEST_ADDR=http://127.0.0.1:8200 TRANSIT_TEST_TOKEN=dev \
   go test -race -run TestSignedTokens ./services/connector/internal/oauth2provider/authelia
+```
+
+The binary's own tests (`services/connector`) need both servers for the end-to-end ones:
+
+```sh
+TOKEN_STORE_TEST_DATABASE_URL=postgres://postgres:ci@127.0.0.1:5432/postgres?sslmode=disable \
+TRANSIT_TEST_ADDR=http://127.0.0.1:8200 TRANSIT_TEST_TOKEN=dev \
+  go test -race ./services/connector
 ```
 
 ### Session records
