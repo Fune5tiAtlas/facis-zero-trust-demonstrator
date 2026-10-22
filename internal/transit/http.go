@@ -18,19 +18,33 @@ const keyType = "ecdsa-p256"
 // maxBody bounds what is read of any answer; key metadata and KV entries are a few KiB.
 const maxBody = 1 << 20
 
+// Request limits. A JWS signing input is a header and a claim set, far below maxSignInput; a KV value
+// is an upstream access token, far below maxValue, which leaves room for base64 and the answer's
+// metadata inside maxBody so that whatever this client writes it can read back.
+const (
+	maxSignInput = 16 << 10
+	maxValue     = 256 << 10
+)
+
 // errCAS marks a KV write refused by check-and-set; Create maps it to ErrExists.
 var errCAS = errors.New("check-and-set refused")
 
-// defaultHTTPClient mirrors services/token-store/internal/openbao.NewClient, which this package
-// cannot import: no proxy from the environment, no redirects (a 3xx is an answer, never a new
-// destination for the token). The request context carries the deadline.
-func defaultHTTPClient() *http.Client {
-	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.Proxy = nil
-	return &http.Client{
-		Transport:     t,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+// safeHTTPClient mirrors services/token-store/internal/openbao.NewClient, which this package cannot
+// import: a 3xx is an answer, never a new destination for the token. It returns a copy of c that never follows a redirect, whatever c was configured with,
+// and, when c has no transport of its own, a standard one without a proxy from the environment. A
+// custom transport is the caller's: its proxy and TLS settings are used as given.
+func safeHTTPClient(c *http.Client) *http.Client {
+	out := &http.Client{}
+	if c != nil {
+		*out = *c
 	}
+	if out.Transport == nil {
+		t := http.DefaultTransport.(*http.Transport).Clone()
+		t.Proxy = nil
+		out.Transport = t
+	}
+	out.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return out
 }
 
 // do sends one request with the per-call token and decodes a 2xx answer into out. Errors name the
@@ -38,7 +52,11 @@ func defaultHTTPClient() *http.Client {
 func (c *Client) do(ctx context.Context, op, method, path string, body, out any) (int, error) {
 	token, err := c.cfg.Token(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("transit: %s: token source: %w", op, err)
+		if ctx.Err() != nil {
+			return 0, fmt.Errorf("transit: %s: %w", op, ctx.Err())
+		}
+		// The token source's error is not wrapped: it may carry what an authentication returned.
+		return 0, fmt.Errorf("transit: %s: token source failed", op)
 	}
 	if token == "" {
 		return 0, fmt.Errorf("transit: %s: token source returned no token", op)
@@ -134,6 +152,20 @@ func (c *Client) kvPath(kind, path string) string {
 		segs[i] = url.PathEscape(s)
 	}
 	return "/v1/" + c.cfg.KVMount + "/" + kind + "/" + strings.Join(segs, "/")
+}
+
+// validMount admits mount paths of plain segments only: no escapes, delimiters or dot segments,
+// since a mount is placed in the URL path as it is.
+func validMount(m string) error {
+	if m == "" {
+		return errors.New("transit: invalid mount")
+	}
+	for _, s := range strings.Split(m, "/") {
+		if validName(s) != nil {
+			return errors.New("transit: invalid mount")
+		}
+	}
+	return nil
 }
 
 func validPath(p string) error {

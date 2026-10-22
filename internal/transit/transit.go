@@ -104,18 +104,19 @@ func New(cfg Config) (*Client, error) {
 	if cfg.KVMount == "" {
 		cfg.KVMount = "secret"
 	}
-	if validPath(cfg.TransitMount) != nil || validPath(cfg.KVMount) != nil {
+	if validMount(cfg.TransitMount) != nil || validMount(cfg.KVMount) != nil {
 		return nil, errors.New("transit: invalid mount")
 	}
-	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = defaultHTTPClient()
-	}
+	cfg.HTTPClient = safeHTTPClient(cfg.HTTPClient)
 	return &Client{cfg: cfg}, nil
 }
 
 func (c *Client) Sign(ctx context.Context, key KeyVersion, signingInput []byte) ([]byte, error) {
 	if err := validKey(key); err != nil {
 		return nil, err
+	}
+	if len(signingInput) == 0 || len(signingInput) > maxSignInput {
+		return nil, errors.New("transit: sign: input size out of bounds")
 	}
 	body := map[string]any{
 		"input":                base64.StdEncoding.EncodeToString(signingInput),
@@ -204,6 +205,9 @@ func (c *Client) EnsureKey(ctx context.Context, name string) (KeyVersion, error)
 func (c *Client) Create(ctx context.Context, path string, value []byte) error {
 	if err := validPath(path); err != nil {
 		return err
+	}
+	if len(value) == 0 || len(value) > maxValue {
+		return errors.New("transit: create: value size out of bounds")
 	}
 	body := map[string]any{
 		"data":    map[string]any{"value": value}, // []byte marshals as base64
