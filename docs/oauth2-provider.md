@@ -15,6 +15,7 @@ registration and DPoP-bound access tokens.
 | Client credentials grant | RFC 6749 section 4.4 |
 | Sender-constrained access tokens (DPoP) | RFC 9449 |
 | Resource-side validation of bound tokens | RFC 9449 section 7 |
+| Signed access tokens, when a signer is configured | RFC 9068 |
 
 Issuing tokens from a verified credential presentation is not part of this layer yet.
 
@@ -34,6 +35,7 @@ connector code ──depends on──▶ oauth2provider            contract: typ
 | `oauth2provider` | The contract: `Provider`, `Config`, `Client`, the store interfaces and the reason codes. Imports no OAuth 2.0 library. |
 | `oauth2provider/authelia` | The implementation. The only package allowed to import the library; its exported API names no library type. |
 | `oauth2provider/memstore` | In-memory stores for tests and local development. Nothing is persisted. |
+| `signing` | Access-token signers: `Transit` over an OpenBao transit key, and `Local` over an in-process key for tests only. |
 | `oauth2provider/pgstore` | Clients, issued tokens and DPoP nonces in the zone's authorization database (`oauth2_client`, `oauth2_token`, `oauth2_dpop_nonce`; schema in the [token store](token-store.md)'s migrations). Validity is checked against the stores' clock, passed as a parameter. `Sweep` removes expired rows. |
 | `dpoptest` | Test helper that mints DPoP proofs, including deliberately defective ones, using the standard library only. |
 
@@ -59,7 +61,9 @@ so the contract cannot change in passing. A struct field's line carries its posi
 two fields of one type, which would silently swap them for a caller building the struct
 positionally, is a difference too. To change it on purpose, describe the change here and
 regenerate the listing. Changes so far: `TokenRecord.ExpiresAt` (field 8) was added so a store can
-sweep expired records without reading the session.
+sweep expired records without reading the session; `Config.Issuer` (field 4),
+`Config.AccessTokenSigner` (field 5) and the `TokenSigner` interface were added for signed access
+tokens.
 
 ```bash
 OAUTH2PROVIDER_API_UPDATE=1 go test -run TestContractAPIIsFrozen ./services/connector/internal/oauth2provider
@@ -127,6 +131,46 @@ with a proof that
 
 A bound token presented under the `Bearer` scheme is refused, with or without a proof next to it.
 
+## Signed access tokens
+
+With `Config.AccessTokenSigner` set, access tokens are RFC 9068 JWTs that a protected resource
+validates against the connector's published key set and the DPoP proof, without calling the
+connector (`internal/tokenverify` does this). Without it, access tokens stay opaque, as before.
+Registration access tokens are opaque in both cases.
+
+Header: `typ` `at+jwt`, `alg` `ES256`, `kid` the signer's `KeyID()`. Nothing else.
+
+| Claim | Value |
+|---|---|
+| `iss` | `Config.Issuer`, required when a signer is set |
+| `sub` | The client id. No end user is involved in the grant (RFC 9068 section 2.2) |
+| `client_id` | The client id |
+| `aud` | The granted audience |
+| `scope` | The granted scopes as one space-separated string |
+| `jti` | A random id per token |
+| `iat`, `nbf`, `exp` | Integer seconds. The lifetime defaults to five minutes with a signer |
+| `cnf.jkt` | The thumbprint of the key of the DPoP proof validated at the token endpoint |
+
+`scope` is a string, as RFC 9068 section 2.2.3 defines it and as the resource-side verifier reads
+it. The library's default is a JSON list under the same name, which the verifier refuses; the adapter
+selects the string form.
+
+The signer contract, `oauth2provider.TokenSigner`, is `KeyID()`, `Public()` (the P-256 public key)
+and `Sign(ctx, signingInput)` returning the 64-byte `R||S` ES256 signature. `Sign` receives the
+context of the request being served. The adapter refuses at start-up a signer with an empty key id or
+a key that is not P-256.
+
+`signing.Transit` implements it over one pinned version of an OpenBao transit key: the public key is
+read once by `NewTransit`, the key id is its RFC 7638 thumbprint, and `Sign` asks transit to sign, so
+the private key never enters the process. `signing.Local` holds the key in memory and is for tests
+only.
+
+The token is still recorded in the access-token store under its signature, like an opaque token, so
+`ValidateResourceRequest` accepts it on the same terms: the record must exist, the signature must
+verify against the configured key with exactly that `kid`, `alg` and `typ`, `iss` must match and the
+token must not have expired. The algorithm and key are fixed by the adapter; whatever a registered
+client's metadata says about access-token signing or encryption is not used.
+
 ## Reason codes
 
 Error responses keep the members the OAuth 2.0 specifications define and add a `reason` member with a
@@ -155,8 +199,10 @@ fails if the two lists differ.
 
 | Field | Purpose |
 |---|---|
-| `Secret` | Signs access tokens. At least 32 bytes. |
-| `AccessTokenLifespan` | Defaults to one hour. |
+| `Secret` | Signs opaque access tokens. At least 32 bytes. |
+| `AccessTokenLifespan` | Defaults to one hour, or five minutes with `AccessTokenSigner`. |
+| `Issuer` | The `iss` of signed access tokens. Required with `AccessTokenSigner`. |
+| `AccessTokenSigner` | Makes access tokens signed JWTs (see [Signed access tokens](#signed-access-tokens)). Opaque tokens when nil. |
 | `DPoP.Enforce` | Require a proof from every client, not only from clients registered for bound tokens. |
 | `DPoP.NonceRequired` | Challenge with a server nonce. |
 | `DPoP.ProofLifespan`, `DPoP.ClockSkew` | The freshness window. Together at most 90 seconds, the longest the token store keeps a replay record; a larger sum is refused at start-up. |
@@ -197,6 +243,18 @@ CONNECTOR_TEST_STORE=pg TOKEN_STORE_TEST_DATABASE_URL=postgres://postgres:ci@127
   go test -race ./services/connector/...
 ```
 
+`CONNECTOR_TEST_TOKENS=jwt` runs the same suite with signed access tokens from an in-process key
+(`opaque`, the default, keeps opaque tokens). The two settings combine. A test checks that a signed
+token is accepted by `internal/tokenverify` and refused by it for another proof key, a missing proof,
+an expired token and another audience. With `TRANSIT_TEST_ADDR` and `TRANSIT_TEST_TOKEN` naming an
+OpenBao dev server, the same check runs on a token signed through `signing.Transit`:
+
+```sh
+CONNECTOR_TEST_TOKENS=jwt go test -race ./services/connector/...
+TRANSIT_TEST_ADDR=http://127.0.0.1:8200 TRANSIT_TEST_TOKEN=dev \
+  go test -race -run TestSignedTokens ./services/connector/internal/oauth2provider/authelia
+```
+
 ### Session records
 
 A token record keeps the adapter's own encoding of the session, versioned (`v: 1`): the access token's
@@ -205,7 +263,8 @@ store different session types for one token and their JSON forms differ, so the 
 reads every field through the library's interfaces instead of storing the library's JSON. A record
 of another version, or a binding the requested session type cannot carry, is refused: a bound token
 never comes back looking unbound. `TestStore_BoundTokenStaysBoundAcrossRestart` proves it on both
-stores.
+stores, for opaque and signed tokens: a signed token is stored from the library's JWT session and read
+back into its default session.
 
 ## Limitations
 
@@ -216,9 +275,9 @@ stores.
 - Registration management (RFC 7592) and token introspection are not exposed. A registration
   response nevertheless carries a registration access token and a client configuration URI, which
   lead nowhere yet.
-- Access tokens are opaque and validated by lookup, so a protected resource can only validate them
-  through the connector. Signed tokens carrying the key binding, validated against a published key
-  set, are the decided direction and not implemented yet.
+- Without `AccessTokenSigner`, access tokens are opaque and validated by lookup, so a protected
+  resource can only validate them through the connector. The key set handler that publishes the
+  signer's public key is not part of this layer.
 - The proof URI is reconstructed from the request. Behind a proxy the scheme is taken from
   `X-Forwarded-Proto`, so that header must be set by a trusted hop only.
 - The pinned `authelia.com/provider/oauth2` v0.3.2 requires Go 1.27.x.
