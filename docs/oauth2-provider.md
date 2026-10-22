@@ -366,6 +366,9 @@ line break in a secret file is not part of the secret.
 | `--registrar-secret-file` | `CONNECTOR_REGISTRAR_SECRET_FILE` | required | File holding the registrar's client secret, 32 bytes or more |
 | `--registrar-scopes` | `CONNECTOR_REGISTRAR_SCOPES` | required | Comma-separated scopes of the registrar; must include `connector:client_registration`, plus the scopes registered clients may receive |
 | `--registrar-audiences` | `CONNECTOR_REGISTRAR_AUDIENCES` | required | Comma-separated audiences of the registrar: the registration endpoint plus the resource audiences registered clients may name. A registrar token can carry no other, and a client can only register an audience its registrar token carries |
+| `--registrar-delegable-scopes` | `CONNECTOR_REGISTRAR_DELEGABLE_SCOPES` | none | Comma-separated scopes the registrar may grant to the clients it registers beyond its own token's: `Registration.DelegableScopes` for `--registrar-id`. This is how a client gets a verified-presentation scope. Never `connector:client_registration` |
+| `--vp-trusted-issuers-file` | `CONNECTOR_VP_TRUSTED_ISSUERS_FILE` | none | JSON file of the IF-03 issuers and their keys (below). Set, it enables the verified-presentation grant; unset, the grant is off and the challenge endpoint refuses every request |
+| `--vp-scope-map-file` | `CONNECTOR_VP_SCOPE_MAP_FILE` | none | JSON file mapping outcome claims to scopes (below); required with, and refused without, the issuers file |
 | `--access-token-lifespan` | `CONNECTOR_ACCESS_TOKEN_LIFESPAN` | `300s` | Lifetime of an access token |
 | `--dpop-enforce` | `CONNECTOR_DPOP_ENFORCE` | `true` | Require a proof from every client (`--dpop-enforce=false` to relax) |
 | `--dpop-nonce` | `CONNECTOR_DPOP_NONCE` | `true` | Challenge with a server nonce |
@@ -378,6 +381,42 @@ The DPoP proof window is fixed at 60 s lifespan and 30 s skew. A missing, short 
 file stops the process at start with exit 1; a usage error exits 2; a clean stop exits 0. A
 database URL that cannot be parsed is refused as "invalid database configuration" and nothing
 more: the driver's own error repeats the URL with only best-effort masking of the password.
+
+### Verified-presentation files
+
+Both files are read once at start and parsed strictly: valid UTF-8 JSON, no duplicate member at any
+depth, no member other than those below, at most 1 MiB. A file that breaks a rule stops the process
+with exit 2 and a fixed message naming the flag and the rule, never anything the file holds.
+
+The trusted-issuers file is `VerifiedPresentation.TrustedIssuers`: an object whose members are the
+issuer URIs (the outcomes' `iss`), each `{"keys": [...]}` with one or more public EC P-256 JWKs.
+A key has exactly `kty`, `crv`, `x`, `y` and `kid`: a private member (`d`), another curve, a missing
+`kid` or a `kid` used twice, within one issuer or across two, is refused.
+
+```json
+{
+  "https://verifier.example": {
+    "keys": [{"kty": "EC", "crv": "P-256", "x": "...", "y": "...", "kid": "verifier-2026-10"}]
+  }
+}
+```
+
+The scope-map file is `VerifiedPresentation.Scopes`: a non-empty array of `{"role", "entitlement",
+"scopes"}`, `entitlement` optional (an entry without it matches only an outcome without one),
+`scopes` one or more scopes without whitespace. A role and entitlement pair may appear once, and
+`connector:client_registration` is never mapped.
+
+```json
+[
+  {"role": "operator", "entitlement": "line-3", "scopes": ["resource.write"]},
+  {"role": "operator", "scopes": ["resource.read"]}
+]
+```
+
+With the grant on, clients may register for `urn:facis:params:oauth:grant-type:verified-presentation`
+besides `client_credentials`. The registrar itself keeps `client_credentials` only: it never uses the
+grant, and delegation does not need it to. To register a client for a mapped scope, list that scope
+in `--registrar-delegable-scopes`; the registrar's own token can never carry it.
 
 ### Registrar bootstrap
 
@@ -401,6 +440,7 @@ register, then posts the client's metadata to `/oauth2/register` with that token
 |---|---|---|
 | API | `POST /oauth2/token` | The token endpoint (`Provider.TokenHandler`) |
 | API | `POST /oauth2/register` | Client registration (`Provider.RegistrationHandler`) |
+| API | `POST /oauth2/challenge` | The challenge endpoint (`Provider.ChallengeHandler`); refuses every request while the verified-presentation grant is off |
 | API | `GET /.well-known/jwks.json` | The signing key as a JWK set: `kid` the signer's `KeyID()`, `use` `sig`, `alg` `ES256`; `Cache-Control: public, max-age=300` |
 | API and ops | `GET /healthz`, `GET /readyz` | Liveness and readiness |
 
