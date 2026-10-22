@@ -137,8 +137,13 @@ func newSubEnv(t *testing.T, withB bool) *subEnv {
 	return e
 }
 
-// server starts one more store on zone A's database.
+// server starts one more store on zone A's database, without its renewal worker.
 func (e *subEnv) server() (*Server, string) {
+	e.t.Helper()
+	return e.serverWith(false)
+}
+
+func (e *subEnv) serverWith(renewal bool) (*Server, string) {
 	e.t.Helper()
 	cfg := localConfig(e.dsnA, fakeOpenBao(e.t).URL)
 	cfg.Callers = headerCaller{}
@@ -149,6 +154,9 @@ func (e *subEnv) server() (*Server, string) {
 		e.t.Fatal(err)
 	}
 	s.substitute.Acquirer.Prefix = e.prefix
+	if !renewal {
+		s.renewal = nil // renewal is tested in internal/renew; here it would race the rows the tests set up
+	}
 	startServer(e.t, s)
 	e.servers = append(e.servers, s)
 	return s, "http://" + s.Addr().String() + "/internal/substitute"
@@ -449,5 +457,29 @@ func TestSubstitute_OnDemandAcquisitionIsSingleFlight(t *testing.T) {
 	}
 	if retired := e.count(e.poolA, `SELECT count(*) FROM upstream_token WHERE state = 'retired' AND expires_at < now()`); retired != 1 {
 		t.Errorf("%d retired expired rows; want 1", retired)
+	}
+}
+
+// TestServe_RunsRenewal: a store started with routes runs the renewal worker, which renews a due
+// token at once.
+func TestServe_RunsRenewal(t *testing.T) {
+	e := newSubEnv(t, true)
+	_, url := e.server()
+	if a := e.post(url, guardID, subRequest(nil)); a.status != http.StatusOK {
+		t.Fatalf("acquiring: %d %s", a.status, a.raw)
+	}
+	if _, err := e.poolA.Exec(t.Context(), `UPDATE upstream_token SET renew_after = now() - interval '1 second'`); err != nil {
+		t.Fatal(err)
+	}
+	e.serverWith(true)
+	deadline := time.Now().Add(10 * time.Second)
+	for e.count(e.poolA, `SELECT count(*) FROM audit_event WHERE kind = 'upstream.renewed'`) != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("the served store did not renew the due token")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if n := e.count(e.poolA, `SELECT count(*) FROM upstream_token WHERE state = 'retired'`); n != 1 {
+		t.Errorf("%d retired rows; want 1", n)
 	}
 }

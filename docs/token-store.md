@@ -88,7 +88,7 @@ wins. Neither URL is ever logged.
 | `--shutdown-timeout` | `TOKEN_STORE_SHUTDOWN_TIMEOUT` | `10s` | Drain of the listeners after that delay |
 | `--log-level` | `TOKEN_STORE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 | `--replay-callers` | `TOKEN_STORE_REPLAY_CALLERS` | none | Comma-separated SPIFFE IDs allowed to call `/internal/replay-check` (the connector's, the guard's); with none, every call is refused |
-| `--acquire-config` | `TOKEN_STORE_ACQUIRE_CONFIG` | none | The routes file ([below](#acquisition-of-upstream-tokens)), read at start: the routes `/internal/substitute` authorizes and acquires for. Without it every substitution caller is refused |
+| `--acquire-config` | `TOKEN_STORE_ACQUIRE_CONFIG` | none | The routes file ([below](#acquisition-of-upstream-tokens)), read at start: the routes `/internal/substitute` authorizes and acquires for, and with it the [renewal](#renewal) worker. Without it every substitution caller is refused and nothing is renewed |
 | `--openbao-token-file` | `TOKEN_STORE_OPENBAO_TOKEN_FILE` | none | The OpenBao token, read on every call; required with `--acquire-config` |
 
 The environment fills in after the command line is parsed, never as a flag's default, so a
@@ -291,7 +291,7 @@ for either.
    audit row. A route has at most one live row (`active` or `renewing`; a unique index of migration
    4), so `Acquire` never replaces a token that is still valid: on such a route the insert is refused,
    the transaction is confirmed rolled back and the value deleted (`ACQ-ACTIVATION-FAILED`). That
-   holds for `token-store acquire --route` too. Replacing a valid token is renewal's.
+   holds for `token-store acquire --route` too. Replacing a valid token is [renewal](#renewal)'s.
 
 **The store's key.** The store's DPoP key is its transit key (`signing_key` in the configuration),
 created non-exportable if missing; its latest version is used, and a `signing_key` row
@@ -435,9 +435,73 @@ acquisition at B, all get that token, the expired row is retired and one live ro
 `no-store` header; and a canary that no token, proof or client secret reaches a record or a refusal.
 `internal/caller` tests the router and the canonical-target rule on their own.
 
+## Renewal
+
+Every `token-store serve` with a routes file runs the renewal worker (`services/token-store/internal/renew`,
+D11), in every replica; the replica's pod name is its `claimed_by`. Each cycle, every 15 s:
+
+1. **Staleness sweep.** A claim older than 5 minutes belongs to a worker taken to be dead: the row
+   goes back to `active` with the claim cleared when the token is still valid (it is due, so the next
+   claim renews it; audit `renewal.released`, `REN-CLAIM-STALE`), or to `failed` when it has expired
+   (`renewal.failed`, `REN-EXPIRED`). A live worker never holds a claim that long: a renewal is at
+   most three attempts of 30 s each with 2 s and 4 s of backoff.
+2. **Claim**, one token at a time and up to four per cycle, so no claim waits behind another
+   renewal:
+
+   ```sql
+   UPDATE upstream_token SET state = 'renewing', claimed_by = $instance, claimed_at = $now, updated_at = $now
+   WHERE token_id IN (SELECT token_id FROM upstream_token
+       WHERE state = 'active' AND claimed_at IS NULL AND renew_after <= $now
+       ORDER BY renew_after FOR UPDATE SKIP LOCKED LIMIT 1)
+     AND state = 'active' AND claimed_at IS NULL
+   RETURNING token_id, peer_zone, audience, tenant, claimed_by, claimed_at
+   ```
+
+   A row another worker is claiming at that moment is skipped, not waited for; the outer conditions
+   repeat the inner ones, so a row that changed meanwhile is never claimed twice. The returned
+   `(claimed_by, claimed_at)` is the claim's fence.
+3. **Renew** through `Acquirer.Replace(route, fence)`: a full acquisition with a fresh challenge and
+   outcome and a new `token_id`. Its transaction consumes the receipt, retires the old row **only if
+   it is still `renewing` under exactly this fence**, inserts the new row `active` and audits
+   `upstream.renewed` (with `replaces`, the old `token_id`), in one commit: the route goes from the old
+   live row to the new one, never through none or two (migration 4 refuses two). If the fence no
+   longer holds the transaction is confirmed rolled back and the new value deleted, the D10 rule
+   (`ACQ-CLAIM-LOST`, audit `renewal.claim_lost`). Each attempt is audited by acquisition with its
+   reason code and `replaces`. Before each attempt the worker checks that its fence still holds and
+   stops if not.
+4. **Fail.** After three failed attempts, with 2 s then 4 s of backoff, the row becomes `failed`,
+   again only under the worker's fence, audited `renewal.failed` with the last attempt's reason code
+   in the same statement. `failed` is terminal: substitution never reads it, and the route's next
+   substitution acquires on demand, or answers `TOK-NO-UPSTREAM` while the peer is down. A row whose
+   route is no longer configured fails at once (`REN-NO-ROUTE`).
+
+While a row is `renewing` it is still the route's token: substitution keeps serving it until the
+replacement commits (see [Substitution](#substitution)). The worker also runs the orphan sweep of
+acquisition every 5 minutes, bounded to 2 minutes a run. Every statement of the worker is bounded to
+5 s, every attempt to 30 s; a cycle interrupted by shutdown leaves its claim to the staleness sweep.
+
+**Operations.** A token stuck `renewing` beyond the staleness window is released by the next cycle
+of any replica. A `failed` token stays `failed` (it is history, as `retired` is); the route recovers
+by the next substitution acquiring on demand once the peer answers, or by
+`token-store acquire --route NAME`. `audit_event` holds the whole trail of a route: `upstream.acquired`,
+`upstream.renewed`, `upstream.failed` and `upstream.refused` per attempt, `renewal.*` for the
+worker's own decisions, all with the reason code.
+
+**Verification.** `go test ./services/token-store/internal/renew` with the three variables above,
+against zone A's database, OpenBao and the real `connector` binary as zone B: two workers started
+together on one due token make exactly one renewal attempt per cycle, three cycles in a row; a claim
+never waits for a row another worker holds locked; with zone B stopped the token ends `failed` after
+three audited attempts, a later cycle leaves it alone, and substitution answers `TOK-NO-UPSTREAM`; a
+crashed worker's claim is released after the window and the next worker renews, while a stale claim
+on an expired token is failed and not renewed; a slow worker whose claim was taken over, whether the
+other worker has already renewed or is still renewing, has its late completion refused
+(`ACQ-CLAIM-LOST`) and its value deleted, and its late failure changes nothing; a sampler running
+through three renewals never sees the route with no live row, two live rows or two active rows, and a
+second live row is refused by the index; and `Run` renews and sweeps orphans on its own.
+`internal/server` checks that a served store renews a due token at start.
+
 ## What follows
 
 Key custody against the key-value store, which is when "every active key reference resolves"
-joins readiness; renewal, which schedules `Replace` and the orphan sweep; and the lane from the
-guard to the store across the planes, each building on the tables, the queries and the service
-above.
+joins readiness; and the lane from the guard to the store across the planes, each building on the
+tables, the queries and the service above.

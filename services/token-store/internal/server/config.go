@@ -43,6 +43,8 @@ type Config struct {
 	// OpenBao signs the store's proofs and holds the upstream token values; required with
 	// Acquisition.
 	OpenBao OpenBao
+	// Instance names this replica in renewal claims (the pod's name); empty means a random name.
+	Instance string
 }
 
 // OpenBao is the key-value store as the store uses it: transit signing and KV v2.

@@ -152,6 +152,7 @@ func serve(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	hostname, _ := os.Hostname()
+	opts.cfg.Instance = hostname
 	log := slog.New(server.NewHandler(slog.NewJSONHandler(stdout, &slog.HandlerOptions{Level: opts.level}))).
 		With("service", "token-store", "instance", hostname)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)

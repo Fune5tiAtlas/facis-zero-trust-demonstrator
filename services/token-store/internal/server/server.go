@@ -5,6 +5,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -21,6 +23,7 @@ import (
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/replay"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/acquire"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/caller"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/renew"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/substitute"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/openbao"
@@ -45,6 +48,7 @@ type Server struct {
 	callers     caller.Authenticator
 	routes      caller.Routes       // substitution's router; empty refuses every caller
 	substitute  *substitute.Service // nil without an acquisition config
+	renewal     *renew.Worker       // nil without an acquisition config
 	reconnected chan struct{}       // signalled when the pool opens a connection, so the replay epoch is rechecked
 	now         func() time.Time
 }
@@ -108,9 +112,17 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*Server, error) {
 		now:         time.Now,
 	}
 	if a := cfg.Acquisition; a != nil {
+		acquirer := &acquire.Acquirer{DB: pool, Signer: cfg.OpenBao, Secrets: cfg.OpenBao, KeyName: a.SigningKey,
+			Trusted: a.Trusted, Log: log}
 		s.substitute = &substitute.Service{DB: pool, Signer: cfg.OpenBao, Secrets: cfg.OpenBao, Routes: *a, Log: log,
-			Acquirer: &acquire.Acquirer{DB: pool, Signer: cfg.OpenBao, Secrets: cfg.OpenBao, KeyName: a.SigningKey,
-				Trusted: a.Trusted, Log: log}}
+			Acquirer: acquirer}
+		instance := cfg.Instance
+		if instance == "" {
+			var b [8]byte
+			_, _ = rand.Read(b[:])
+			instance = "token-store-" + hex.EncodeToString(b[:])
+		}
+		s.renewal = &renew.Worker{DB: pool, Acquirer: acquirer, Routes: *a, Instance: instance, Log: log}
 	}
 	s.ready = &readiness{timeout: cfg.ReadinessTimeout, postgres: s.checkPostgres, openbao: s.checkOpenBao}
 
@@ -178,6 +190,13 @@ func (s *Server) Serve(ctx context.Context) error {
 	maintainCtx, stopMaintaining := context.WithCancel(context.Background())
 	maintained := make(chan struct{})
 	go func() { defer close(maintained); s.maintainReplay(maintainCtx) }()
+	renewed := make(chan struct{})
+	go func() {
+		defer close(renewed)
+		if s.renewal != nil {
+			s.renewal.Run(maintainCtx)
+		}
+	}()
 	results := make(chan error, 2)
 	go func() { results <- s.api.Serve(s.apiLn) }()
 	go func() { results <- s.ops.Serve(s.opsLn) }()
@@ -238,6 +257,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 	stopMaintaining()
 	<-maintained
+	<-renewed
 	s.pool.Close()
 	return cause
 }
