@@ -627,6 +627,9 @@ func TestSubstitute_TheDeadlineBoundsAnOnDemandAcquisition(t *testing.T) {
 			if locks != 0 {
 				t.Errorf("%d advisory locks left behind", locks)
 			}
+			// The recovery request gets the server's own deadline back: a whole acquisition through the
+			// peer connector can take longer than the 2 s the fault was given, on a loaded runner.
+			s.subTimeout = substituteTimeout
 			if a := e.post(url, guardID, subRequest(nil)); a.status != http.StatusOK {
 				t.Errorf("after the fault: %d %s", a.status, a.raw)
 			}
