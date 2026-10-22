@@ -300,9 +300,9 @@ caller's context; no private key enters the process.
 | The peer refused the grant | Audit `upstream.refused` with the peer's `CRED-OUTCOME-*` reason (or `ACQ-PEER-REFUSED`); nothing activated |
 | The issued token fails a check of step 5 | Audit `upstream.refused` `ACQ-TOKEN-INVALID` with the failed check (`token_type`, `cnf.jkt`, `aud`, `exp`, `format`); nothing written |
 | The KV write fails | Nothing activated (`ACQ-KV-WRITE`). A value written despite the error has no row and is swept |
-| The transaction is confirmed rolled back: an error before COMMIT was sent, the receipt no longer consumable (`ACQ-ACTIVATION-REFUSED`), or COMMIT answered with an error (`ACQ-ACTIVATION-FAILED`) | The KV value is deleted; audit `upstream.failed` |
-| COMMIT was sent and its acknowledgement lost | The value is kept. Reconciliation waits until the transaction has ended (it holds an advisory lock on `token_id` from its first statement; `statement_timeout` 5 s and `idle_in_transaction_session_timeout` 10 s bound it), then reads `upstream_token` by `token_id`: a row means the token is active, no row means the value is deleted. If it cannot tell, the value stays (`ACQ-COMMIT-UNKNOWN`) for the sweep |
-| A KV value under the prefix has no row | The orphan sweep deletes it once it is older than 10 minutes by its KV `created_time`, longer than any transaction can stay open; a value with a row, in any state, is never touched (`upstream.orphan_deleted`, `ACQ-ORPHAN-DELETED`) |
+| The transaction is confirmed rolled back: an error before COMMIT was sent, the receipt no longer consumable (`ACQ-ACTIVATION-REFUSED`), or COMMIT answered `ROLLBACK` because the transaction had already failed (`ACQ-ACTIVATION-FAILED`) | The KV value is deleted; audit `upstream.failed` |
+| COMMIT was sent and any other answer came back: none, a transport error, or a server error. A server error is not proof of a rollback: a FATAL termination can arrive after the commit took effect | The value is kept until reconciliation decides. It waits until the transaction has ended (the transaction holds an advisory lock on `token_id` from its first statement; `statement_timeout` 5 s and `idle_in_transaction_session_timeout` 10 s bound it), then, in an explicit READ COMMITTED transaction and in a statement after the wait, reads `upstream_token` by `token_id`: a row means the token is active; no row means the value is deleted, while the lock is still held (`ACQ-ACTIVATION-FAILED`). A COMMIT refused with a deferred-constraint violation or a serialization failure ends here with no row. If it cannot tell, the value stays (`ACQ-COMMIT-UNKNOWN`) for the sweep |
+| A KV value under the prefix has no row | The orphan sweep first checks the value's age by its KV `created_time` (more than 10 minutes, longer than any transaction can stay open), then takes the same advisory lock in READ COMMITTED, checks again that no row exists, and deletes the value before releasing the lock, so an activation that committed after the sweep first looked keeps its value. A value with a row, in any state, is never touched (`upstream.orphan_deleted`, `ACQ-ORPHAN-DELETED`) |
 
 Only a committed `active` row permits substitution. Audit rows carry the route, the peer zone, the
 audience, the outcome and token ids and the reason code; never the token, a proof, the client secret
@@ -353,7 +353,11 @@ zone-A database and OpenBao: the happy path including the nonce retry and the to
 `internal/tokenverify` with a proof from the store key; each `CRED-OUTCOME-*` refusal by the peer;
 an outcome A refuses itself; a lost and an unreadable answer followed by a fresh acquisition (the
 peer's ledger shows every outcome consumed once); a failed KV write; a receipt expired before the
-transaction; COMMIT acknowledged-but-lost, rolled back, refused and never delivered; the orphan sweep;
+transaction; COMMIT committed with its acknowledgement lost or followed by a FATAL error, rolled
+back, refused by a real deferred-constraint violation and by a real serialization failure, and
+never delivered; a commit that lands while reconciliation waits on a database whose default
+isolation is REPEATABLE READ; the orphan sweep, including an activation that commits between its
+first look and its deletion;
 the response checks; and a canary that no credential reaches logs, errors or audit rows.
 
 ## What follows
