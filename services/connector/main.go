@@ -37,6 +37,11 @@ flags of serve (each defaults to the CONNECTOR_* variable of the same name):
   --registration-endpoint URL        absolute URL of POST /oauth2/register, as clients reach it
   --token-secret-file PATH           file holding the access-token HMAC secret (32 bytes or more)
   --registration-secret-file PATH    file holding the registration-token HMAC secret (32 bytes or more)
+  --registrar-id ID                  client id of the registrar, seeded at start
+  --registrar-secret-file PATH       file holding the registrar's client secret (32 bytes or more)
+  --registrar-scopes LIST            comma-separated scopes of the registrar, connector:client_registration among them
+  --registrar-audiences LIST         comma-separated audiences of the registrar: the registration endpoint and
+                                     the resource audiences registered clients may name
   --access-token-lifespan DURATION   access-token lifetime (default 5m0s)
   --dpop-enforce=BOOL                require a DPoP proof from every client (default true)
   --dpop-nonce=BOOL                  challenge with a server DPoP nonce (default true)

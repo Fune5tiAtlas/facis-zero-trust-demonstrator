@@ -33,6 +33,10 @@ func required(over map[string]string) func(string) string {
 		"CONNECTOR_REGISTRATION_ENDPOINT":    "https://connector.example/oauth2/register",
 		"CONNECTOR_TOKEN_SECRET_FILE":        "/run/token-secret",
 		"CONNECTOR_REGISTRATION_SECRET_FILE": "/run/registration-secret",
+		"CONNECTOR_REGISTRAR_ID":             "registrar",
+		"CONNECTOR_REGISTRAR_SECRET_FILE":    "/run/registrar-secret",
+		"CONNECTOR_REGISTRAR_SCOPES":         "connector:client_registration, resource.read",
+		"CONNECTOR_REGISTRAR_AUDIENCES":      "https://connector.example/oauth2/register,https://resource.example",
 	}
 	for k, v := range over {
 		if v == "" {
@@ -65,7 +69,8 @@ func TestParseServe(t *testing.T) {
 		}), check: func(t *testing.T, c config) {
 			if c.addr != ":1" || c.opsAddr != ":2" || c.signingKeyVersion != 7 || c.accessTokenLifespan != time.Minute || c.dpopEnforce || c.dpopNonce ||
 				c.readinessTimeout != 750*time.Millisecond || c.drainDelay != 0 || c.shutdownTimeout != 3*time.Second ||
-				c.openBaoTokenFile != "/run/bao-token" || c.tokenSecretFile != "/run/token-secret" {
+				c.openBaoTokenFile != "/run/bao-token" || c.tokenSecretFile != "/run/token-secret" || c.registrarID != "registrar" ||
+				strings.Join(c.registrarScopes, " ") != "connector:client_registration resource.read" || len(c.registrarAudiences) != 2 {
 				t.Errorf("from the environment: %+v", c)
 			}
 		}},
@@ -85,6 +90,10 @@ func TestParseServe(t *testing.T) {
 		{name: "no registration endpoint", env: required(map[string]string{"CONNECTOR_REGISTRATION_ENDPOINT": ""}), wantErr: "--registration-endpoint"},
 		{name: "no token secret file", env: required(map[string]string{"CONNECTOR_TOKEN_SECRET_FILE": ""}), wantErr: "--token-secret-file"},
 		{name: "no registration secret file", env: required(map[string]string{"CONNECTOR_REGISTRATION_SECRET_FILE": ""}), wantErr: "--registration-secret-file"},
+		{name: "no registrar", env: required(map[string]string{"CONNECTOR_REGISTRAR_ID": ""}), wantErr: "--registrar-id"},
+		{name: "no registrar secret file", env: required(map[string]string{"CONNECTOR_REGISTRAR_SECRET_FILE": ""}), wantErr: "--registrar-secret-file"},
+		{name: "registrar without the registration scope", args: []string{"--registrar-scopes", "resource.read"}, env: required(nil), wantErr: "connector:client_registration"},
+		{name: "registrar without the registration endpoint", args: []string{"--registrar-audiences", "https://resource.example"}, env: required(nil), wantErr: "registration endpoint"},
 		{name: "issuer over http", args: []string{"--issuer", "http://connector.example"}, env: required(nil), wantErr: "https://"},
 		{name: "relative registration endpoint", args: []string{"--registration-endpoint", "/oauth2/register"}, env: required(nil), wantErr: "absolute"},
 		{name: "OpenBao with a path", args: []string{"--openbao-url", "http://bao:8200/v1"}, env: required(nil), wantErr: "http(s)://host"},
@@ -160,7 +169,20 @@ func writeFile(t *testing.T, name, content string) string {
 const (
 	canaryTokenSecret        = "canary-token-secret-0123456789abcdef\n"
 	canaryRegistrationSecret = "canary-registration-secret-0123456789"
+	canaryRegistrarSecret    = "canary-registrar-secret-0123456789abcd"
+	registrationEndpoint     = "https://connector.example/oauth2/register"
+	resourceAudience         = "https://resource.example"
 )
+
+// noCanary fails for every canary found in logs, naming its label, never its value.
+func noCanary(t *testing.T, logs string, canaries map[string]string) {
+	t.Helper()
+	for label, value := range canaries {
+		if value != "" && strings.Contains(logs, value) {
+			t.Errorf("canary %q reached the output", label)
+		}
+	}
+}
 
 // baseArgs are the serve arguments every run shares; later arguments override them.
 func baseArgs(t *testing.T, database, openbao string) []string {
@@ -171,6 +193,9 @@ func baseArgs(t *testing.T, database, openbao string) []string {
 		"--registration-endpoint", "https://connector.example/oauth2/register",
 		"--token-secret-file", writeFile(t, "token-secret", canaryTokenSecret),
 		"--registration-secret-file", writeFile(t, "registration-secret", canaryRegistrationSecret),
+		"--registrar-id", "registrar", "--registrar-secret-file", writeFile(t, "registrar-secret", canaryRegistrarSecret),
+		"--registrar-scopes", "connector:client_registration,resource.read",
+		"--registrar-audiences", registrationEndpoint + "," + resourceAudience,
 		"--drain-delay", "300ms", "--shutdown-timeout", "2s"}
 }
 
@@ -180,6 +205,8 @@ func TestServeRefusesMissingOrShortSecrets(t *testing.T) {
 		"short registration secret":   {"--registration-secret-file", writeFile(t, "short", "only-31-bytes-long-0123456789ab\n")},
 		"the same secret for both":    {"--registration-secret-file", writeFile(t, "same", canaryTokenSecret)},
 		"short token secret, no line": {"--token-secret-file", writeFile(t, "short", "x")},
+		"short registrar secret":      {"--registrar-secret-file", writeFile(t, "short", "registrar\n")},
+		"missing registrar secret":    {"--registrar-secret-file", filepath.Join(t.TempDir(), "absent")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var out, errOut syncBuffer
@@ -191,11 +218,8 @@ func TestServeRefusesMissingOrShortSecrets(t *testing.T) {
 			if !strings.Contains(logs, "starting the connector") {
 				t.Errorf("the refusal was not recorded:\n%s", logs)
 			}
-			for _, secret := range []string{"hunter2", strings.TrimSpace(canaryTokenSecret), canaryRegistrationSecret, "only-31-bytes"} {
-				if strings.Contains(logs, secret) {
-					t.Errorf("%q reached the output:\n%s", secret, logs)
-				}
-			}
+			noCanary(t, logs, map[string]string{"database password": "hunter2", "token secret": strings.TrimSpace(canaryTokenSecret),
+				"registration secret": canaryRegistrationSecret, "registrar secret": canaryRegistrarSecret, "short secret": "only-31-bytes"})
 		})
 	}
 }
@@ -318,5 +342,29 @@ func TestServeStartsWithoutDependenciesAndDrains(t *testing.T) {
 		if !strings.Contains(logs, want) {
 			t.Errorf("records lack %s:\n%s", want, logs)
 		}
+	}
+}
+
+// A database URL pgx cannot parse is refused with a fixed message: pgx's own error carries the
+// connection string, masked on a best-effort basis only. Each password below defeats that masking
+// in part (an "@" inside it, spaces around "=").
+func TestServeNeverPrintsAnUnparsableDatabaseURL(t *testing.T) {
+	for name, c := range map[string]struct{ dsn, password string }{
+		"invalid URL":       {"postgres://u:pw@canary-url-tail@[::1/x", "canary-url-tail"},
+		"invalid option":    {"postgres://u:pw@canary-opt-tail@127.0.0.1:1/x?sslmode=bogus", "canary-opt-tail"},
+		"keyword/value DSN": {"host=127.0.0.1 user=u password = canary-kv-pw sslmode=bogus", "canary-kv-pw"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var out, errOut syncBuffer
+			code := run(append(baseArgs(t, testDatabase, "http://127.0.0.1:1"), "--database-url", c.dsn), &out, &errOut)
+			if code != exitFailed {
+				t.Fatalf("exit %d, want %d", code, exitFailed)
+			}
+			logs := out.String() + errOut.String()
+			if !strings.Contains(logs, "invalid database configuration") {
+				t.Errorf("the refusal was not recorded")
+			}
+			noCanary(t, logs, map[string]string{"database URL": c.dsn, "database password": c.password})
+		})
 	}
 }

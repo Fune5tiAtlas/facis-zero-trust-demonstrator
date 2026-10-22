@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/jose"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/replay"
@@ -64,10 +66,15 @@ type server struct {
 	replay      *replay.Postgres
 	reconnected chan struct{}
 
-	// signer and routes are set once the transit key could be read: until then the API answers
-	// 503 everywhere but its health paths, and readiness is red.
-	signer atomic.Pointer[signing.Transit]
-	routes atomic.Pointer[http.Handler]
+	// live is the signer and the route table built on it, published together once the transit key
+	// could be read: until then the signer is nil, the API answers 503 everywhere but its health
+	// paths, and readiness is red.
+	live atomic.Pointer[live]
+
+	registrar       oauth2provider.Client // as seeded, without its hash
+	registrarSecret []byte
+	clients         oauth2provider.ClientStore
+	registrarState  atomic.Int32 // registrarPending, registrarOK or registrarConflict
 
 	readyState atomic.Int32 // 0 unknown, 1 ready, 2 not ready; only a change is logged
 	draining   atomic.Bool
@@ -75,6 +82,17 @@ type server struct {
 	api, ops     *http.Server
 	apiLn, opsLn net.Listener
 }
+
+type live struct {
+	signer *signing.Transit
+	routes http.Handler
+}
+
+const (
+	registrarPending int32 = iota
+	registrarOK
+	registrarConflict
+)
 
 // newServer reads the secrets, prepares the pool and the transit client (opening no connection, so
 // a connector that starts before its dependencies still starts) and binds both listeners.
@@ -90,6 +108,10 @@ func newServer(ctx context.Context, cfg config, log *slog.Logger) (*server, erro
 	if string(tokenSecret) == string(registrationSecret) {
 		return nil, errors.New("the token and registration secrets must differ")
 	}
+	registrarSecret, err := readSecret(cfg.registrarSecretFile, "registrar secret")
+	if err != nil {
+		return nil, err
+	}
 	tokenFile := cfg.openBaoTokenFile
 	tc, err := transit.New(transit.Config{Addr: cfg.openBaoURL, Token: func(context.Context) (string, error) {
 		b, err := os.ReadFile(tokenFile)
@@ -103,7 +125,8 @@ func newServer(ctx context.Context, cfg config, log *slog.Logger) (*server, erro
 	}
 	poolCfg, err := pgxpool.ParseConfig(cfg.databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("database URL: %w", err) // pgx redacts the password
+		// Not wrapped: pgx's error carries the connection string, masked on a best-effort basis only.
+		return nil, errors.New("invalid database configuration")
 	}
 	poolCfg.MaxConns = 8
 	poolCfg.MinConns = 0
@@ -119,7 +142,7 @@ func newServer(ctx context.Context, cfg config, log *slog.Logger) (*server, erro
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
-		return nil, fmt.Errorf("database pool: %w", err)
+		return nil, errors.New("invalid database configuration")
 	}
 	healthTransport := http.DefaultTransport.(*http.Transport).Clone()
 	healthTransport.Proxy = nil
@@ -150,9 +173,14 @@ func newServer(ctx context.Context, cfg config, log *slog.Logger) (*server, erro
 		},
 		replay:      replay.NewPostgres(pool),
 		reconnected: reconnected,
+		registrar: oauth2provider.Client{
+			ID: cfg.registrarID, GrantTypes: []string{"client_credentials"},
+			Scopes: cfg.registrarScopes, Audience: cfg.registrarAudiences, DPoPBound: true,
+		},
+		registrarSecret: registrarSecret,
+		clients:         pgstore.New(pool, nil).Clients,
 	}
-	pending := s.apiRoutes(nil, nil)
-	s.routes.Store(&pending)
+	s.live.Store(&live{routes: s.apiRoutes(nil, nil)})
 
 	if s.apiLn, err = net.Listen("tcp", cfg.addr); err != nil {
 		pool.Close()
@@ -164,7 +192,7 @@ func newServer(ctx context.Context, cfg config, log *slog.Logger) (*server, erro
 		return nil, fmt.Errorf("ops listener: %w", err)
 	}
 	s.api = s.httpServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		(*s.routes.Load()).ServeHTTP(w, r)
+		s.live.Load().routes.ServeHTTP(w, r)
 	}))
 	s.ops = s.httpServer(s.opsRoutes())
 	return s, nil
@@ -270,11 +298,66 @@ func (s *server) tryProvider(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	routes := s.apiRoutes(provider, signer)
-	s.signer.Store(signer)
-	s.routes.Store(&routes)
+	s.live.Store(&live{signer: signer, routes: s.apiRoutes(provider, signer)})
 	s.log.InfoContext(ctx, "signer ready", "key", s.key.Ref(), "kid", signer.KeyID())
 	return nil
+}
+
+// bootstrapRegistrar seeds the registrar (D12) before readiness can turn green, retrying while the
+// database is not there. A registrar that exists with other settings is never overwritten: the
+// connector stays not ready until an operator resolves it.
+func (s *server) bootstrapRegistrar(ctx context.Context) {
+	delay := time.Second
+	for {
+		opCtx, cancel := context.WithTimeout(ctx, signerAttempt)
+		same, err := s.seedRegistrar(opCtx)
+		cancel()
+		switch {
+		case err == nil && same:
+			s.registrarState.Store(registrarOK)
+			s.log.InfoContext(ctx, "registrar ready", "client_id", s.registrar.ID)
+			return
+		case err == nil:
+			s.registrarState.Store(registrarConflict)
+			s.log.ErrorContext(ctx, "registrar client exists with other settings; not overwriting it, not becoming ready",
+				"client_id", s.registrar.ID)
+			return
+		case ctx.Err() != nil:
+			return
+		}
+		s.log.WarnContext(ctx, "registrar not seeded, retrying", "err", err, "retry_in", delay.String())
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		delay = min(2*delay, maxSignerBackoff)
+	}
+}
+
+// seedRegistrar creates the registrar when it is missing and reports whether the stored one has the
+// configured settings. A create that loses a race to another replica fails here and the retry reads
+// the winner's row.
+func (s *server) seedRegistrar(ctx context.Context) (same bool, err error) {
+	stored, err := s.clients.GetClient(ctx, s.registrar.ID)
+	if errors.Is(err, oauth2provider.ErrNotFound) {
+		c := s.registrar
+		if c.SecretHash, err = bcrypt.GenerateFromPassword(s.registrarSecret, bcrypt.DefaultCost); err != nil {
+			return false, err
+		}
+		if err := s.clients.CreateClient(ctx, c); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	sorted := func(v []string) []string { return slices.Sorted(slices.Values(v)) }
+	return bcrypt.CompareHashAndPassword(stored.SecretHash, s.registrarSecret) == nil &&
+		slices.Equal(sorted(stored.Scopes), sorted(s.registrar.Scopes)) &&
+		slices.Equal(sorted(stored.Audience), sorted(s.registrar.Audience)) &&
+		slices.Equal(stored.GrantTypes, s.registrar.GrantTypes) && stored.DPoPBound, nil
 }
 
 // serve runs both listeners until ctx ends or one fails. Asked to stop, it turns readiness red, keeps
@@ -284,6 +367,7 @@ func (s *server) serve(ctx context.Context) error {
 	bgCtx, stopBackground := context.WithCancel(context.Background())
 	var background sync.WaitGroup
 	background.Go(func() { s.buildProvider(bgCtx) })
+	background.Go(func() { s.bootstrapRegistrar(bgCtx) })
 	background.Go(func() { s.maintain(bgCtx) })
 	results := make(chan error, 2)
 	go func() { results <- s.api.Serve(s.apiLn) }()
@@ -398,13 +482,15 @@ const (
 	checkSealed        = "sealed"
 	checkMissing       = "missing"  // the pinned key version does not exist
 	checkMismatch      = "mismatch" // it exists but is not the key the signer was built on
-	checkPending       = "pending"  // the signer is not built yet
+	checkPending       = "pending"  // the signer is not built, or the registrar not seeded, yet
+	checkConflict      = "conflict" // the registrar exists with other settings
 )
 
 type checks struct {
 	Postgres   string `json:"postgres"`
 	OpenBao    string `json:"openbao"`
 	SigningKey string `json:"signing_key"`
+	Registrar  string `json:"registrar"`
 }
 
 type report struct {
@@ -435,7 +521,8 @@ func (s *server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 			wg.Go(func() { *dst = check(ctx) })
 		}
 		wg.Wait()
-		rep = report{Ready: c.Postgres == checkOK && c.OpenBao == checkOK && c.SigningKey == checkOK, Checks: c}
+		c.Registrar = [...]string{checkPending, checkOK, checkConflict}[s.registrarState.Load()]
+		rep = report{Ready: c.Postgres == checkOK && c.OpenBao == checkOK && c.SigningKey == checkOK && c.Registrar == checkOK, Checks: c}
 		state := int32(2)
 		if rep.Ready {
 			state = 1
@@ -444,7 +531,7 @@ func (s *server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 			if rep.Ready {
 				s.log.InfoContext(r.Context(), "ready")
 			} else {
-				s.log.WarnContext(r.Context(), "not ready", "postgres", c.Postgres, "openbao", c.OpenBao, "signing_key", c.SigningKey)
+				s.log.WarnContext(r.Context(), "not ready", "postgres", c.Postgres, "openbao", c.OpenBao, "signing_key", c.SigningKey, "registrar", c.Registrar)
 			}
 		}
 	}
@@ -510,7 +597,7 @@ func (s *server) checkSigningKey(ctx context.Context) string {
 	case err != nil:
 		return checkUnreachable
 	}
-	signer := s.signer.Load()
+	signer := s.live.Load().signer
 	if signer == nil {
 		return checkPending
 	}

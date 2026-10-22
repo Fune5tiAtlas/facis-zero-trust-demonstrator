@@ -11,10 +11,13 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/oauth2provider"
 )
 
 // minSecret is the shortest HMAC secret the provider accepts.
@@ -33,6 +36,11 @@ type config struct {
 	registrationEndpoint   string
 	tokenSecretFile        string
 	registrationSecretFile string
+	// The registrar (D12): the client allowed to register others, seeded at start.
+	registrarID            string
+	registrarSecretFile    string
+	registrarScopes        []string
+	registrarAudiences     []string // the ceiling of a registrar token's audience
 	accessTokenLifespan    time.Duration
 	dpopEnforce, dpopNonce bool
 	readinessTimeout       time.Duration
@@ -51,6 +59,7 @@ type serveOptions struct {
 func parseServe(args []string, env func(string) string, stderr io.Writer) (serveOptions, error) {
 	opts := serveOptions{level: slog.LevelInfo}
 	c := &opts.cfg
+	var registrarScopes, registrarAudiences string
 	fs := flag.NewFlagSet("connector serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	strs := []struct {
@@ -67,6 +76,10 @@ func parseServe(args []string, env func(string) string, stderr io.Writer) (serve
 		{"registration-endpoint", "CONNECTOR_REGISTRATION_ENDPOINT", "", "absolute URL of the registration endpoint", &c.registrationEndpoint},
 		{"token-secret-file", "CONNECTOR_TOKEN_SECRET_FILE", "", "file holding the access-token HMAC secret", &c.tokenSecretFile},
 		{"registration-secret-file", "CONNECTOR_REGISTRATION_SECRET_FILE", "", "file holding the registration-token HMAC secret", &c.registrationSecretFile},
+		{"registrar-id", "CONNECTOR_REGISTRAR_ID", "", "client id of the registrar", &c.registrarID},
+		{"registrar-secret-file", "CONNECTOR_REGISTRAR_SECRET_FILE", "", "file holding the registrar's client secret", &c.registrarSecretFile},
+		{"registrar-scopes", "CONNECTOR_REGISTRAR_SCOPES", "", "comma-separated scopes of the registrar, connector:client_registration among them", &registrarScopes},
+		{"registrar-audiences", "CONNECTOR_REGISTRAR_AUDIENCES", "", "comma-separated audiences of the registrar: the registration endpoint and the resource audiences registered clients may name", &registrarAudiences},
 	}
 	for _, s := range strs {
 		fs.StringVar(s.dst, s.name, s.def, s.help+" ($"+s.variable+")")
@@ -148,7 +161,19 @@ func parseServe(args []string, env func(string) string, stderr io.Writer) (serve
 	if err := opts.level.UnmarshalText([]byte(*level)); err != nil {
 		return opts, fmt.Errorf("--log-level: %w", err)
 	}
+	c.registrarScopes = splitList(registrarScopes)
+	c.registrarAudiences = splitList(registrarAudiences)
 	return opts, c.validate()
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, v := range strings.Split(s, ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // validate reports the first thing the service cannot run with.
@@ -163,6 +188,8 @@ func (c config) validate() error {
 		{c.registrationEndpoint, "--registration-endpoint or CONNECTOR_REGISTRATION_ENDPOINT"},
 		{c.tokenSecretFile, "--token-secret-file or CONNECTOR_TOKEN_SECRET_FILE"},
 		{c.registrationSecretFile, "--registration-secret-file or CONNECTOR_REGISTRATION_SECRET_FILE"},
+		{c.registrarID, "--registrar-id or CONNECTOR_REGISTRAR_ID"},
+		{c.registrarSecretFile, "--registrar-secret-file or CONNECTOR_REGISTRAR_SECRET_FILE"},
 	}
 	for _, r := range required {
 		if r.value == "" {
@@ -180,6 +207,12 @@ func (c config) validate() error {
 	}
 	if u, err := url.Parse(c.registrationEndpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
 		return errors.New("the registration endpoint must be an absolute http(s):// URL")
+	}
+	if !slices.Contains(c.registrarScopes, oauth2provider.RegistrationScope) {
+		return errors.New("--registrar-scopes must include " + oauth2provider.RegistrationScope)
+	}
+	if !slices.Contains(c.registrarAudiences, c.registrationEndpoint) {
+		return errors.New("--registrar-audiences must include the registration endpoint")
 	}
 	if c.accessTokenLifespan <= 0 {
 		return errors.New("the access-token lifespan must be longer than 0")
