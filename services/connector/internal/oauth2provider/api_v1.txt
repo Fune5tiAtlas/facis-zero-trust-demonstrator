@@ -95,6 +95,7 @@ type TokenRecord struct, field 4 GrantedScopes []string
 type TokenRecord struct, field 5 RequestedAudience []string
 type TokenRecord struct, field 6 GrantedAudience []string
 type TokenRecord struct, field 7 Session []byte
+type TokenRecord struct, field 8 ExpiresAt time.Time
 type TokenStore interface
 type TokenStore interface, CreateToken(context.Context, string, TokenRecord) error
 type TokenStore interface, DeleteToken(context.Context, string) error

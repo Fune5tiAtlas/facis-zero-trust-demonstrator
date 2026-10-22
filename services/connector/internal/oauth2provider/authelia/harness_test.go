@@ -8,17 +8,22 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/pgtest"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/dpoptest"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/oauth2provider"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/oauth2provider/memstore"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/connector/internal/oauth2provider/pgstore"
 )
 
 const (
@@ -30,8 +35,13 @@ const (
 // own, so no state is shared between tests.
 type harness struct {
 	t        *testing.T
+	cfg      oauth2provider.Config
 	stores   oauth2provider.Stores
 	provider oauth2provider.Provider
+	handler  *atomic.Value
+
+	// pool is the database behind the stores when they are PostgreSQL's, nil otherwise.
+	pool *pgxpool.Pool
 
 	// replay records what the provider hands to the replay store.
 	replay *recordingReplayStore
@@ -47,11 +57,11 @@ type harness struct {
 func newHarness(t *testing.T, configure func(*oauth2provider.Config)) *harness {
 	t.Helper()
 
-	h := &harness{t: t}
+	h := &harness{t: t, handler: &atomic.Value{}}
+	handler := h.handler
 
 	// The registration endpoint URL is part of the provider's configuration,
 	// so the server has to exist before the provider does.
-	var handler atomic.Value
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handler.Load().(http.Handler).ServeHTTP(w, r)
@@ -80,16 +90,26 @@ func newHarness(t *testing.T, configure func(*oauth2provider.Config)) *harness {
 		configure(&cfg)
 	}
 
-	h.stores = memstore.New(func() time.Time {
+	h.cfg = cfg
+	h.stores, h.pool = newStores(t, func() time.Time {
 		return time.Now().Add(time.Duration(h.clockOffset.Load()))
 	})
 
 	h.replay = &recordingReplayStore{inner: h.stores.DPoPReplay}
 	h.stores.DPoPReplay = h.replay
 
-	provider, err := New(cfg, h.stores)
+	h.start()
+
+	return h
+}
+
+// start builds a provider on the harness's stores and serves it.
+func (h *harness) start() {
+	h.t.Helper()
+
+	provider, err := New(h.cfg, h.stores)
 	if err != nil {
-		t.Fatalf("new provider: %v", err)
+		h.t.Fatalf("new provider: %v", err)
 	}
 
 	h.provider = provider
@@ -98,10 +118,12 @@ func newHarness(t *testing.T, configure func(*oauth2provider.Config)) *harness {
 	mux.Handle("/token", provider.TokenHandler())
 	mux.Handle("/register", provider.RegistrationHandler())
 	mux.HandleFunc("/resource", h.serveResource)
-	handler.Store(http.Handler(mux))
-
-	return h
+	h.handler.Store(http.Handler(mux))
 }
+
+// restart replaces the provider with a new one on the same stores, as a process restart would:
+// nothing survives but what the stores hold.
+func (h *harness) restart() { h.start() }
 
 // recordingReplayStore passes every call through and keeps what it was given.
 type recordingReplayStore struct {
@@ -331,4 +353,38 @@ func (h *harness) boundToken(key *dpoptest.Key) string {
 	}
 
 	return issued.str("access_token")
+}
+
+// storeEnv selects the stores the conformance suite runs against: unset or "mem" for the in-memory
+// stores, "pg" for PostgreSQL (with pgtest.DatabaseEnv naming the server). CI runs the package once
+// per value, so every conformance test is a test of both. Replay detection stays in memory here
+// until the shared proof_jti store replaces it.
+const storeEnv = "CONNECTOR_TEST_STORE"
+
+func newStores(t *testing.T, now func() time.Time) (oauth2provider.Stores, *pgxpool.Pool) {
+	t.Helper()
+
+	mem := memstore.New(now)
+
+	switch kind := os.Getenv(storeEnv); kind {
+	case "", "mem":
+		return mem, nil
+	case "pg":
+		ctx := context.Background()
+
+		pool, err := pgxpool.New(ctx, pgtest.MigratedURL(t, "connector"))
+		if err != nil {
+			t.Fatalf("connecting: %v", err)
+		}
+		t.Cleanup(pool.Close)
+
+		stores := pgstore.New(pool, now)
+		stores.DPoPReplay = mem.DPoPReplay
+
+		return stores, pool
+	default:
+		t.Fatalf("%s=%q: want mem or pg", storeEnv, kind)
+
+		return oauth2provider.Stores{}, nil
+	}
 }

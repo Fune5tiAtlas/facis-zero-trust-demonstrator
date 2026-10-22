@@ -2,7 +2,6 @@ package authelia
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -108,9 +107,9 @@ func (s *storeAdapter) DeleteClientRegistrationTokenSession(ctx context.Context,
 // createToken persists what is needed to validate the token later. The
 // request form is deliberately left out: it can carry client credentials.
 func createToken(ctx context.Context, store oauth2provider.TokenStore, signature string, request oauth2.Requester) error {
-	session, err := json.Marshal(request.GetSession())
+	session, expiresAt, err := encodeSession(request.GetSession())
 	if err != nil {
-		return fmt.Errorf("encode session: %w", err)
+		return err
 	}
 
 	return store.CreateToken(ctx, signature, oauth2provider.TokenRecord{
@@ -122,6 +121,7 @@ func createToken(ctx context.Context, store oauth2provider.TokenStore, signature
 		RequestedAudience: request.GetRequestedAudience(),
 		GrantedAudience:   request.GetGrantedAudience(),
 		Session:           session,
+		ExpiresAt:         expiresAt,
 	})
 }
 
@@ -137,8 +137,8 @@ func (s *storeAdapter) getToken(ctx context.Context, store oauth2provider.TokenS
 	}
 
 	if session != nil {
-		if err = json.Unmarshal(record.Session, session); err != nil {
-			return nil, fmt.Errorf("decode session: %w", err)
+		if err = decodeSession(record.Session, session); err != nil {
+			return nil, err
 		}
 	}
 

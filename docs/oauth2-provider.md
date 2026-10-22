@@ -34,6 +34,7 @@ connector code ──depends on──▶ oauth2provider            contract: typ
 | `oauth2provider` | The contract: `Provider`, `Config`, `Client`, the store interfaces and the reason codes. Imports no OAuth 2.0 library. |
 | `oauth2provider/authelia` | The implementation. The only package allowed to import the library; its exported API names no library type. |
 | `oauth2provider/memstore` | In-memory stores for tests and local development. Nothing is persisted. |
+| `oauth2provider/pgstore` | Clients, issued tokens and DPoP nonces in the zone's authorization database (`oauth2_client`, `oauth2_token`, `oauth2_dpop_nonce`; schema in the [token store](token-store.md)'s migrations). Validity is checked against the stores' clock, passed as a parameter. `Sweep` removes expired rows. |
 | `dpoptest` | Test helper that mints DPoP proofs, including deliberately defective ones, using the standard library only. |
 
 The boundary is enforced, not just intended: a test inspects the imports every package declares and
@@ -57,7 +58,8 @@ identifier per line, and a test regenerates the listing from the package and fai
 so the contract cannot change in passing. A struct field's line carries its position, so reordering
 two fields of one type, which would silently swap them for a caller building the struct
 positionally, is a difference too. To change it on purpose, describe the change here and
-regenerate the listing:
+regenerate the listing. Changes so far: `TokenRecord.ExpiresAt` (field 8) was added so a store can
+sweep expired records without reading the session.
 
 ```bash
 OAUTH2PROVIDER_API_UPDATE=1 go test -run TestContractAPIIsFrozen ./services/connector/internal/oauth2provider
@@ -184,11 +186,31 @@ go test -race ./services/connector/...
 The tests run the provider behind a real HTTP server and drive it from the outside. Stale, future and
 otherwise defective proofs are minted with the claims they need, and expiry is exercised by moving the
 stores' clock, so no test waits for time to pass. Test names state the rule they check:
-`TestDPoP_…`, `TestResource_…`, `TestRegistration_…`.
+`TestDPoP_…`, `TestResource_…`, `TestRegistration_…`, `TestStore_…`.
+
+The same suite runs on the PostgreSQL stores when `CONNECTOR_TEST_STORE=pg` and
+`TOKEN_STORE_TEST_DATABASE_URL` names a server (each test gets a database of its own with the schema
+applied); the token store's CI job runs it that way and fails on a skip:
+
+```sh
+CONNECTOR_TEST_STORE=pg TOKEN_STORE_TEST_DATABASE_URL=postgres://postgres:ci@127.0.0.1:5432/postgres?sslmode=disable \
+  go test -race ./services/connector/...
+```
+
+### Session records
+
+A token record keeps the adapter's own encoding of the session, versioned (`v: 1`): the access token's
+expiry, the subject and the key binding (`jkt`, or a certificate thumbprint). The library hands the
+store different session types for one token and their JSON forms differ, so the adapter writes and
+reads every field through the library's interfaces instead of storing the library's JSON. A record
+of another version, or a binding the requested session type cannot carry, is refused: a bound token
+never comes back looking unbound. `TestStore_BoundTokenStaysBoundAcrossRestart` proves it on both
+stores.
 
 ## Limitations
 
-- The only stores are in-memory; nothing survives a restart.
+- Replay detection is still in memory, so a proof can be replayed once against another replica or after a
+  restart. Clients, issued tokens and nonces are in PostgreSQL (`pgstore`, below).
 - Only the `client_credentials` grant and `client_secret_basic` client authentication are wired.
   Client authentication by signed assertion is refused.
 - Registration management (RFC 7592) and token introspection are not exposed. A registration

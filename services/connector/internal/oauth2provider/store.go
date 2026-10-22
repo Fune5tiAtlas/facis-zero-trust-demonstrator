@@ -31,6 +31,10 @@ type TokenRecord struct {
 	// Session is the implementation's serialized session state, including
 	// expiry and any key binding. It is opaque to the store.
 	Session []byte
+
+	// ExpiresAt is when the token stops being valid. The provider sets it, so
+	// a store can sweep expired records without reading Session.
+	ExpiresAt time.Time
 }
 
 // TokenStore persists token records by token signature. The signature is
