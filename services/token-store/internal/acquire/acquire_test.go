@@ -135,6 +135,7 @@ func (s *secrets) Create(ctx context.Context, path string, value []byte) error {
 }
 
 type env struct {
+	dsnA    string
 	t       *testing.T
 	ctx     context.Context
 	a       *Acquirer
@@ -185,7 +186,7 @@ func newEnv(t *testing.T) *env {
 	if err := os.WriteFile(secretFile, []byte(secret+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	e := &env{t: t, ctx: ctx, poolA: poolA, poolB: poolB, kv: kv, hook: &hook{}, clock: &clock{},
+	e := &env{dsnA: dsnA, t: t, ctx: ctx, poolA: poolA, poolB: poolB, kv: kv, hook: &hook{}, clock: &clock{},
 		logs: &testsupport.Buffer{}, issuer: issuer, bBase: bBase, secret: secret}
 	e.secrets = &secrets{Secrets: kv}
 	e.a = &Acquirer{
@@ -530,41 +531,148 @@ func TestRefusedTransactionDeletesTheValue(t *testing.T) {
 	}
 }
 
+// poolWith opens a pool on A's database whose sessions default to isolation level iso.
+func (e *env) poolWith(iso string) *pgxpool.Pool {
+	e.t.Helper()
+	cfg, err := pgxpool.ParseConfig(e.dsnA)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["default_transaction_isolation"] = iso
+	pool, err := pgxpool.NewWithConfig(e.ctx, cfg)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	e.t.Cleanup(pool.Close)
+	return pool
+}
+
 func TestUnknownCommitOutcomeIsReconciledByTheRow(t *testing.T) {
 	lost := errors.New("connection reset by peer")
 	for name, tc := range map[string]struct {
-		commit   func(context.Context, pgx.Tx) error
-		wantCode string
+		setup     func(e *env)
+		commit    func(e *env) func(context.Context, pgx.Tx) error
+		wantState string // SQLSTATE the real COMMIT must have answered, when set
+		wantCode  string // "" when the token must be kept
+		minWait   time.Duration
 	}{
-		"committed, acknowledgement lost": {func(ctx context.Context, tx pgx.Tx) error {
-			if err := tx.Commit(ctx); err != nil {
-				return err
+		"committed, acknowledgement lost": {commit: func(*env) func(context.Context, pgx.Tx) error {
+			return func(ctx context.Context, tx pgx.Tx) error {
+				if err := tx.Commit(ctx); err != nil {
+					return err
+				}
+				return lost
 			}
-			return lost
-		}, ""},
-		"rolled back, acknowledgement lost": {func(ctx context.Context, tx pgx.Tx) error {
-			_ = tx.Rollback(ctx)
-			return lost
-		}, CodeActivationFailed},
+		}},
+		// A FATAL termination that arrives after COMMIT took effect is a server error that undoes
+		// nothing.
+		"committed, then FATAL": {commit: func(*env) func(context.Context, pgx.Tx) error {
+			return func(ctx context.Context, tx pgx.Tx) error {
+				if err := tx.Commit(ctx); err != nil {
+					return err
+				}
+				return &pgconn.PgError{Severity: "FATAL", Code: "57P01", Message: "terminating connection due to administrator command"}
+			}
+		}},
+		"rolled back, acknowledgement lost": {commit: func(*env) func(context.Context, pgx.Tx) error {
+			return func(ctx context.Context, tx pgx.Tx) error {
+				_ = tx.Rollback(ctx)
+				return lost
+			}
+		}, wantCode: CodeActivationFailed},
+		// A real deferred unique violation, raised by COMMIT itself.
+		"deferred constraint at COMMIT": {
+			setup: func(e *env) {
+				if _, err := e.poolA.Exec(e.ctx, `CREATE TABLE acq_deferred (id int,
+					CONSTRAINT acq_deferred_once UNIQUE (id) DEFERRABLE INITIALLY DEFERRED)`); err != nil {
+					e.t.Fatal(err)
+				}
+			},
+			commit: func(*env) func(context.Context, pgx.Tx) error {
+				return func(ctx context.Context, tx pgx.Tx) error {
+					if _, err := tx.Exec(ctx, `INSERT INTO acq_deferred VALUES (1), (1)`); err != nil {
+						return lost // not the case under test; the assertion on wantState fails
+					}
+					return tx.Commit(ctx)
+				}
+			},
+			wantState: "23505", wantCode: CodeActivationFailed,
+		},
+		// A real serialization failure at COMMIT: write skew between activation and another
+		// SERIALIZABLE transaction that commits first.
+		"serialization failure at COMMIT": {
+			setup: func(e *env) {
+				e.a.DB = e.poolWith("serializable")
+				if _, err := e.poolA.Exec(e.ctx, `CREATE TABLE acq_ser (k int)`); err != nil {
+					e.t.Fatal(err)
+				}
+			},
+			commit: func(e *env) func(context.Context, pgx.Tx) error {
+				return func(ctx context.Context, tx pgx.Tx) error {
+					if _, err := tx.Exec(ctx, `SELECT count(*) FROM acq_ser WHERE k = 1`); err != nil {
+						return lost
+					}
+					if _, err := tx.Exec(ctx, `INSERT INTO acq_ser VALUES (2)`); err != nil {
+						return lost
+					}
+					other, err := e.poolA.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+					if err != nil {
+						return lost
+					}
+					_, err1 := other.Exec(ctx, `SELECT count(*) FROM acq_ser WHERE k = 2`)
+					_, err2 := other.Exec(ctx, `INSERT INTO acq_ser VALUES (1)`)
+					if err1 != nil || err2 != nil || other.Commit(ctx) != nil {
+						_ = other.Rollback(ctx)
+						return lost
+					}
+					return tx.Commit(ctx)
+				}
+			},
+			wantState: "40001", wantCode: CodeActivationFailed,
+		},
 		// COMMIT never reached the server: the transaction stays open until the server's
-		// idle-in-transaction timeout ends it, and reconciliation waits for that.
-		"refused at COMMIT": {func(ctx context.Context, tx pgx.Tx) error {
-			_ = tx.Rollback(ctx)
-			return &pgconn.PgError{Code: "40001", Message: "could not serialize access"}
-		}, CodeActivationFailed},
-		// The test hands the connection back only after the server has ended the session.
-		"never arrived": {func(_ context.Context, tx pgx.Tx) error {
-			time.AfterFunc(idleTimeout+5*time.Second, func() { _ = tx.Rollback(context.Background()) })
-			return lost
-		}, CodeActivationFailed},
+		// idle-in-transaction timeout ends it, and reconciliation waits for that. The test hands
+		// the connection back only after the server has ended the session.
+		"never arrived": {commit: func(*env) func(context.Context, pgx.Tx) error {
+			return func(_ context.Context, tx pgx.Tx) error {
+				time.AfterFunc(idleTimeout+5*time.Second, func() { _ = tx.Rollback(context.Background()) })
+				return lost
+			}
+		}, wantCode: CodeActivationFailed, minWait: idleTimeout - time.Second},
+		// Reconciliation on a database whose default is REPEATABLE READ, with the activation
+		// committing while reconciliation waits for its lock: the check must read after the wait.
+		"committed while reconciliation waits, REPEATABLE READ default": {
+			setup: func(e *env) { e.a.DB = e.poolWith("repeatable read") },
+			commit: func(*env) func(context.Context, pgx.Tx) error {
+				return func(_ context.Context, tx pgx.Tx) error {
+					time.AfterFunc(500*time.Millisecond, func() { _ = tx.Commit(context.Background()) })
+					return lost
+				}
+			},
+			minWait: 400 * time.Millisecond,
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := newEnv(t)
-			e.a.commit = tc.commit
+			if tc.setup != nil {
+				tc.setup(e)
+			}
+			var commitErr error
+			inner := tc.commit(e)
+			e.a.commit = func(ctx context.Context, tx pgx.Tx) error {
+				commitErr = inner(ctx, tx)
+				return commitErr
+			}
 			start := time.Now()
 			tok, err := e.acquire()
-			if name == "never arrived" && time.Since(start) < idleTimeout-time.Second {
+			if time.Since(start) < tc.minWait {
 				t.Errorf("reconciliation did not wait for the open transaction to end (%v)", time.Since(start))
+			}
+			if tc.wantState != "" {
+				var pgErr *pgconn.PgError
+				if !errors.As(commitErr, &pgErr) || pgErr.Code != tc.wantState {
+					t.Fatalf("COMMIT answered %v; want SQLSTATE %s", commitErr, tc.wantState)
+				}
 			}
 			path := e.secrets.created[0]
 			_, readErr := e.kv.Read(e.ctx, path)
@@ -696,5 +804,62 @@ func TestCanaryNoCredentialInLogsErrorsOrAudit(t *testing.T) {
 				t.Fatalf("a credential piece leaked into logs, errors or audit")
 			}
 		}
+	}
+}
+
+// TestOrphanSweepKeepsAValueWhoseActivationCommitsMeanwhile: the sweep finds an old value without a
+// row, and the activation of that token_id commits after that first look and before the deletion
+// (here: it holds the token's lock while the sweep reaches it and commits 300 ms later). The value
+// must be kept.
+func TestOrphanSweepKeepsAValueWhoseActivationCommitsMeanwhile(t *testing.T) {
+	e := newEnv(t)
+	key, err := LoadKey(e.ctx, e.poolA, e.kv, e.a.KeyName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := newUUID()
+	path := e.a.kvPrefix() + "/" + id
+	if err := e.kv.Create(e.ctx, path, []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	created, err := e.kv.CreatedTime(e.ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := created.Add(OrphanAge + time.Minute)
+	e.a.Now = func() time.Time { return now }
+	committed := make(chan error, 1)
+	e.a.sweepPause = func(tokenID string) {
+		tx, err := e.poolA.Begin(e.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		outcome := newUUID()
+		for _, q := range []struct {
+			sql  string
+			args []any
+		}{
+			{`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, []any{tokenID}},
+			{`INSERT INTO verified_outcome (outcome_id, issuer, client_id, challenge, audience, status, claims, verified_at, expires_at, consumed_at)
+				VALUES ($1, $2, 'c', 'challenge-challenge', $3, 'verified', '{}', now(), now() + interval '1 minute', now())`, []any{outcome, vpIssuer, audience}},
+			{`INSERT INTO upstream_token (token_id, peer_zone, audience, tenant, outcome_id, token_ref, key_ref, state, issued_at, expires_at, renew_after)
+				VALUES ($1, 'zone-b', $2, '', $3, $4, $5, 'active', now(), now() + interval '5 minutes', now() + interval '4 minutes')`,
+				[]any{tokenID, audience, outcome, path, key.Ref()}},
+		} {
+			if _, err := tx.Exec(e.ctx, q.sql, q.args...); err != nil {
+				t.Fatal(err)
+			}
+		}
+		time.AfterFunc(300*time.Millisecond, func() { committed <- tx.Commit(context.Background()) })
+	}
+	n, err := e.a.SweepOrphans(e.ctx)
+	if cerr := <-committed; cerr != nil {
+		t.Fatalf("activation commit: %v", cerr)
+	}
+	if err != nil || n != 0 {
+		t.Fatalf("sweep deleted %d, %v; want 0", n, err)
+	}
+	if _, err := e.kv.Read(e.ctx, path); err != nil {
+		t.Fatalf("the committed token's value was deleted: %v", err)
 	}
 }

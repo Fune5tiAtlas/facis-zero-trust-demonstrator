@@ -12,7 +12,10 @@ var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 
 // SweepOrphans deletes the KV values under KVPrefix whose token_id has no upstream_token row and
 // that were created more than OrphanAge ago, longer than any activation transaction can stay open
-// (D10). A value with a row, in any state, is never touched here. It returns how many it deleted.
+// (D10). Age is checked first; absence is then checked under the token's advisory lock in READ
+// COMMITTED and the value deleted before the lock is released (deleteIfNoRow), so an activation that
+// committed after the sweep first looked keeps its value. A value with a row, in any state, is never
+// touched here. It returns how many it deleted.
 func (a *Acquirer) SweepOrphans(ctx context.Context) (int, error) {
 	names, err := a.Secrets.List(ctx, a.kvPrefix())
 	if err != nil {
@@ -22,13 +25,6 @@ func (a *Acquirer) SweepOrphans(ctx context.Context) (int, error) {
 	for _, id := range names {
 		if !uuidPattern.MatchString(id) {
 			continue // a sub-folder or a name that is not ours
-		}
-		var exists bool
-		if err := a.DB.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM upstream_token WHERE token_id = $1)`, id).Scan(&exists); err != nil {
-			return deleted, err
-		}
-		if exists {
-			continue
 		}
 		path := a.kvPrefix() + "/" + id
 		created, err := a.Secrets.CreatedTime(ctx, path)
@@ -41,8 +37,15 @@ func (a *Acquirer) SweepOrphans(ctx context.Context) (int, error) {
 		if a.now().Sub(created) <= OrphanAge {
 			continue
 		}
-		if err := a.Secrets.Delete(ctx, path); err != nil {
+		if a.sweepPause != nil {
+			a.sweepPause(id)
+		}
+		gone, err := a.deleteIfNoRow(ctx, id, path)
+		if err != nil {
 			return deleted, err
+		}
+		if !gone {
+			continue
 		}
 		deleted++
 		if _, err := a.DB.Exec(ctx, auditSQL, "upstream.orphan_deleted", nil, nil, nil, id, CodeOrphan, nil); err != nil {

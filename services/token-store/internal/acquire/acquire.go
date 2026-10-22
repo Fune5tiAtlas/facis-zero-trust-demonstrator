@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/dpopproof"
@@ -120,6 +119,9 @@ type Acquirer struct {
 	commit func(context.Context, pgx.Tx) error
 	// prefix replaces KVPrefix in tests, so each test sweeps only its own values.
 	prefix string
+	// sweepPause runs in the sweep between the age check and the locked re-check; tests use it to
+	// commit an activation there.
+	sweepPause func(tokenID string)
 }
 
 func (a *Acquirer) kvPrefix() string {
@@ -393,15 +395,16 @@ func (at *attempt) activate(ctx context.Context, key *Key, path string, tok issu
 		commit = func(ctx context.Context, tx pgx.Tx) error { return tx.Commit(ctx) }
 	}
 	err = commit(ctx, tx)
-	var pgErr *pgconn.PgError
 	switch {
 	case err == nil:
 		return Token{ID: at.tokenID, ExpiresAt: tok.expiresAt}, nil
-	case errors.As(err, &pgErr) || errors.Is(err, pgx.ErrTxCommitRollback):
-		// The server answered COMMIT with a refusal: confirmed rolled back.
+	case errors.Is(err, pgx.ErrTxCommitRollback):
+		// The server answered COMMIT with ROLLBACK: the transaction had failed before it.
 		return at.rolledBack(ctx, path, false)
 	default:
-		// COMMIT was sent and its answer lost: the row decides, once the transaction has settled.
+		// Any other answer, a server error included, does not prove a rollback: a FATAL
+		// termination can arrive after the commit took effect. The row decides, once the
+		// transaction has settled; a COMMIT refused with an error leaves no row and lands there too.
 		return at.reconcile(ctx, path, tok)
 	}
 }
@@ -449,30 +452,46 @@ func (at *attempt) rolledBack(ctx context.Context, path string, refused bool) (T
 func (at *attempt) reconcile(ctx context.Context, path string, tok issued) (Token, error) {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleWait+5*time.Second)
 	defer cancel()
-	exists, err := func() (bool, error) {
-		tx, err := at.a.DB.Begin(rctx)
-		if err != nil {
-			return false, err
-		}
-		defer func() { _ = tx.Rollback(rctx) }()
-		var exists bool
-		err = tx.QueryRow(rctx, `SELECT set_config('lock_timeout', $2, true), pg_advisory_xact_lock(hashtextextended($1::text, 0))`,
-			at.tokenID, ms(settleWait)).Scan(nil, nil)
-		if err != nil {
-			return false, err
-		}
-		err = tx.QueryRow(rctx, `SELECT EXISTS (SELECT 1 FROM upstream_token WHERE token_id = $1)`, at.tokenID).Scan(&exists)
-		return exists, err
-	}()
+	deleted, err := at.a.deleteIfNoRow(rctx, at.tokenID, path)
 	switch {
 	case err != nil:
 		return Token{}, fail(CodeCommitUnknown, "activation outcome unknown; value kept for the orphan sweep")
-	case exists:
+	case !deleted:
 		return Token{ID: at.tokenID, ExpiresAt: tok.expiresAt}, nil
 	default:
-		at.deleteValue(ctx, path)
 		return Token{}, fail(CodeActivationFailed, "activation did not commit")
 	}
+}
+
+// deleteIfNoRow deletes the KV value at path only if token_id has no upstream_token row, deciding
+// under the token's advisory lock, the one activation holds until it ends: the wait covers an
+// activation still in flight, and the deletion happens before the lock is released, so no
+// activation of that token_id can commit between the check and the deletion. READ COMMITTED is
+// explicit and the lock and the check are separate statements, so the check reads a snapshot taken
+// after the wait, whatever the database's default isolation is.
+func (a *Acquirer) deleteIfNoRow(ctx context.Context, tokenID, path string) (deleted bool, err error) {
+	tx, err := a.DB.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err := tx.Exec(ctx, `SELECT set_config('lock_timeout', $1, true)`, ms(settleWait)); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, tokenID); err != nil {
+		return false, err
+	}
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM upstream_token WHERE token_id = $1)`, tokenID).Scan(&exists); err != nil {
+		return false, err
+	}
+	if exists {
+		return false, nil
+	}
+	if err := a.Secrets.Delete(ctx, path); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
 }
 
 func ms(d time.Duration) string { return strconv.FormatInt(d.Milliseconds(), 10) }
