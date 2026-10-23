@@ -19,12 +19,11 @@ and are the authoritative list. This page records the components chosen and why.
 ### Pending Eclipse IP review
 
 Dependencies Dash cannot clear yet. They are not exceptions: each stays here until Eclipse approves it,
-and is removed then. Recorded 8 October 2026 from a Dash 1.1.0 scan of `go.sum` on `main`.
-
-| Dependency | Version | Why it is pending | Review |
-|---|---|---|---|
-| `golang.org/x/text` (indirect, required by `golang.org/x/net` v0.59.0) | v0.42.0 | its test data carries CC-BY-SA files; v0.41.0 is approved but taking it would downgrade `x/net`, `x/crypto` and the OAuth2 library | [iplab #32075](https://gitlab.eclipse.org/eclipsefdn/emo-team/iplab/-/work_items/32075), IP team review |
-| `github.com/santhosh-tekuri/jsonschema/v6` | v6.0.3 | no licence data at ClearlyDefined (the project is Apache-2.0; v6.0.2 is approved); kept because v6.0.3 carries validator fixes the admission check relies on | to be filed by the next licence scan on `main` |
+and is removed then. None is pending: the last two, `golang.org/x/text` v0.42.0
+([iplab #32075](https://gitlab.eclipse.org/eclipsefdn/emo-team/iplab/-/work_items/32075)) and
+`github.com/santhosh-tekuri/jsonschema/v6` v6.0.3
+([iplab #32387](https://gitlab.eclipse.org/eclipsefdn/emo-team/iplab/-/work_items/32387)), were approved
+by 23 October 2026.
 
 ## Licence exceptions
 
