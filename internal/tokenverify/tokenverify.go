@@ -260,7 +260,7 @@ func isToken68(s string) bool {
 	}
 	for i := 0; i < len(body); i++ {
 		c := body[i]
-		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || strings.IndexByte("-._~+/", c) >= 0) {
+		if !isToken68Char(c) {
 			return false
 		}
 	}
@@ -409,4 +409,8 @@ func WithIdentity(ctx context.Context, id Identity) context.Context {
 func FromContext(ctx context.Context) (Identity, bool) {
 	id, ok := ctx.Value(ctxKey{}).(Identity)
 	return id, ok
+}
+
+func isToken68Char(c byte) bool {
+	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || strings.IndexByte("-._~+/", c) >= 0
 }

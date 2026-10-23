@@ -91,9 +91,9 @@ func TestRequestSizesAreBounded(t *testing.T) {
 			stored = req.Data
 			return
 		}
-		w.Write([]byte(`{"data":{"data":`))
-		w.Write(stored)
-		w.Write([]byte(`,"metadata":{"version":1}}}`))
+		_, _ = w.Write([]byte(`{"data":{"data":`))
+		_, _ = w.Write(stored)
+		_, _ = w.Write([]byte(`,"metadata":{"version":1}}}`))
 	})
 	ctx := context.Background()
 	k := KeyVersion{Name: "k", Version: 1}

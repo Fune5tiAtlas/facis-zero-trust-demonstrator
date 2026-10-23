@@ -78,7 +78,7 @@ func MigratedURL(t *testing.T, prefix string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 	for _, f := range files {
 		sql, err := os.ReadFile(f)
 		if err != nil {

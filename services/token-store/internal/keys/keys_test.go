@@ -103,7 +103,7 @@ func TestCheckOpenBao(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s %s: request failed", method, path)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return resp.StatusCode
 	}
 	if s := raw(http.MethodPost, "/v1/sys/mounts/transit", `{"type":"transit"}`); s != 204 && s != 400 {

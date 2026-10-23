@@ -234,7 +234,7 @@ func parseHeader(raw []byte, policy HeaderPolicy) (Header, error) {
 
 	var h Header
 	var present, ok bool
-	if h.Alg, present, ok = String(members, "alg"); !ok || h.Alg != AlgES256 {
+	if h.Alg, _, ok = String(members, "alg"); !ok || h.Alg != AlgES256 {
 		return Header{}, fmt.Errorf("%w: alg must be %s", ErrHeader, AlgES256)
 	}
 	if h.Typ, present, ok = String(members, "typ"); present != (policy.Typ != "") || (present && !ok) || h.Typ != policy.Typ {
@@ -337,7 +337,7 @@ func checkValue(dec *json.Decoder, depth int) error {
 func decodeB64(s string) ([]byte, error) {
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+		if !isB64URL(c) {
 			return nil, ErrMalformed
 		}
 	}
@@ -357,3 +357,7 @@ func withContextCause(err, cause error) error {
 }
 
 func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
+
+func isB64URL(c byte) bool {
+	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_'
+}

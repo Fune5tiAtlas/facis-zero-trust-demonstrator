@@ -831,7 +831,7 @@ func TestVP_TokenRecordKeepsItsOutcomeUniquely(t *testing.T) {
 		t.Fatalf("grant: status %d, body %v", got.status, got.body)
 	}
 
-	record, err := recorder.TokenStore.GetToken(t.Context(), recorder.signature)
+	record, err := recorder.GetToken(t.Context(), recorder.signature)
 	if err != nil || record.OutcomeID != o["outcome_id"] {
 		t.Fatalf("stored record: outcome %q, %v; want %v", record.OutcomeID, err, o["outcome_id"])
 	}
@@ -843,7 +843,7 @@ func TestVP_TokenRecordKeepsItsOutcomeUniquely(t *testing.T) {
 		t.Fatalf("client_credentials: status %d, body %v", got.status, got.body)
 	}
 
-	if plain, err := recorder.TokenStore.GetToken(t.Context(), recorder.signature); err != nil || plain.OutcomeID != "" {
+	if plain, err := recorder.GetToken(t.Context(), recorder.signature); err != nil || plain.OutcomeID != "" {
 		t.Errorf("client_credentials record: outcome %q, %v; want none", plain.OutcomeID, err)
 	}
 

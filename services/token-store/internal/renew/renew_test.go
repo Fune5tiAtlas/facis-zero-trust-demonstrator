@@ -361,7 +361,7 @@ func TestASlowWorkersCompletionIsRejectedByTheFence(t *testing.T) {
 // live row outright.
 func TestTheRouteAlwaysHasExactlyOneLiveRow(t *testing.T) {
 	e := newEnv(t)
-	id := e.due()
+	e.due()
 	var bad atomic.Int64
 	var samples atomic.Int64
 	stop := make(chan struct{})
@@ -387,7 +387,7 @@ func TestTheRouteAlwaysHasExactlyOneLiveRow(t *testing.T) {
 	w := e.worker("w1")
 	for range 3 {
 		w.Cycle(e.ctx)
-		id = e.active()
+		id := e.active()
 		e.makeDue(id)
 	}
 	close(stop)

@@ -251,7 +251,7 @@ func (c *Client) post(ctx context.Context, target string, form url.Values, proof
 	if err != nil {
 		return 0, nil, nil, errors.New("request failed") // the transport's text is not ours to vouch for
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil || len(body) > maxBody {
 		return 0, nil, nil, errors.New("answer unreadable")

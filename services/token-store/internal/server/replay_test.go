@@ -78,7 +78,7 @@ func postReplay(t *testing.T, url, who string, body any) (int, map[string]any) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, _ := io.ReadAll(resp.Body)
 	var out map[string]any
 	_ = json.Unmarshal(data, &out)
@@ -198,7 +198,7 @@ func TestReplayCheck_RefusalEchoesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, _ := io.ReadAll(resp.Body)
 	if strings.Contains(string(data), canary) || strings.Contains(buf.String(), canary) {
 		t.Fatalf("the caller's input came back: %s", data)
@@ -246,12 +246,12 @@ func TestReplayCheck_StalledDatabaseFailsClosedAndShutsDown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close(ctx)
+	defer func() { _ = lock.Close(ctx) }()
 	tx, err := lock.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `LOCK TABLE proof_jti IN ACCESS EXCLUSIVE MODE`); err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestReplayCheck_StalledDatabaseFailsClosedAndShutsDown(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(stalled))
 		req.Header.Set("X-Test-Caller", connectorID)
 		if resp, err := http.DefaultClient.Do(req); err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 	}()
 	time.Sleep(200 * time.Millisecond)

@@ -33,7 +33,7 @@ func realClient(t *testing.T) (*Client, func(method, path, body string) int) {
 		if err != nil {
 			t.Fatalf("%s %s: request failed", method, path)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return resp.StatusCode
 	}
 	// 400 is "path is already in use".

@@ -67,7 +67,7 @@ func newInfra(t *testing.T) infra {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if out != nil {
 			_ = json.NewDecoder(resp.Body).Decode(out)
 		}
@@ -113,7 +113,7 @@ func freeAddr(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	return ln.Addr().String()
 }
 

@@ -99,7 +99,7 @@ func (s *keySet) fetch() (map[string]*ecdsa.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("tokenverify: key set status %d", resp.StatusCode)
 	}

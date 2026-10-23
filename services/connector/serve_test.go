@@ -308,7 +308,7 @@ func get(t *testing.T, url string, header ...string) (int, http.Header, string) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, resp.Header, string(body)
 }

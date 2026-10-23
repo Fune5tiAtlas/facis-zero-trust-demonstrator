@@ -86,7 +86,7 @@ func (c *Client) do(ctx context.Context, op, method, path string, body, out any)
 		// The transport error is not wrapped: its text is not ours to vouch for.
 		return 0, fmt.Errorf("transit: %s: request failed", op)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
 		return resp.StatusCode, fmt.Errorf("transit: %s: status %d: reading answer", op, resp.StatusCode)
@@ -186,7 +186,7 @@ func validName(n string) error {
 		return errors.New("transit: invalid key name")
 	}
 	for _, r := range n {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+		if !isNameRune(r) {
 			return errors.New("transit: invalid key name")
 		}
 	}
@@ -198,4 +198,8 @@ func validKey(k KeyVersion) error {
 		return errors.New("transit: key version must be pinned")
 	}
 	return validName(k.Name)
+}
+
+func isNameRune(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.'
 }

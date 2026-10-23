@@ -237,7 +237,7 @@ func (e *subEnv) post(url, who string, body any) subAnswer {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, _ := io.ReadAll(resp.Body)
 	a := subAnswer{status: resp.StatusCode, header: resp.Header, raw: string(data)}
 	_ = json.Unmarshal(data, &a.body)
@@ -550,9 +550,7 @@ func TestSubstitute_ColdRoutesDoNotStarveThePool(t *testing.T) {
 		defer close(done)
 		<-start
 		for i := 0; ; i++ {
-			select {
-			case <-time.After(20 * time.Millisecond):
-			}
+			<-time.After(20 * time.Millisecond)
 			begin := time.Now()
 			status, _ := postReplay(t, replayURL, connectorID, proofUse(fmt.Sprintf("cold-%d", i), time.Now()))
 			slowest = max(slowest, time.Since(begin))
@@ -619,7 +617,7 @@ func TestSubstitute_TheDeadlineBoundsAnOnDemandAcquisition(t *testing.T) {
 			if n := e.count(e.poolA, `SELECT count(*) FROM upstream_token WHERE state IN ('active', 'renewing')`); n != 0 {
 				t.Errorf("%d live rows after the failed acquisition", n)
 			}
-			if vals, err := e.bao.Client.List(t.Context(), e.prefix); err != nil || len(vals) != 0 {
+			if vals, err := e.bao.List(t.Context(), e.prefix); err != nil || len(vals) != 0 {
 				t.Errorf("values left: %v %v", vals, err)
 			}
 			locks := -1

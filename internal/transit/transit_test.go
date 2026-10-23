@@ -92,7 +92,7 @@ func TestSignRequestAndVersionCheck(t *testing.T) {
 		if fmt.Sprint(body) != fmt.Sprint(want) {
 			t.Errorf("body %v", body)
 		}
-		fmt.Fprintf(w, `{"data":{"signature":%q,"key_version":3}}`, answer)
+		_, _ = fmt.Fprintf(w, `{"data":{"signature":%q,"key_version":3}}`, answer)
 	})
 	ctx := context.Background()
 	got, err := c.Sign(ctx, KeyVersion{Name: "k", Version: 3}, []byte("hello"))
@@ -142,7 +142,7 @@ func keyAnswer(typ string, exportable bool, pubs map[string]string) string {
 
 func TestPublicKey(t *testing.T) {
 	answer := ""
-	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, answer) })
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, answer) })
 	ctx := context.Background()
 	answer = keyAnswer("ecdsa-p256", false, map[string]string{"1": pemOf(t, elliptic.P256())})
 	if pub, err := c.PublicKey(ctx, KeyVersion{Name: "k", Version: 1}); err != nil || pub.Curve != elliptic.P256() {
@@ -171,7 +171,7 @@ func TestEnsureKeyRejectsForeignKey(t *testing.T) {
 		"other type": keyAnswer("ecdsa-p384", false, map[string]string{"1": "x"}),
 		"backup":     `{"data":{"type":"ecdsa-p256","allow_plaintext_backup":true,"latest_version":1}}`,
 	} {
-		c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, answer) })
+		c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, answer) })
 		if _, err := c.EnsureKey(context.Background(), "k"); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
@@ -193,7 +193,7 @@ func TestEnsureKeyCreatesWhenMissing(t *testing.T) {
 			created = true
 			w.WriteHeader(http.StatusNoContent)
 		default:
-			io.WriteString(w, keyAnswer("ecdsa-p256", false, map[string]string{"1": "x"}))
+			_, _ = io.WriteString(w, keyAnswer("ecdsa-p256", false, map[string]string{"1": "x"}))
 		}
 	})
 	kv, err := c.EnsureKey(context.Background(), "k")
@@ -206,7 +206,7 @@ func TestKVStatusMapping(t *testing.T) {
 	status, body := 0, ""
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
-		io.WriteString(w, body)
+		_, _ = io.WriteString(w, body)
 	})
 	ctx := context.Background()
 	status, body = 400, `{"errors":["check-and-set parameter did not match the current version"]}`
@@ -254,9 +254,9 @@ func TestKVRequests(t *testing.T) {
 				t.Errorf("create body %+v", body)
 			}
 		case http.MethodGet:
-			fmt.Fprintf(w, `{"data":{"data":{"value":"%s"}}}`, "Y2FuYXJ5") // "canary"
+			_, _ = fmt.Fprintf(w, `{"data":{"data":{"value":"%s"}}}`, "Y2FuYXJ5") // "canary"
 		case "LIST":
-			io.WriteString(w, `{"data":{"keys":["b","c/"]}}`)
+			_, _ = io.WriteString(w, `{"data":{"keys":["b","c/"]}}`)
 		}
 	})
 	ctx := context.Background()
@@ -296,7 +296,7 @@ func TestNoSecretsInErrors(t *testing.T) {
 		c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Location", "http://"+canaryToken+".invalid/"+canarySecret)
 			w.WriteHeader(answer.status)
-			io.WriteString(w, answer.body)
+			_, _ = io.WriteString(w, answer.body)
 		})
 		ctx := context.Background()
 		k := KeyVersion{Name: "k", Version: 1}
@@ -332,7 +332,7 @@ func TestTokenPerCall(t *testing.T) {
 		if r.Header.Get("X-Vault-Token") != fmt.Sprint("t", calls) {
 			t.Errorf("token %q at call %d", r.Header.Get("X-Vault-Token"), calls)
 		}
-		io.WriteString(w, `{"data":{"keys":[]}}`)
+		_, _ = io.WriteString(w, `{"data":{"keys":[]}}`)
 	}))
 	defer srv.Close()
 	c, _ := New(Config{Addr: srv.URL, Token: func(context.Context) (string, error) {
