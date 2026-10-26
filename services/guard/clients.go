@@ -48,6 +48,15 @@ func (c *Clients) post(ctx context.Context, target string, input, output any) (i
 		return resp.StatusCode, errors.New("invalid dependency response")
 	}
 	if resp.StatusCode != http.StatusOK {
+		var refusal struct {
+			ReasonCode string `json:"reason_code"`
+		}
+		if json.Unmarshal(raw, &refusal) == nil {
+			switch refusal.ReasonCode {
+			case hook.ReasonTokenNoUpstream, hook.ReasonTokenStoreUnavailable, hook.ReasonTokenCallerDenied, hook.ReasonTokenRouteDenied:
+				return resp.StatusCode, &hook.RefusalError{ReasonCode: refusal.ReasonCode}
+			}
+		}
 		return resp.StatusCode, nil
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -83,7 +92,7 @@ func (c *Clients) TryUse(ctx context.Context, use replay.Use) (bool, error) {
 		JTI      string `json:"jti"`
 		IAT      int64  `json:"iat"`
 		NotAfter int64  `json:"not_after"`
-	}{use.JKT, use.Method, use.URI, use.JTI, use.NotAfter.Add(-90 * time.Second).Unix(), use.NotAfter.Unix()}
+	}{use.JKT, use.Method, use.URI, use.JTI, use.NotAfter.Add(-(proofLifespan + proofSkew)).Unix(), use.NotAfter.Unix()}
 	var out struct {
 		Fresh bool `json:"fresh"`
 	}
@@ -109,6 +118,10 @@ func (c *Clients) Substitute(ctx context.Context, req hook.SubstituteRequest) (h
 	}
 	status, err := c.post(ctx, c.StoreURL+"/internal/substitute", req, &out)
 	if err != nil || status != http.StatusOK {
+		var refusal *hook.RefusalError
+		if errors.As(err, &refusal) {
+			return hook.Substitution{}, refusal
+		}
 		return hook.Substitution{}, errors.New("token store unavailable")
 	}
 	exp, err := time.Parse(time.RFC3339, out.Expires)

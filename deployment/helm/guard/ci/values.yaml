@@ -8,3 +8,6 @@ config:
   jwks_url: http://ztd-connector:8080/.well-known/jwks.json
   audience: https://resource.m3.invalid
   published_base_url: http://ztd-guard:8080
+
+networkPolicy:
+  istiod: {enabled: true}

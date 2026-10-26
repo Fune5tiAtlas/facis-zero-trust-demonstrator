@@ -3,7 +3,7 @@
 {{- $name := printf "ztd-%s" $target }}
 {{- $source := "ztd-guard" }}
 {{- $account := "ztd-guard" }}
-{{- if eq $target "guard" }}{{- $source = "ztd-participant" }}{{- $account = $.Values.participantServiceAccount }}{{- end }}
+{{- if eq $target "guard" }}{{- $source = $.Values.participantServiceAccount }}{{- $account = $.Values.participantServiceAccount }}{{- end }}
 {{- if eq $target "resource" }}{{- $name = $.Values.resourceName }}{{- end }}
 ---
 apiVersion: security.istio.io/v1
@@ -69,6 +69,14 @@ spec:
         - podSelector:
             matchLabels: {app.kubernetes.io/name: {{ $.Values.resourceName }}}
       ports: [{protocol: TCP, port: {{ $.Values.resourcePort }}}]
+    {{- end }}
+    {{- if $.Values.networkPolicy.istiod.enabled }}
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ $.Values.networkPolicy.istiod.namespace }}}
+          podSelector:
+            matchLabels: {app: istiod}
+      ports: [{protocol: TCP, port: 15012}]
     {{- end }}
     {{- with $.Values.networkPolicy.egress }}
     {{- toYaml . | nindent 4 }}

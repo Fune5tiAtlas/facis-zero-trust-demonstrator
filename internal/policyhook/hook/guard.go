@@ -56,15 +56,6 @@ type RefusalError struct {
 
 func (e *RefusalError) Error() string { return "substitution refused: " + e.ReasonCode }
 
-// StaticSubstituter answers every substitution with the same values; it stands in for the token
-// store in the verification.
-type StaticSubstituter Substitution
-
-// Substitute implements Substituter.
-func (s StaticSubstituter) Substitute(context.Context, SubstituteRequest) (Substitution, error) {
-	return Substitution(s), nil
-}
-
 // Request is one request as a filter hands it to the guard.
 type Request struct {
 	Method string

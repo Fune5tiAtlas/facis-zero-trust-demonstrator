@@ -41,3 +41,14 @@ On rollout failure, stop the external route and tear down the complete owned
 slice or restore a proven guarded revision. Do not uninstall this chart while
 leaving an externally reachable Resource: its authorization resources are part
 of the security boundary. The full slice deployment/teardown remains a prerequisite.
+
+The guard's `config.published_base_url`, the Protected Resource's public base URL,
+and the token-store route `TargetPrefix` must be identical. Incoming Host must
+match that configured authority. Envoy restricts its virtual host to this value
+and rewrites the upstream Host to the resource Service's fully qualified name,
+so Istio cannot route a substituted credential according to a caller-chosen Host.
+
+Set `networkPolicy.istiod.enabled=true` for explicit TCP 15012 access to Istiod,
+or supply the required mesh-control peers in `networkPolicy.egress`. Empty control
+egress is rejected because the sidecar holds application startup. The participant
+service-account value also identifies its application label for ingress policy.

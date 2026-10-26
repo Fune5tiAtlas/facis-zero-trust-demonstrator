@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hookfixture"
 	"net"
 	"net/http"
 	"reflect"
@@ -29,9 +30,9 @@ func (failingDecider) Decide(context.Context, hook.Input) (hook.Decision, error)
 	return hook.Decision{}, errors.New("engine down")
 }
 
-func newGuard(t *testing.T, decider hook.Decider) (*hook.Guard, *hook.Fixtures) {
+func newGuard(t *testing.T, decider hook.Decider) (*hook.Guard, *hookfixture.Fixtures) {
 	t.Helper()
-	fx, err := hook.LoadFixtures(contractpath.Fixtures(t))
+	fx, err := hookfixture.LoadFixtures(contractpath.Fixtures(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +41,7 @@ func newGuard(t *testing.T, decider hook.Decider) (*hook.Guard, *hook.Fixtures) 
 	}
 	return hook.New(hook.Config{PublishedBaseURL: "https://guard-a.example", PeerZone: "zone-b", Audience: "https://guard-b.example",
 		SourceID: "spiffe://zone-a.example/ns/data/sa/backend"}, decider, fx,
-		hook.StaticSubstituter{Authorization: "DPoP upstream-token", DPoP: "upstream-proof"}, nil), fx
+		hookfixture.StaticSubstituter{Authorization: "DPoP upstream-token", DPoP: "upstream-proof"}, nil), fx
 }
 
 var callerHeaders = map[string]string{"dpop": "caller-proof", "x-facis-evil": "1", "x-forwarded-for": "203.0.113.9", "traceparent": "00-a-b-01"}
@@ -89,7 +90,7 @@ func TestAuthzRequestReadsTheAttributes(t *testing.T) {
 func TestCheckAllowAndDeny(t *testing.T) {
 	g, _ := newGuard(t, nil)
 	s := envoyhook.NewAuthzServer(g)
-	resp, err := s.Check(context.Background(), checkRequest("DPoP "+hook.FixtureTokenRead))
+	resp, err := s.Check(context.Background(), checkRequest("DPoP "+hookfixture.FixtureTokenRead))
 	if err != nil || codes.Code(resp.GetStatus().GetCode()) != codes.OK || resp.GetOkResponse() == nil {
 		t.Fatalf("allow: %v (%v)", resp, err)
 	}
@@ -121,7 +122,7 @@ func TestCheckAllowAndDeny(t *testing.T) {
 	}
 
 	g, _ = newGuard(t, failingDecider{})
-	resp, _ = envoyhook.NewAuthzServer(g).Check(context.Background(), checkRequest("DPoP "+hook.FixtureTokenRead))
+	resp, _ = envoyhook.NewAuthzServer(g).Check(context.Background(), checkRequest("DPoP "+hookfixture.FixtureTokenRead))
 	if codes.Code(resp.GetStatus().GetCode()) != codes.Unavailable || int(resp.GetDeniedResponse().GetStatus().GetCode()) != http.StatusServiceUnavailable {
 		t.Errorf("unavailable: %v", resp)
 	}
@@ -152,7 +153,7 @@ func dial(t *testing.T, g *hook.Guard) extprocv3.ExternalProcessor_ProcessClient
 func TestProcessRequestHeaders(t *testing.T) {
 	g, _ := newGuard(t, nil)
 	stream := dial(t, g)
-	if err := stream.Send(headersMessage("DPoP " + hook.FixtureTokenRead)); err != nil {
+	if err := stream.Send(headersMessage("DPoP " + hookfixture.FixtureTokenRead)); err != nil {
 		t.Fatal(err)
 	}
 	resp, err := stream.Recv()
@@ -175,7 +176,7 @@ func TestProcessRequestHeaders(t *testing.T) {
 	}
 
 	stream = dial(t, g)
-	_ = stream.Send(headersMessage("DPoP " + hook.FixtureTokenNone))
+	_ = stream.Send(headersMessage("DPoP " + hookfixture.FixtureTokenNone))
 	resp, err = stream.Recv()
 	im := resp.GetImmediateResponse()
 	var body hook.Refusal

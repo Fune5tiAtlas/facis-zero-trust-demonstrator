@@ -1,8 +1,8 @@
 # Images must already be admitted digests, including Envoy and injected sidecars.
 images:
-  guard: {repository: ghcr.io/fune5tiatlas/facis-zero-trust-demonstrator/guard, digest: ""}
-  policy: {repository: ghcr.io/fune5tiatlas/facis-zero-trust-demonstrator/policy-evaluator, digest: ""}
-  envoy: {repository: ghcr.io/fune5tiatlas/facis-zero-trust-demonstrator/envoy, digest: ""}
+  guard: {repository: ghcr.io/eclipse-xfsc/facis-zero-trust-demonstrator/guard, digest: ""}
+  policy: {repository: ghcr.io/eclipse-xfsc/facis-zero-trust-demonstrator/policy-evaluator, digest: ""}
+  envoy: {repository: docker.io/envoyproxy/envoy:v1.36.10, digest: "sha256:3a76238cdf52c7a3e33951f44c02d694108e6481feffe6663bf9319f55ec1394"}
 trustDomain: zone-b.trust.invalid
 participantServiceAccount: ztd-participant
 resourceName: ztd-protected-resource
@@ -22,6 +22,7 @@ config:
 policyRevision: m3-v1
 # Added to component-specific service and DNS rules; use only explicit dependency/control peers.
 networkPolicy:
+  istiod: {enabled: false, namespace: istio-system}
   egress: []
 resources:
   requests: {cpu: 50m, memory: 64Mi}

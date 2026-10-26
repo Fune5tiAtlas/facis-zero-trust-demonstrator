@@ -34,12 +34,12 @@ const (
 // its Authenticator says, which is the point of injecting one.
 type headerCaller struct{}
 
-func (headerCaller) Authenticate(r *http.Request) (caller.Caller, error) {
+func (headerCaller) Authenticate(r *http.Request) (meshcaller.Caller, error) {
 	id := r.Header.Get("X-Test-Caller")
 	if id == "" {
-		return caller.Caller{}, caller.ErrCallerDenied
+		return meshcaller.Caller{}, meshcaller.ErrCallerDenied
 	}
-	return caller.Caller{SPIFFEID: id}, nil
+	return meshcaller.Caller{SPIFFEID: id}, nil
 }
 
 func replayServer(t *testing.T, buf *testsupport.Buffer) (*Server, string) {

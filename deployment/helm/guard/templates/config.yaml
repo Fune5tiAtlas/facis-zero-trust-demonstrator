@@ -21,16 +21,20 @@ data:
                   typed_config:
                     "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                     stat_prefix: guarded
+                    use_remote_address: true
                     # Preserve only the trusted sidecar's XFCC for the local hook. The hook removes it upstream.
                     forward_client_cert_details: ALWAYS_FORWARD_ONLY
                     route_config:
                       name: protected
                       virtual_hosts:
                         - name: protected
-                          domains: ["*"]
+                          domains: [{{ (urlParse .Values.config.published_base_url).host | quote }}]
                           routes:
                             - match: {path: /demo}
-                              route: {cluster: resource, timeout: 15s}
+                              route:
+                                cluster: resource
+                                timeout: 15s
+                                host_rewrite_literal: {{ printf "%s.%s.svc.cluster.local" .Values.resourceName .Release.Namespace | quote }}
                     http_filters:
                       - name: envoy.filters.http.ext_authz
                         typed_config:

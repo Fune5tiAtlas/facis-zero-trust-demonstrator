@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	caller "github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/meshcaller"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/meshcaller"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hook"
 )
 
@@ -24,18 +24,18 @@ type Config struct {
 
 type Policy struct {
 	cfg     Config
-	callers *caller.XFCC
+	callers *meshcaller.XFCC
 }
 
 func New(cfg Config) (*Policy, error) {
 	if cfg.Revision == "" || cfg.Audience == "" || cfg.Host == "" || len(cfg.GuardCallers) == 0 || len(cfg.ParticipantCallers) == 0 || cfg.ScopeTenants["report:read"] == "" || cfg.ScopeTenants["report:summary"] == "" || cfg.ScopeTenants["report:read"] == cfg.ScopeTenants["report:summary"] {
 		return nil, errors.New("policy configuration incomplete")
 	}
-	auth, err := caller.NewXFCC(cfg.GuardCallers)
+	auth, err := meshcaller.NewXFCC(cfg.GuardCallers)
 	if err != nil {
 		return nil, err
 	}
-	if _, err = caller.NewXFCC(cfg.ParticipantCallers); err != nil {
+	if _, err = meshcaller.NewXFCC(cfg.ParticipantCallers); err != nil {
 		return nil, err
 	}
 	return &Policy{cfg: cfg, callers: auth}, nil

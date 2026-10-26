@@ -1,10 +1,11 @@
-package hook
+package hookfixture
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hook"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,8 +23,8 @@ const scopeAllowed = "read"
 // (docs/contracts/fixtures/if05-*): two fixed tokens, each answered with the decision fixture it
 // maps to, so what the verification sends through the guard is the contract's own examples.
 type Fixtures struct {
-	allow, deny, presentation Decision
-	example, noToken          Input
+	allow, deny, presentation hook.Decision
+	example, noToken          hook.Input
 }
 
 // LoadFixtures reads the fixtures from dir, the docs/contracts/fixtures folder of the repository.
@@ -47,7 +48,7 @@ func LoadFixtures(dir string) (*Fixtures, error) {
 			return nil, fmt.Errorf("%s: %w", file.name, err)
 		}
 	}
-	for _, d := range []Decision{f.allow, f.deny, f.presentation} {
+	for _, d := range []hook.Decision{f.allow, f.deny, f.presentation} {
 		if err := d.Validate(); err != nil {
 			return nil, fmt.Errorf("decision fixture: %w", err)
 		}
@@ -55,7 +56,7 @@ func LoadFixtures(dir string) (*Fixtures, error) {
 	switch {
 	case !f.allow.Allow || !f.allow.Substitutes():
 		return nil, errors.New("valid-allow-substitute.json is not an allow with the substitution obligation")
-	case f.deny.ReasonCode != ReasonRuleDeny || f.presentation.ReasonCode != ReasonPresentationRequired:
+	case f.deny.ReasonCode != hook.ReasonRuleDeny || f.presentation.ReasonCode != hook.ReasonPresentationRequired:
 		return nil, errors.New("the deny fixtures do not carry the expected reason codes")
 	case !f.example.Token.Present || f.example.Token.Scope != scopeAllowed || f.noToken.Token.Present:
 		return nil, errors.New("the input fixtures do not carry the expected tokens")
@@ -65,10 +66,10 @@ func LoadFixtures(dir string) (*Fixtures, error) {
 
 // Authenticate implements Authenticator: "DPoP fx-token-read" is the example fixture's token,
 // "DPoP fx-token-none" the same token with scope none, anything else no token.
-func (f *Fixtures) Authenticate(authorization, _ string) Token {
+func (f *Fixtures) Authenticate(authorization, _ string) hook.Token {
 	scheme, value, ok := strings.Cut(strings.TrimSpace(authorization), " ")
 	if !ok || !strings.EqualFold(scheme, "DPoP") {
-		return Token{Present: false}
+		return hook.Token{Present: false}
 	}
 	switch strings.TrimSpace(value) {
 	case FixtureTokenRead:
@@ -78,12 +79,12 @@ func (f *Fixtures) Authenticate(authorization, _ string) Token {
 		t.Scope = "none"
 		return t
 	}
-	return Token{Present: false}
+	return hook.Token{Present: false}
 }
 
 // Decide implements Decider: no token asks for a presentation, the entitled scope is allowed with
 // substitution, any other token is denied by rule.
-func (f *Fixtures) Decide(_ context.Context, in Input) (Decision, error) {
+func (f *Fixtures) Decide(_ context.Context, in hook.Input) (hook.Decision, error) {
 	switch {
 	case !in.Token.Present:
 		return f.presentation, nil
@@ -95,14 +96,14 @@ func (f *Fixtures) Decide(_ context.Context, in Input) (Decision, error) {
 
 // Case is one request of the verification's input set with the decision it must receive.
 type Case struct {
-	Name          string   `json:"name"`
-	Authorization string   `json:"authorization,omitempty"`
-	Input         Input    `json:"input"`
-	Decision      Decision `json:"decision"`
+	Name          string        `json:"name"`
+	Authorization string        `json:"authorization,omitempty"`
+	Input         hook.Input    `json:"input"`
+	Decision      hook.Decision `json:"decision"`
 }
 
 // Cases returns the input set: the two input fixtures, plus the entitled token without its
-// entitlement. Input.CorrelationID is the fixture's; the guard assigns its own per request.
+// entitlement. hook.Input.CorrelationID is the fixture's; the guard assigns its own per request.
 func (f *Fixtures) Cases() []Case {
 	none := f.example
 	none.Token.Scope = "none"
@@ -112,4 +113,13 @@ func (f *Fixtures) Cases() []Case {
 		{Name: "rule-deny", Authorization: "DPoP " + FixtureTokenNone, Input: none, Decision: f.deny},
 		{Name: "presentation-required", Input: f.noToken, Decision: f.presentation},
 	}
+}
+
+// StaticSubstituter answers every substitution with the same values; it stands in for the token
+// store in the verification.
+type StaticSubstituter hook.Substitution
+
+// Substitute implements Substituter.
+func (s StaticSubstituter) Substitute(context.Context, hook.SubstituteRequest) (hook.Substitution, error) {
+	return hook.Substitution(s), nil
 }

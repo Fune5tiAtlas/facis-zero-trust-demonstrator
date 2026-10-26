@@ -13,12 +13,17 @@ import (
 	"time"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/dpopproof"
-	caller "github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/meshcaller"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/meshcaller"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hook"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/tokenverify"
 )
 
 // Config contains public wiring only. Mesh callers are checked via a SANITIZE_SET sidecar.
+const (
+	proofLifespan = 60 * time.Second
+	proofSkew     = 30 * time.Second
+)
+
 type Config struct {
 	ScopeTenants     map[string]string `json:"scope_tenants"`
 	Issuer           string            `json:"issuer"`
@@ -33,10 +38,12 @@ type Config struct {
 
 type Runtime struct {
 	cfg      Config
-	verifier *tokenverify.Verifier
-	callers  *caller.XFCC
-	clients  *Clients
-	events   hook.EventSink
+	verifier interface {
+		Verify(*http.Request) (tokenverify.Identity, error)
+	}
+	callers *meshcaller.XFCC
+	clients *Clients
+	events  hook.EventSink
 }
 
 func New(cfg Config, events hook.EventSink) (*Runtime, error) {
@@ -52,13 +59,13 @@ func New(cfg Config, events hook.EventSink) (*Runtime, error) {
 	cfg.PublishedBaseURL = strings.TrimRight(cfg.PublishedBaseURL, "/")
 	cfg.PolicyURL = strings.TrimRight(cfg.PolicyURL, "/")
 	cfg.StoreURL = strings.TrimRight(cfg.StoreURL, "/")
-	callers, err := caller.NewXFCC(cfg.AllowedCallers)
+	callers, err := meshcaller.NewXFCC(cfg.AllowedCallers)
 	if err != nil {
 		return nil, errors.New("guard caller configuration invalid")
 	}
 	clients := NewClients(cfg.PolicyURL, cfg.StoreURL)
 	verifier, err := tokenverify.New(tokenverify.Config{Issuer: cfg.Issuer, JWKSURL: cfg.JWKSURL, Audience: cfg.Audience,
-		PublicBaseURL: cfg.PublishedBaseURL, Replay: clients, Proof: dpopproof.Policy{Lifespan: 60 * time.Second, Skew: 30 * time.Second}})
+		PublicBaseURL: cfg.PublishedBaseURL, Replay: clients, Proof: dpopproof.Policy{Lifespan: proofLifespan, Skew: proofSkew}})
 	if err != nil {
 		return nil, errors.New("guard verifier configuration invalid")
 	}
@@ -90,6 +97,10 @@ func (r *Runtime) Evaluate(ctx context.Context, in hook.Request) hook.Outcome {
 	if in.Method != http.MethodPost || in.Path != "/demo" {
 		return r.refuse("route_denied", http.StatusForbidden)
 	}
+	target, _ := url.Parse(r.cfg.PublishedBaseURL)
+	if in.Host != target.Host {
+		return r.refuse("host_denied", http.StatusForbidden)
+	}
 	req, err := http.NewRequestWithContext(ctx, in.Method, r.cfg.PublishedBaseURL+"/demo", nil)
 	if err != nil {
 		return r.refuse("route_denied", http.StatusForbidden)
@@ -107,9 +118,7 @@ func (r *Runtime) Evaluate(ctx context.Context, in hook.Request) hook.Outcome {
 		}
 		return r.refuse(tokenverify.ReasonCode(err), status)
 	}
-	target, _ := url.Parse(r.cfg.PublishedBaseURL)
 	in.Scheme = target.Scheme
-	in.Host = target.Host
 	in.PeerID = peer.SPIFFEID
 	claims := verifiedClaims{hook.Token{Present: true, Sub: id.Subject, ClientID: id.ClientID, JKT: id.JKT,
 		Scope: strings.Join(id.Scopes, " "), Aud: r.cfg.Audience, ProofValid: true}}

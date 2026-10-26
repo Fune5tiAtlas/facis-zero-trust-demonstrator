@@ -1,4 +1,5 @@
 {{- define "guard.validate" -}}
+{{- if and (not .Values.networkPolicy.istiod.enabled) (empty .Values.networkPolicy.egress) -}}{{ fail "guard requires explicit mesh-control egress while the sidecar holds application startup" }}{{- end -}}
 {{- range .Values.images -}}
 {{- if or (not .repository) (not (regexMatch "^sha256:[a-f0-9]{64}$" .digest)) -}}{{ fail "every guard image requires repository and sha256 digest" }}{{- end -}}
 {{- end -}}

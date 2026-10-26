@@ -24,7 +24,7 @@ import (
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/if03"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/if03/if03fixture"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/jose"
-	caller "github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/meshcaller"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/meshcaller"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/pgtest"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hook"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/replay"
@@ -106,7 +106,7 @@ func TestGuardWithRealConnectorStorePolicyPostgresAndOpenBao(t *testing.T) {
 		}
 		loaded.Routes[tenant] = acquire.Route{Name: tenant, PeerZone: "zone-b", Audience: aud, Tenant: tenant, ConnectorURL: c.Base, ClientID: clientID, ClientSecretFile: file,
 			Outcomes: if03fixture.Fixture{Issuer: vpIssuer, Kid: vpKid, Key: fixtureKey, Claims: if03.Claims{Role: role}}}
-		loaded.Substitution = append(loaded.Substitution, caller.Route{Callers: []string{guardPrincipal}, PeerZone: "zone-b", Audience: aud, Tenant: tenant, Methods: []string{"POST"}, TargetPrefix: aud + "/demo"})
+		loaded.Substitution = append(loaded.Substitution, meshcaller.Route{Callers: []string{guardPrincipal}, PeerZone: "zone-b", Audience: aud, Tenant: tenant, Methods: []string{"POST"}, TargetPrefix: aud + "/demo"})
 	}
 	dsn := testDatabaseURL(t)
 	migrate(t, dsn)
@@ -163,7 +163,7 @@ func TestGuardWithRealConnectorStorePolicyPostgresAndOpenBao(t *testing.T) {
 				header.Set("Authorization", "DPoP "+granted.AccessToken)
 				header.Set("DPoP", proof)
 				header.Set("X-Forwarded-Client-Cert", "URI="+participantID)
-				return hook.Request{Method: "POST", Path: "/demo", Host: "untrusted.invalid", Headers: header}
+				return hook.Request{Method: "POST", Path: "/demo", Host: "resource.guard.test", Headers: header}
 			}
 			req := makeRequest()
 			answer := runtime.Evaluate(t.Context(), req)
