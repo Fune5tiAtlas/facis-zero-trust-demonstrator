@@ -81,3 +81,9 @@ store routes together. There is no single-audience fallback. The files
 A direct Resource call with a Participant token must fail audience verification
 even with a valid DPoP proof. Keep mesh and network bypass controls as additional
 boundaries. Local cryptographic proof does not establish live mesh enforcement.
+
+Admission-labelled namespaces require the pinned Envoy image mirrored under
+`ghcr.io/eclipse-xfsc/...`. The default uses that repository and a digest only;
+the version tag is informational. Preserve the `ENVOY_IMAGE` manifest digest from
+`scripts/tools/pins.env` and supply the required signatures/attestations before
+deployment. The public chart gate checks the default digest against that pin.

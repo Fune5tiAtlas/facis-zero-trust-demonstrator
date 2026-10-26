@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,9 +127,33 @@ func TestSubstitutionFailureResponses(t *testing.T) {
 		if err == nil {
 			t.Fatal("bad substitution accepted")
 		}
+		if strings.Contains(err.Error(), "arbitrary-private-value") {
+			t.Fatal("private store reason leaked")
+		}
 		var refusal *hook.RefusalError
 		if tc.reason != "" && (!errors.As(err, &refusal) || refusal.ReasonCode != tc.reason) {
 			t.Fatal("safe store refusal lost")
+		}
+	}
+}
+
+func TestHostCaseAndPortBoundaries(t *testing.T) {
+	for _, authority := range []string{"resource.example", "resource.example:8080"} {
+		cfg := testConfig("http://127.0.0.1:1")
+		cfg.PublishedBaseURL = "https://" + authority
+		r, err := New(cfg, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, host := range []string{authority, strings.ToUpper(authority), "resource.example:443", "resource.example:9090", "foreign.example"} {
+			got := r.Evaluate(t.Context(), hook.Request{Method: "POST", Path: "/demo", Host: host, Headers: http.Header{}})
+			want := "host_denied"
+			if strings.EqualFold(host, authority) {
+				want = "mesh_caller_denied"
+			}
+			if got.ReasonCode != want {
+				t.Fatalf("host variant reason %s, want %s", got.ReasonCode, want)
+			}
 		}
 	}
 }

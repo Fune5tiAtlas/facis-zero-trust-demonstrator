@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hookfixture"
 	"io"
 	"log/slog"
 	"net"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/envoyhook"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hook"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hookfixture"
 )
 
 // What the stand-in token store answers every substitution with. The verification reads these

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hookfixture"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/contractpath"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hook"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hookfixture"
 )
 
 const (

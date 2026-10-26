@@ -1,4 +1,4 @@
-// Package caller authenticates the store's internal callers and authorizes their routes (design D7).
+// Package meshcaller authenticates the store's internal callers and authorizes their routes.
 package meshcaller
 
 import (

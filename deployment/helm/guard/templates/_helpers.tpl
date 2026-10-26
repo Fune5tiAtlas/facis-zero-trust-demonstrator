@@ -6,6 +6,7 @@
 {{- range $key := list "issuer" "jwks_url" "inbound_audience" "upstream_audience" "published_base_url" "peer_zone" "policy_url" "store_url" -}}
 {{- if not (get $.Values.config $key) -}}{{ fail (printf "config.%s is required" $key) }}{{- end -}}
 {{- end -}}
+{{- if not (regexMatch "^https?://[^/?#@]+/?$" .Values.config.published_base_url) -}}{{ fail "published_base_url must be an HTTP(S) authority without credentials, path, query or fragment" }}{{- end -}}
 {{- if hasKey .Values.config "audience" -}}{{ fail "config.audience is obsolete; configure separate inbound_audience and upstream_audience" }}{{- end -}}
 {{- if or (eq .Values.config.inbound_audience .Values.config.upstream_audience) (regexMatch "[[:space:]]" (printf "%s%s" .Values.config.inbound_audience .Values.config.upstream_audience)) -}}{{ fail "guard audiences must be distinct nonempty identifiers without whitespace" }}{{- end -}}
 {{- if or (not .Values.trustDomain) (not .Values.participantServiceAccount) (not .Values.resourceName) (not .Values.policyRevision) -}}{{ fail "guard identity, resource and policy revision are required" }}{{- end -}}

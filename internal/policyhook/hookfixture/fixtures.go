@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hook"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hook"
 )
 
 // The two credentials the fixtures authenticate, presented as "DPoP <value>".

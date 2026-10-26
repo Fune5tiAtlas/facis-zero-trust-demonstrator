@@ -18,12 +18,12 @@ import (
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/tokenverify"
 )
 
-// Config contains public wiring only. Mesh callers are checked via a SANITIZE_SET sidecar.
 const (
 	proofLifespan = 60 * time.Second
 	proofSkew     = 30 * time.Second
 )
 
+// Config contains public wiring only. Mesh callers are checked via a SANITIZE_SET sidecar.
 type Config struct {
 	ScopeTenants     map[string]string `json:"scope_tenants"`
 	Issuer           string            `json:"issuer"`
@@ -102,7 +102,7 @@ func (r *Runtime) Evaluate(ctx context.Context, in hook.Request) hook.Outcome {
 		return r.refuse("route_denied", http.StatusForbidden)
 	}
 	target, _ := url.Parse(r.cfg.PublishedBaseURL)
-	if in.Host != target.Host {
+	if !strings.EqualFold(in.Host, target.Host) {
 		return r.refuse("host_denied", http.StatusForbidden)
 	}
 	req, err := http.NewRequestWithContext(ctx, in.Method, r.cfg.PublishedBaseURL+"/demo", nil)
@@ -123,6 +123,7 @@ func (r *Runtime) Evaluate(ctx context.Context, in hook.Request) hook.Outcome {
 		return r.refuse(tokenverify.ReasonCode(err), status)
 	}
 	in.Scheme = target.Scheme
+	in.Host = target.Host // canonical configured authority for the policy input
 	in.PeerID = peer.SPIFFEID
 	claims := verifiedClaims{hook.Token{Present: true, Sub: id.Subject, ClientID: id.ClientID, JKT: id.JKT,
 		Scope: strings.Join(id.Scopes, " "), Aud: r.cfg.InboundAudience, ProofValid: true}}
