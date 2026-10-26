@@ -1,6 +1,6 @@
 # ADR-0009: Service mesh mode — Istio sidecar with Cilium
 
-- **Status:** Accepted on 2026-10-26 by the Technical Design Authority and the Project Leader
+- **Status:** Accepted on 2026-10-23 by the Technical Design Authority and the Project Leader
 - **Date:** 2026-10-03
 - **Deciders:** Technical Design Authority (Kevin Kupilas), Project Leader (Robert Koning)
 - **Proposer:** the delivery team, from the WP05 mesh feasibility gate

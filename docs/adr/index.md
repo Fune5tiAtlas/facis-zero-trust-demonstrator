@@ -9,7 +9,7 @@ is a change with a named cost, not a discussion.
 The first five were taken by the project's Technical Design Authority and Project Leader on
 2026-09-08 and govern everything built afterwards. 0009 is the superseding record that the
 first one's fallback clause foresaw, under the number planning allocated to it: it was proposed by
-the delivery team on 2026-10-03 for the same deciders, who accepted it on 2026-10-26, and it replaces 0001 as the governing
+the delivery team on 2026-10-03 for the same deciders, who accepted it on 2026-10-23, and it replaces 0001 as the governing
 mesh-mode decision. A superseded record keeps
 its text and is read through the record that supersedes it.
 
