@@ -173,3 +173,10 @@ non-exportable keys and separate scoped credentials.
 Runtime schema Job pods request native Istio sidecars so the proxy does not hold
 Job completion open. This rendering is tested; live Job completion under the
 platform's injector still needs deployment evidence.
+
+For a guarded deployment, register acquisition clients only for
+`https://resource.facis.invalid` and set every acquisition/substitution route's
+`audience` to that identifier. Participant clients use the separate
+`https://guard.facis.invalid` audience. Use the guard's published base URL for
+route target binding; do not derive the upstream audience from that URL. Never
+mount the provisioning registrar's credentials into the store or Participant.
