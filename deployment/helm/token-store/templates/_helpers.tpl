@@ -76,6 +76,7 @@ app.kubernetes.io/component: server
 {{- $proxy := dict -}}
 {{- if hasKey $annotations "proxy.istio.io/config" -}}
 {{- $proxy = fromYaml (index $annotations "proxy.istio.io/config") -}}
+{{- if hasKey $proxy "Error" -}}{{ fail "proxy.istio.io/config must be a YAML mapping" }}{{- end -}}
 {{- end -}}
 {{- $_ := set $proxy "proxyHeaders" (mergeOverwrite (get $proxy "proxyHeaders" | default dict) (dict "forwardedClientCert" "SANITIZE_SET")) -}}
 {{- $_ := set $annotations "proxy.istio.io/config" (toJson $proxy) -}}
