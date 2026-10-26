@@ -43,3 +43,20 @@ For a reviewed live values file and explicit cluster context, uninstall the stan
 `helm uninstall ztd-connector -n ztd-m3-b --kubeconfig "$KUBECONFIG"`. It retains externally provided
 Secrets, ConfigMap, database and transit key. The complete slice's teardown additionally removes
 only resources owned by its deployment inventory.
+
+## Guarded client provisioning
+
+For the guarded path the operator-only registrar may name both
+`https://guard.facis.invalid` and `https://resource.facis.invalid`, in addition to
+the registration endpoint. Issue each registration token with the endpoint and
+only the audience of the client being provisioned. Register Participant clients
+for the guard audience only; register token-store clients for the Resource
+audience only. Neither workload receives the registrar secret or registration
+scope. Do not register a workload for both audiences.
+
+The Connector enforces the registration token's audience ceiling and the stored
+client audience at challenge and grant time, including verified-presentation
+renewal. Changing the audience in a Participant request cannot obtain a Resource
+token. Existing broad workload registrations must be retired and replaced before
+activating the guarded path; changing chart values does not narrow database rows.
+The bootstrap refuses to overwrite a registrar with conflicting settings.
