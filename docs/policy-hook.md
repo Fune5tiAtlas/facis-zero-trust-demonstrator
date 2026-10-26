@@ -199,7 +199,7 @@ the token-store API, a real IF-05 evaluator (`cmd/policy-evaluator`) and real
 substitution. It validates the inbound proof before replacement. Full-report and
 summary claims select separate acquisition tenants, preventing privilege growth.
 
-The [guard chart](../deployment/helm/guard/README.md) supplies namespace-local
+The guard chart (`deployment/helm/guard/README.md`) supplies namespace-local
 Envoy and mesh/network controls. The local real-dependency test uses a local proxy
 to model the trusted XFCC boundary; this is **not** proof of SPIRE, mTLS, admission
 or bypass refusal on FACIS. Those acceptance lines remain OPEN until deployed
