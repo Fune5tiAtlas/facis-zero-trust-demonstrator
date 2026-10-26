@@ -34,13 +34,13 @@ changes; the process reads those files at startup.
 
 ```bash
 helm lint deployment/helm/connector -f deployment/helm/connector/ci/values.yaml
-helm template ztd-connector deployment/helm/connector -n ztd-m3-b \
+helm template ztd-connector deployment/helm/connector -n <namespace> \
   -f deployment/helm/connector/ci/values.yaml >/dev/null
 scripts/ci/check-charts.sh deployment/helm/connector
 ```
 
 For a reviewed live values file and explicit cluster context, uninstall the standalone release with
-`helm uninstall ztd-connector -n ztd-m3-b --kubeconfig "$KUBECONFIG"`. It retains externally provided
+`helm uninstall ztd-connector -n <namespace> --kubeconfig "$KUBECONFIG"`. It retains externally provided
 Secrets, ConfigMap, database and transit key. The complete slice's teardown additionally removes
 only resources owned by its deployment inventory.
 

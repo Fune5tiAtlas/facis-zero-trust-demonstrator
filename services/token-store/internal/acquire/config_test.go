@@ -50,11 +50,11 @@ func TestLoadConfigBuildsRoutesWhoseFixtureOutcomesVerify(t *testing.T) {
 	if got.KVPrefix != KVPrefix {
 		t.Fatal("legacy KV prefix changed")
 	}
-	cfg["kv_prefix"] = "ztd/m3/zone-b/upstream"
+	cfg["kv_prefix"] = "ztd/example/upstream"
 	raw, _ = json.Marshal(cfg)
 	_ = os.WriteFile(path, raw, 0o600)
 	isolated, err := LoadConfig(path)
-	if err != nil || isolated.KVPrefix != "ztd/m3/zone-b/upstream" {
+	if err != nil || isolated.KVPrefix != "ztd/example/upstream" {
 		t.Fatal("isolated KV prefix not loaded")
 	}
 	for _, invalid := range []string{"/root", "root/", "../escape", "root//child", "root/%2fescape", "root?query", strings.Repeat("x", 257)} {
@@ -90,10 +90,10 @@ func TestLoadConfigBuildsRoutesWhoseFixtureOutcomesVerify(t *testing.T) {
 	}
 
 	// Unknown members and missing fields are refused.
-	for _, bad := range []string{`{"signing_key":"k","extra":1}`, `{"trusted_issuers":[]}`, `{"signing_key":"k"}`} {
-		_ = os.WriteFile(path, []byte(bad), 0o600)
-		if _, err := LoadConfig(path); err == nil {
-			t.Errorf("accepted %s", bad)
+	for _, bad := range []struct{ raw, reason string }{{`{"signing_key":"k","extra":1}`, `unknown field "extra"`}, {`{"trusted_issuers":[]}`, "signing_key is required"}, {`{"signing_key":"k"}`, "at least one trusted issuer"}} {
+		_ = os.WriteFile(path, []byte(bad.raw), 0o600)
+		if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), bad.reason) {
+			t.Errorf("wrong refusal for %s: %v", bad.raw, err)
 		}
 	}
 }
@@ -143,14 +143,24 @@ func TestLoadConfigBuildsTheSubstitutionRoutes(t *testing.T) {
 }
 
 func TestLoadConfigRefusesSharedSigningKey(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "acquire.json")
-	for _, issuer := range []string{"", "shared"} {
-		raw, _ := json.Marshal(map[string]string{"signing_key": "shared", "connector_signing_key": issuer})
+	dir := t.TempDir()
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	pub, _ := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	cfg := map[string]any{"signing_key": "shared", "trusted_issuers": []any{map[string]any{"issuer": vpIssuer, "kid": vpKid, "public_key_file": writePEM(t, dir, "public.pem", "PUBLIC KEY", pub)}}}
+	p := filepath.Join(dir, "acquire.json")
+	for _, issuer := range []string{"", "distinct", "shared"} {
+		cfg["connector_signing_key"] = issuer
+		raw, _ := json.Marshal(cfg)
 		if err := os.WriteFile(p, raw, 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := LoadConfig(p); err == nil || !strings.Contains(err.Error(), "connector_signing_key") {
-			t.Fatal("shared or undeclared issuer key accepted")
+		_, err := LoadConfig(p)
+		if issuer == "shared" {
+			if err == nil || !strings.Contains(err.Error(), "connector_signing_key") {
+				t.Fatal("shared key name not refused")
+			}
+		} else if err != nil {
+			t.Fatalf("optional/distinct key name refused: %v", err)
 		}
 	}
 }

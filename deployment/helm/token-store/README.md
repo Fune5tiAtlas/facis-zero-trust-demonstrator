@@ -144,10 +144,12 @@ acquisition route callers remain in the acquisition configuration.
 
 Configure explicit ingress peers and egress rules for PostgreSQL, OpenBao,
 Connector and mesh control traffic. DNS allows both service port 53 and Gardener's
-translated port 8053. Before installing under namespace default-deny, create the
-schema Jobs' database/mesh lanes: Helm pre-install hooks run before the chart's
-regular NetworkPolicy. The namespace deployment inventory owns these prerequisite
-policies. `podAnnotations` and `nodeSelector` apply to the server and both schema
+translated port 8053. Set `networkPolicy.schemaEgress` to the schema Jobs' database peers. A separate
+egress-only NetworkPolicy hook is created one weight before migrate/drop Jobs;
+it permits DNS and, in runtime mode, istiod TCP 15012 in
+`networkPolicy.istiodNamespace`. It never inherits server or OpenBao lanes.
+The schema policy is retained after uninstall for hook ordering, like the schema
+ServiceAccount; remove both explicitly when retiring the owned namespace. `podAnnotations` and `nodeSelector` apply to the server and both schema
 Jobs, including per-pod admitted sidecar image overrides.
 
 `ci/runtime-values.yaml`, layered over `ci/values.yaml`, exercises runtime rendering
@@ -166,8 +168,9 @@ The acquisition ConfigMap is mounted in full at `/etc/token-store`, including
 public issuer key files referenced by `trusted_issuers[].public_key_file`.
 `runtime.configKey` selects its acquisition JSON file. Keep private fixture keys
 and client secrets in the credentials Secret, never this ConfigMap. Configure
-`connector_signing_key` with the issuer's transit key name; startup rejects a
-missing name or one equal to the store's `signing_key`. These roles need separate
+`connector_signing_key` with the issuer's transit key name; the optional name check rejects equality with the store's `signing_key`.
+Readiness independently compares the public key material against every route
+Connector JWKS, and fails closed on overlap or unavailable keys. These roles need separate
 non-exportable keys and separate scoped credentials.
 
 Runtime schema Job pods request native Istio sidecars so the proxy does not hold

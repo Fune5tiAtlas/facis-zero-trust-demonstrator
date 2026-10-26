@@ -37,10 +37,10 @@ mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 rm -f "$out"/*.txt "$out"/*.json
 
-cluster=ztd-token-store
-reg_name=kind-registry-token-store
+cluster=${TOKEN_STORE_KIND_CLUSTER:-ztd-token-store}
+reg_name=${TOKEN_STORE_KIND_REGISTRY:-kind-registry-token-store}
 reg="$reg_name:5000"            # the registry's name inside the kind network
-host_reg=127.0.0.1:5002         # the same registry from this machine, for the push
+host_reg=${TOKEN_STORE_KIND_HOST_REGISTRY:-127.0.0.1:5002}         # the same registry from this machine, for the push
 ns=ztd-mgmt
 release=token-store
 secret=token-store-database
@@ -49,6 +49,8 @@ latest=$(find services/token-store/internal/schema/migrations -name '*.up.sql' |
 store_sel='app.kubernetes.io/name=ztd-token-store,app.kubernetes.io/component=server'
 work="$(mktemp -d)"
 export KUBECONFIG="$work/kubeconfig"
+cluster_owned=false
+registry_owned=false
 proxy_pid=""
 proxy_port=""
 
@@ -72,8 +74,8 @@ cleanup() {
     echo "kept: cluster $cluster, registry $reg_name, KUBECONFIG=$KUBECONFIG"
     return
   fi
-  kind delete cluster --name "$cluster" >/dev/null 2>&1 || true
-  docker rm -f "$reg_name" >/dev/null 2>&1 || true
+  if [ "$cluster_owned" = true ]; then kind delete cluster --name "$cluster" >/dev/null 2>&1 || true; fi
+  if [ "$registry_owned" = true ]; then docker rm -f "$reg_name" >/dev/null 2>&1 || true; fi
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -148,9 +150,11 @@ step "Image from the working tree"
 docker build -q -f deployment/docker/token-store/Dockerfile -t "$host_reg/token-store:verify" . >/dev/null
 
 step "Cluster and registry"
-# A cluster or registry kept by an earlier run (KEEP=1) is replaced.
-kind delete cluster --name "$cluster" >/dev/null 2>&1 || true
-docker rm -f "$reg_name" >/dev/null 2>&1 || true
+# Never replace a pre-existing local cluster or registry.
+if kind get clusters | grep -Fxq "$cluster" || docker inspect "$reg_name" >/dev/null 2>&1; then
+  echo "refusing to replace an existing local cluster or registry" >&2; exit 1
+fi
+cluster_owned=true
 kind create cluster --name "$cluster" --image "$KIND_NODE_IMAGE" --wait 180s --config - <<'EOF' >/dev/null
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
@@ -159,6 +163,7 @@ containerdConfigPatches:
     [plugins."io.containerd.grpc.v1.cri".registry]
       config_path = "/etc/containerd/certs.d"
 EOF
+registry_owned=true
 docker run -d --name "$reg_name" --network kind -p "$host_reg:5000" "$REGISTRY_IMAGE" >/dev/null
 for node in $(kind get nodes --name "$cluster"); do
   docker exec "$node" mkdir -p "/etc/containerd/certs.d/$reg"
@@ -283,7 +288,22 @@ if [ -n "${GITHUB_ACTIONS:-}" ]; then host_kind=ci; fi
   echo "}"
 } > "$out/environment.json"
 
-values=(--set "image.repository=$reg/token-store" --set "image.digest=$digest" --set "database.existingSecret=$secret" --set "openbao.address=http://openbao:8200")
+cat > "$work/network-values.yaml" <<'YAML'
+networkPolicy:
+  enabled: true
+  schemaEgress:
+    - to:
+        - podSelector: {matchLabels: {app: postgres}}
+      ports: [{port: 5432, protocol: TCP}]
+  egress:
+    - to:
+        - podSelector: {matchLabels: {app: postgres}}
+      ports: [{port: 5432, protocol: TCP}]
+    - to:
+        - podSelector: {matchLabels: {app: openbao}}
+      ports: [{port: 8200, protocol: TCP}]
+YAML
+values=(-f "$work/network-values.yaml" --set "image.repository=$reg/token-store" --set "image.digest=$digest" --set "database.existingSecret=$secret" --set "openbao.address=http://openbao:8200")
 
 step "Before the install: an empty database"
 if [ "$(tables)" = 0 ]; then pass "the database holds no table before the install"; else fail "the database is not empty before the install: $(tables) tables"; fi
@@ -291,6 +311,9 @@ if [ "$(tables)" = 0 ]; then pass "the database holds no table before the instal
 step "Install: the schema is applied"
 helm install "$release" deployment/helm/token-store -n "$ns" "${values[@]}" --set schema.dropOnUninstall=true \
   --wait --wait-for-jobs --timeout 3m >/dev/null
+if kubectl -n "$ns" get networkpolicy ztd-token-store-schema -o json | jq -e '.spec.podSelector.matchLabels["app.kubernetes.io/component"] == "schema" and .spec.policyTypes == ["Egress"] and .metadata.annotations["helm.sh/hook-weight"] == "40"' >/dev/null; then
+  pass "schema egress policy precedes migration and drop hooks"
+else fail "schema egress policy missing or incorrectly scoped"; fi
 version=$(psql "SELECT coalesce(max(version), 0) FROM schema_migrations")
 record > "$out/install-schema_migrations.txt"
 psql "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY 1" > "$out/install-tables.txt"

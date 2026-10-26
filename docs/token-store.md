@@ -546,3 +546,16 @@ second live row is refused by the index; and `Run` renews and sweeps orphans on 
 The lane from the guard to the store across the planes, and the deployment prerequisites of the
 replay check and substitution (the sidecar's `SANITIZE_SET` and the network policy, above), each
 building on the tables, the queries and the service above.
+
+### Key material separation at readiness
+
+Runtime readiness resolves the store's current transit key and every active key
+reference, then reads each route Connector's `/.well-known/jwks.json`. Any matching
+RFC 7638 thumbprint returns `signing_key: mismatch`; unavailable or malformed
+JWKS returns `unreachable`. Requests share the readiness deadline and redirects
+are refused. No key material or token is returned in the readiness response.
+
+`connector_signing_key` is now optional defence in depth: when supplied it must
+differ from `signing_key`, but operator-entered names do not establish separation.
+Existing configs may retain it. Readiness now depends on Connector JWKS access
+even before the first token is acquired; provision keys and network lanes first.

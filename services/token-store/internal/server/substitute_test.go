@@ -688,7 +688,7 @@ func TestSubstitute_StoreFailuresAre503AndAPeerRefusalIs409(t *testing.T) {
 // real version with its thumbprint is ready; a version transit does not have, or another
 // thumbprint, is not; references with no transit key configured are not either.
 func TestReadyz_ResolvesActiveSigningKeys(t *testing.T) {
-	e := newSubEnv(t, false)
+	e := newSubEnv(t, true)
 	s, _ := e.server()
 	ctx := t.Context()
 	signing := func() string {
@@ -771,5 +771,27 @@ func TestSubstitute_ATokenThatExpiresDuringSigningIsNoUpstream(t *testing.T) {
 	}
 	if n := e.acquisitions(); n != 1 {
 		t.Errorf("%d acquisitions; the discarded token must not be reacquired synchronously", n)
+	}
+}
+
+// Real Connector/OpenBao public material is authoritative even without active rows.
+func TestReadyz_RefusesSharedConnectorKeyMaterial(t *testing.T) {
+	e := newSubEnv(t, true)
+	s, _ := e.server()
+	distinct := e.loaded.SigningKey
+	if state := s.checkSigningKey(t.Context()); state != checkOK {
+		t.Fatalf("distinct keys: %s", state)
+	}
+	e.loaded.SigningKey = e.b.SigningKey
+	if state := s.checkSigningKey(t.Context()); state != checkMismatch {
+		t.Fatalf("shared key: %s", state)
+	}
+	e.loaded.SigningKey = distinct
+	if state := s.checkSigningKey(t.Context()); state != checkOK {
+		t.Fatalf("restored separation: %s", state)
+	}
+	e.b.Stop()
+	if state := s.checkSigningKey(t.Context()); state != checkUnreachable {
+		t.Fatalf("unavailable issuer: %s", state)
 	}
 }
