@@ -559,3 +559,5 @@ are refused. No key material or token is returned in the readiness response.
 differ from `signing_key`, but operator-entered names do not establish separation.
 Existing configs may retain it. Readiness now depends on Connector JWKS access
 even before the first token is acquired; provision keys and network lanes first.
+
+Readiness reads `transit/keys/<store-key>` and never creates a key. Startup alone may provision a missing non-exportable P-256 key, requiring `update` on that key path; pre-provision the key to keep the runtime policy read-only there. Signing requires `update` on `transit/sign/<store-key>`. Issuer-separation successes are cached for at most five minutes; any change in the store's active public-key set forces an immediate check of each route's Connector JWKS. Distinct endpoints are fetched concurrently. A shared key returns `shared_issuer_key` and logs a warning without key material. Non-EC-P-256 issuer entries are skipped with a log record. An unavailable issuer fails readiness once no fresh passing check remains.

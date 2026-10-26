@@ -60,6 +60,8 @@ spec:
               "CONNECTOR_TOKEN_SECRET_FILE" "/var/run/connector/credentials/token-hmac"
               "CONNECTOR_REGISTRATION_SECRET_FILE" "/var/run/connector/credentials/registration-hmac"
               "CONNECTOR_REGISTRAR_SECRET_FILE" "/var/run/connector/credentials/registrar-secret"
+              "CONNECTOR_EXCLUSIVE_AUDIENCES" (join "," .Values.oauth.exclusiveAudiences)
+              "CONNECTOR_ALLOW_AUDIENCE_MIGRATION" (.Values.oauth.allowAudienceMigration | toString)
               "CONNECTOR_REGISTRAR_ID" .Values.oauth.registrarID
               "CONNECTOR_REGISTRAR_SCOPES" (join "," .Values.oauth.registrarScopes)
               "CONNECTOR_REGISTRAR_AUDIENCES" (join "," .Values.oauth.registrarAudiences)

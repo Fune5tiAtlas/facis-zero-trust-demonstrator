@@ -13,7 +13,7 @@ oauth:
   registrarAudiences:
     - http://ztd-connector:8080/oauth2/register
     - https://guard.facis.invalid
-    - https://resource.facis.invalid
+  exclusiveAudiences: [https://guard.facis.invalid, https://resource.facis.invalid]
   registrarDelegableScopes: [report:read]
 verifiedPresentation:
   existingConfigMap: ztd-connector-verification
