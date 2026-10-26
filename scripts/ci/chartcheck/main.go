@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -71,6 +72,9 @@ func find(docs []object, kind, name string) object {
 }
 func check(root, chart string) error {
 	name := filepath.Base(chart)
+	if name == "application-service" {
+		return checkGuarded(root)
+	}
 	if name != "guard" && name != "token-store" && name != "connector" {
 		return nil
 	}
@@ -115,6 +119,10 @@ func check(root, chart string) error {
 	if !runtime {
 		return nil
 	}
+	refused, renderErr := exec.Command("helm", "template", "check", chart, "-f", filepath.Join(chart, "ci/values.yaml"), "-f", filepath.Join(chart, "ci/runtime-values.yaml"), "--set-json", "networkPolicy.schemaEgress=[]").CombinedOutput()
+	if renderErr == nil || !strings.Contains(string(refused), "networkPolicy.schemaEgress must include the database lane") {
+		return errors.New("schema policy without database egress must fail rendering")
+	}
 	mounted := false
 	for _, v := range list(at(deployment, "spec", "template", "spec", "volumes")) {
 		if at(v, "name") == "acquisition" {
@@ -136,8 +144,20 @@ func check(root, chart string) error {
 	if err := need(at(server, "spec", "podSelector", "matchLabels", "app.kubernetes.io/component") == "server", "server NetworkPolicy must exclude schema Jobs"); err != nil {
 		return err
 	}
-	if err := need(at(schema, "spec", "podSelector", "matchLabels", "app.kubernetes.io/component") == "schema" && at(schema, "metadata", "annotations", "helm.sh/hook-weight") == "40", "schema policy must precede Jobs"); err != nil {
+	if err := need(at(schema, "spec", "podSelector", "matchLabels", "app.kubernetes.io/component") == "schema", "schema policy must precede Jobs"); err != nil {
 		return err
+	}
+	policyWeight, err := strconv.Atoi(fmt.Sprint(at(schema, "metadata", "annotations", "helm.sh/hook-weight")))
+	if err != nil {
+		return errors.New("schema policy weight must be numeric")
+	}
+	for _, d := range docs {
+		if d["kind"] == "Job" {
+			jobWeight, err := strconv.Atoi(fmt.Sprint(at(d, "metadata", "annotations", "helm.sh/hook-weight")))
+			if err != nil || policyWeight >= jobWeight {
+				return errors.New("schema policy must precede every schema Job")
+			}
+		}
 	}
 	if err := need(reflect.DeepEqual(at(schema, "spec", "policyTypes"), []any{"Egress"}), "schema policy must be egress-only"); err != nil {
 		return err
@@ -167,4 +187,63 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("runtime chart boundaries passed")
+}
+
+// checkGuarded renders the checked-in examples and compares their effective audience configuration.
+func checkGuarded(root string) error {
+	app := filepath.Join(root, "deployment/helm/application-service")
+	readValues := func(path string) (object, error) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		var values object
+		err = yaml.Unmarshal(data, &values)
+		return values, err
+	}
+	participant, err := readValues(filepath.Join(app, "ci/guarded-participant-values.yaml"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	resource, err := readValues(filepath.Join(app, "ci/guarded-resource-values.yaml"))
+	if err != nil {
+		return err
+	}
+	inbound := at(participant, "env", "PARTICIPANT_AUDIENCE")
+	upstream := at(resource, "env", "PROTECTED_RESOURCE_AUDIENCE")
+	if inbound == nil || upstream == nil || inbound == upstream {
+		return errors.New("guarded example audiences must be present and distinct")
+	}
+	for _, name := range []string{"participant", "resource"} {
+		if err := exec.Command("helm", "template", "check", app, "-f", filepath.Join(app, "ci/guarded-"+name+"-values.yaml")).Run(); err != nil {
+			return fmt.Errorf("guarded %s example failed render", name)
+		}
+	}
+	connector := filepath.Join(root, "deployment/helm/connector")
+	cv, err := readValues(filepath.Join(connector, "ci/guarded-connector-values.yaml"))
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(at(cv, "oauth", "exclusiveAudiences"), []any{inbound, upstream}) {
+		return errors.New("connector exclusive audiences must match guarded examples")
+	}
+	if err := exec.Command("helm", "template", "check", connector, "-f", filepath.Join(connector, "ci/values.yaml"), "-f", filepath.Join(connector, "ci/guarded-connector-values.yaml")).Run(); err != nil {
+		return errors.New("guarded Connector example failed render")
+	}
+	guard := filepath.Join(root, "deployment/helm/guard")
+	if _, err := os.Stat(guard); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	gv, err := readValues(filepath.Join(guard, "ci/values.yaml"))
+	if err != nil {
+		return err
+	}
+	if at(gv, "config", "inbound_audience") != inbound || at(gv, "config", "upstream_audience") != upstream {
+		return errors.New("guard audiences must match Participant and Resource examples")
+	}
+	_, err = render(guard, false)
+	return err
 }

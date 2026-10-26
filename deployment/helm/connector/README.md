@@ -46,13 +46,12 @@ only resources owned by its deployment inventory.
 
 ## Guarded client provisioning
 
-For the guarded path the operator-only registrar may name both
-`https://guard.facis.invalid` and `https://resource.facis.invalid`, in addition to
-the registration endpoint. Issue each registration token with the endpoint and
-only the audience of the client being provisioned. Register Participant clients
-for the guard audience only; register token-store clients for the Resource
-audience only. Neither workload receives the registrar secret or registration
-scope. Do not register a workload for both audiences.
+For the guarded path, configure `oauth.exclusiveAudiences` with the guard and
+Resource audiences. Use separate operator-only registrar identities: each may
+name its role's audience plus the registration endpoint. Register Participants
+only for the guard audience and token-store clients only for the Resource
+audience. Neither workload receives registrar credentials or registration scope.
+The Connector refuses dual-role registration and issuance in code.
 
 The Connector enforces the registration token's audience ceiling and the stored
 client audience at challenge and grant time, including verified-presentation
@@ -60,3 +59,9 @@ renewal. Changing the audience in a Participant request cannot obtain a Resource
 token. Existing broad workload registrations must be retired and replaced before
 activating the guarded path; changing chart values does not narrow database rows.
 The bootstrap refuses to overwrite a registrar with conflicting settings.
+
+### Exclusive audiences for guarded access
+
+Set `CONNECTOR_EXCLUSIVE_AUDIENCES` (chart `oauth.exclusiveAudiences`) to the guard's inbound audience and the Resource's upstream audience. `Config.ExclusiveAudiences` is an additive provider contract field. A client may hold at most one member of this set. Registration returns `invalid_client_metadata` for a dual-role request, even with a registrar token authorizing both. Both grant handlers return `invalid_request` for existing clients holding both; the migration flag never relaxes issuance.
+
+The Participant requests only the guard's `inbound_audience`. The store requests only its route's upstream audience, equal to both the guard's `upstream_audience` and `PROTECTED_RESOURCE_AUDIENCE`. The audiences must differ. Provision separate registrar identities for each role; the bootstrap registrar in the guarded example provisions Participants. `/readyz` reports conflicting client IDs and count, and fails until their registrations are repaired. `CONNECTOR_ALLOW_AUDIENCE_MIGRATION=true` (chart `oauth.allowAudienceMigration`) explicitly downgrades this readiness failure to `migration_warning`; use only during a controlled migration. The report and warning contain no credentials.

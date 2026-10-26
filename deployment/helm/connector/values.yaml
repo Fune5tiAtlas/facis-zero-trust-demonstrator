@@ -23,6 +23,8 @@ oauth:
   registrarScopes: [connector:client_registration]
   registrarAudiences: []
   registrarDelegableScopes: []
+  exclusiveAudiences: []
+  allowAudienceMigration: false
   accessTokenLifespanSeconds: 300
 dpop:
   enforce: true

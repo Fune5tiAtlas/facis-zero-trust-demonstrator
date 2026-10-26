@@ -221,7 +221,15 @@ func (s *Server) checkSigningKey(ctx context.Context) string {
 		return checkUnconfigured
 	}
 	k := keys.Keys{Signer: s.cfg.OpenBao, Name: s.cfg.Acquisition.SigningKey}
-	_, latest, err := k.Ensure(ctx)
+	latestRef, err := s.cfg.OpenBao.LatestKey(ctx, k.Name)
+	if err != nil {
+		return checkUnreachable
+	}
+	pub, err := s.cfg.OpenBao.PublicKey(ctx, latestRef)
+	if err != nil {
+		return checkUnreachable
+	}
+	latest, err := keys.Thumbprint(pub)
 	if err != nil {
 		return checkUnreachable
 	}

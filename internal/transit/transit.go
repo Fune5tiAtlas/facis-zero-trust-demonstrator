@@ -183,6 +183,21 @@ func (c *Client) PublicKey(ctx context.Context, key KeyVersion) (*ecdsa.PublicKe
 	return ec, nil
 }
 
+// LatestKey reads the latest non-exportable key version without creating or changing it.
+func (c *Client) LatestKey(ctx context.Context, name string) (KeyVersion, error) {
+	if err := validName(name); err != nil {
+		return KeyVersion{}, err
+	}
+	info, err := c.readKey(ctx, "latest key", name)
+	if err != nil {
+		return KeyVersion{}, err
+	}
+	if info.Type != keyType || info.Exportable || info.AllowPlaintextBackup || info.LatestVersion < 1 {
+		return KeyVersion{}, errors.New("transit: latest key: existing key is not a non-exportable ecdsa-p256 key")
+	}
+	return KeyVersion{Name: name, Version: info.LatestVersion}, nil
+}
+
 func (c *Client) EnsureKey(ctx context.Context, name string) (KeyVersion, error) {
 	if err := validName(name); err != nil {
 		return KeyVersion{}, err

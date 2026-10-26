@@ -142,6 +142,17 @@
         "accessTokenLifespanSeconds": {
           "type": "integer",
           "minimum": 1
+        },
+        "exclusiveAudiences": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "allowAudienceMigration": {
+          "type": "boolean"
         }
       },
       "required": [
