@@ -22,6 +22,20 @@ openbao:
 
 # The service.
 replicas: 1
+# Runtime endpoints and renewal are opt-in; all sensitive files are mounted from an existing Secret.
+runtime:
+  enabled: false
+  existingConfigMap: ""
+  configKey: acquisition.json
+  credentialsSecret: ""
+  openbaoTokenKey: openbao-token
+  replayCallers: []
+podAnnotations: {}
+nodeSelector: {}
+networkPolicy:
+  enabled: false
+  ingressFrom: []
+  egress: []
 server:
   # Budget of one /readyz evaluation, both dependencies asked at once. The readiness probe's
   # timeoutSeconds renders as this plus one, so the kubelet never cuts an evaluation short.

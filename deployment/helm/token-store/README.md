@@ -124,3 +124,39 @@ again when they are back, the caller's `x-request-id` and trace context on the s
 the pod running as its own ServiceAccount with the identity label, an upgrade as a no-op and an
 uninstall to an empty schema. The `Token store` workflow runs it on every change to the store, the
 chart or the pinned images.
+
+## Acquisition and renewal runtime
+
+The default remains the schema/readiness service. Set `runtime.enabled: true` to run
+acquisition, substitution and renewal. Supply an existing ConfigMap containing
+`acquisition.json` and an existing Secret containing the OpenBao token and private
+files referenced by that configuration. The chart never creates either object.
+Public issuer keys can be included in the ConfigMap; use absolute paths below
+`/etc/token-store`. Mount private route and signing files below
+`/var/run/token-store/credentials`; do not put credentials in values or ConfigMaps.
+
+Runtime mode requires SPIRE identity and NetworkPolicy. It renders STRICT
+PeerAuthentication and enforces inbound `SANITIZE_SET` for XFCC, preserving other
+JSON `proxy.istio.io/config` fields. This annotation is a prerequisite, not proof
+of effective mesh configuration: verify the injected proxy and refuse forged XFCC
+before live use. `runtime.replayCallers` lists allowed SPIFFE service accounts;
+acquisition route callers remain in the acquisition configuration.
+
+Configure explicit ingress peers and egress rules for PostgreSQL, OpenBao,
+Connector and mesh control traffic. DNS allows both service port 53 and Gardener's
+translated port 8053. Before installing under namespace default-deny, create the
+schema Jobs' database/mesh lanes: Helm pre-install hooks run before the chart's
+regular NetworkPolicy. The namespace deployment inventory owns these prerequisite
+policies. `podAnnotations` and `nodeSelector` apply to the server and both schema
+Jobs, including per-pod admitted sidecar image overrides.
+
+`ci/runtime-values.yaml`, layered over `ci/values.yaml`, exercises runtime rendering
+with placeholder references. It is not a deployable environment or an admission
+proof. Roll back runtime wiring by restoring a proven release or removing the
+slice; do not leave a token endpoint exposed while removing its identity controls.
+
+Acquisition JSON accepts `kv_prefix` to isolate stored tokens and orphan sweeps.
+An isolated deployment can use `example/token-store/upstream`; omission preserves the existing
+`ztd/token-store/upstream` default. Prefixes contain only non-empty plain path
+segments; slash escapes, traversal and query delimiters are rejected. The scoped
+OpenBao policy must permit only the selected prefix.

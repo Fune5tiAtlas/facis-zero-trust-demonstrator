@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/connectorclient"
@@ -22,6 +23,8 @@ import (
 type Config struct {
 	// SigningKey is the store's transit key name (D9).
 	SigningKey string `json:"signing_key"`
+	// KVPrefix confines stored tokens and orphan sweeps to one deployment. Empty retains the legacy prefix.
+	KVPrefix string `json:"kv_prefix"`
 	// TrustedIssuers are the IF-03 issuers whose outcomes the store accepts: the peer's verifier keys.
 	TrustedIssuers []struct {
 		Issuer        string `json:"issuer"`
@@ -57,6 +60,7 @@ type Config struct {
 // Loaded is a validated Config with its keys read.
 type Loaded struct {
 	SigningKey string
+	KVPrefix   string
 	Trusted    if03.Issuers
 	Routes     map[string]Route
 	// Substitution authorizes /internal/substitute: one caller.Route per route with callers.
@@ -89,7 +93,13 @@ func LoadConfig(path string) (Loaded, error) {
 	if c.SigningKey == "" {
 		return Loaded{}, errors.New("acquisition config: signing_key is required")
 	}
-	out := Loaded{SigningKey: c.SigningKey, Trusted: if03.Issuers{}, Routes: map[string]Route{}}
+	if c.KVPrefix == "" {
+		c.KVPrefix = KVPrefix
+	}
+	if !regexp.MustCompile(`^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$`).MatchString(c.KVPrefix) || len(c.KVPrefix) > 256 {
+		return Loaded{}, errors.New("acquisition config: kv_prefix must contain plain non-empty path segments")
+	}
+	out := Loaded{SigningKey: c.SigningKey, KVPrefix: c.KVPrefix, Trusted: if03.Issuers{}, Routes: map[string]Route{}}
 	for _, ti := range c.TrustedIssuers {
 		pub, err := readPublicKey(ti.PublicKeyFile)
 		if ti.Issuer == "" || ti.Kid == "" || err != nil {

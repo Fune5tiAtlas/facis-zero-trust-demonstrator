@@ -116,7 +116,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*Server, error) {
 	}
 	if a := cfg.Acquisition; a != nil {
 		acquirer := &acquire.Acquirer{DB: pool, Signer: cfg.OpenBao, Secrets: cfg.OpenBao, KeyName: a.SigningKey,
-			Trusted: a.Trusted, Log: log}
+			Trusted: a.Trusted, Log: log, Prefix: a.KVPrefix}
 		s.substitute = &substitute.Service{DB: pool, Signer: cfg.OpenBao, Secrets: cfg.OpenBao, Routes: *a, Log: log,
 			Acquirer: acquirer}
 		instance := cfg.Instance

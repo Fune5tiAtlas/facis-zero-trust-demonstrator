@@ -46,6 +46,24 @@ func TestLoadConfigBuildsRoutesWhoseFixtureOutcomesVerify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if got.KVPrefix != KVPrefix {
+		t.Fatal("legacy KV prefix changed")
+	}
+	cfg["kv_prefix"] = "ztd/m3/zone-b/upstream"
+	raw, _ = json.Marshal(cfg)
+	_ = os.WriteFile(path, raw, 0o600)
+	isolated, err := LoadConfig(path)
+	if err != nil || isolated.KVPrefix != "ztd/m3/zone-b/upstream" {
+		t.Fatal("isolated KV prefix not loaded")
+	}
+	for _, invalid := range []string{"/root", "root/", "../escape", "root//child", "root/%2fescape", "root?query", strings.Repeat("x", 257)} {
+		cfg["kv_prefix"] = invalid
+		raw, _ = json.Marshal(cfg)
+		_ = os.WriteFile(path, raw, 0o600)
+		if _, err := LoadConfig(path); err == nil {
+			t.Error("unsafe KV prefix accepted")
+		}
+	}
 	r, ok := got.Routes["zone-b-api"]
 	if !ok || got.SigningKey != "token-store" || r.Outcomes == nil {
 		t.Fatalf("loaded %+v", got)
