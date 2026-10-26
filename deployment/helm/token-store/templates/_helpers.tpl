@@ -59,6 +59,7 @@ app.kubernetes.io/component: server
 {{- if not (and .Values.runtime.existingConfigMap .Values.runtime.configKey .Values.runtime.credentialsSecret .Values.runtime.openbaoTokenKey) -}}
 {{- fail "runtime requires acquisition ConfigMap and credential Secret key references" -}}
 {{- end -}}
+{{- if not (regexMatch "^[A-Za-z0-9._-]+$" .Values.runtime.openbaoTokenKey) -}}{{ fail "runtime.openbaoTokenKey must be a Secret data key" }}{{- end -}}
 {{- if not .Values.identity.spireManagedIdentity -}}{{ fail "runtime requires SPIRE-managed identity" }}{{- end -}}
 {{- if not .Values.networkPolicy.enabled -}}{{ fail "runtime requires networkPolicy.enabled" }}{{- end -}}
 {{- range .Values.runtime.replayCallers -}}
@@ -71,9 +72,10 @@ app.kubernetes.io/component: server
 {{- define "token-store.annotations" -}}
 {{- $annotations := deepCopy .Values.podAnnotations -}}
 {{- if .Values.runtime.enabled -}}
+{{- $_ := set $annotations "sidecar.istio.io/nativeSidecar" "true" -}}
 {{- $proxy := dict -}}
 {{- if hasKey $annotations "proxy.istio.io/config" -}}
-{{- $proxy = mustFromJson (index $annotations "proxy.istio.io/config") -}}
+{{- $proxy = fromYaml (index $annotations "proxy.istio.io/config") -}}
 {{- end -}}
 {{- $_ := set $proxy "proxyHeaders" (mergeOverwrite (get $proxy "proxyHeaders" | default dict) (dict "forwardedClientCert" "SANITIZE_SET")) -}}
 {{- $_ := set $annotations "proxy.istio.io/config" (toJson $proxy) -}}

@@ -341,6 +341,7 @@ never secrets:
 ```json
 {
   "signing_key": "token-store",
+  "connector_signing_key": "connector",
   "trusted_issuers": [
     {"issuer": "https://verifier.zone-b.example", "kid": "verifier-1", "public_key_file": "/etc/token-store/verifier-1.pem"}
   ],

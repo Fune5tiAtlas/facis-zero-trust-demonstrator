@@ -31,8 +31,9 @@ func TestLoadConfigBuildsRoutesWhoseFixtureOutcomesVerify(t *testing.T) {
 	pub, _ := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	priv, _ := x509.MarshalECPrivateKey(key)
 	cfg := map[string]any{
-		"signing_key":     "token-store",
-		"trusted_issuers": []any{map[string]any{"issuer": vpIssuer, "kid": vpKid, "public_key_file": writePEM(t, dir, "pub.pem", "PUBLIC KEY", pub)}},
+		"signing_key":           "token-store",
+		"connector_signing_key": "connector",
+		"trusted_issuers":       []any{map[string]any{"issuer": vpIssuer, "kid": vpKid, "public_key_file": writePEM(t, dir, "pub.pem", "PUBLIC KEY", pub)}},
 		"routes": []any{map[string]any{
 			"name": "zone-b-api", "peer_zone": "zone-b", "audience": audience, "connector_url": "https://connector.zone-b.test/",
 			"client_id": clientID, "client_secret_file": filepath.Join(dir, "secret"),
@@ -113,7 +114,7 @@ func TestLoadConfigBuildsTheSubstitutionRoutes(t *testing.T) {
 	sub := map[string]any{"callers": []string{"spiffe://zone-a.test/ns/ztd-mgmt/sa/guard"}, "methods": []string{"GET"},
 		"target_prefix": audience + "/v1"}
 	load := func(routes ...any) (Loaded, error) {
-		raw, _ := json.Marshal(map[string]any{"signing_key": "k", "trusted_issuers": issuers, "routes": routes})
+		raw, _ := json.Marshal(map[string]any{"signing_key": "k", "connector_signing_key": "issuer", "trusted_issuers": issuers, "routes": routes})
 		path := filepath.Join(dir, "acquire.json")
 		_ = os.WriteFile(path, raw, 0o600)
 		return LoadConfig(path)
@@ -137,6 +138,19 @@ func TestLoadConfigBuildsTheSubstitutionRoutes(t *testing.T) {
 	} {
 		if _, err := load(routes...); err == nil {
 			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+func TestLoadConfigRefusesSharedSigningKey(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "acquire.json")
+	for _, issuer := range []string{"", "shared"} {
+		raw, _ := json.Marshal(map[string]string{"signing_key": "shared", "connector_signing_key": issuer})
+		if err := os.WriteFile(p, raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadConfig(p); err == nil || !strings.Contains(err.Error(), "connector_signing_key") {
+			t.Fatal("shared or undeclared issuer key accepted")
 		}
 	}
 }
