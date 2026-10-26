@@ -34,7 +34,7 @@ One call per request, before routing. The hook answers in one of three ways:
 
 ## What the hook does with a request
 
-The hook's core (`cmd/policy-hook-probe/internal/hook`) is transport-neutral: it turns one request
+The hook's core (`internal/policyhook/hook`) is transport-neutral: it turns one request
 into one outcome, and one package (`internal/envoyhook`) translates that outcome into the messages
 of either filter. A
 decision therefore does not depend on which filter carries it, which is what the filter-parity
@@ -192,7 +192,7 @@ Helm wiring that attaches the filter to the mesh's Envoy — is recorded as open
 
 ## M3 deployable adapter — local integration
 
-The transport/core is reused from `internal/policyhook`; the probe still
+The the policy-hook proof transport/core is reused from `internal/policyhook`; the probe still
 provides its original fixture-based transport comparison. `cmd/guard` is a
 separate runtime using real token/proof verification, a durable replay check via
 the token-store API, a real IF-05 evaluator (`cmd/policy-evaluator`) and real
