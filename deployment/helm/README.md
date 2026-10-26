@@ -35,3 +35,7 @@ for chart in deployment/helm/*/ features/fixtures/charts/*/; do
   helm lint "$chart" "${values[@]}" && helm template "$chart" "${values[@]}" >/dev/null
 done
 ```
+
+`guard/` packages the namespace-local Envoy guard, real IF-05 evaluator and
+Resource identity/network controls. See [guard runtime](guard/README.md). It is
+standalone and must not be uninstalled while leaving the Resource reachable.

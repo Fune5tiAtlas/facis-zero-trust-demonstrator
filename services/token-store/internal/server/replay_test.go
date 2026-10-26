@@ -20,7 +20,7 @@ import (
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/dpopproof"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/jose"
 
-	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/caller"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/meshcaller"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/testsupport"
 )
 

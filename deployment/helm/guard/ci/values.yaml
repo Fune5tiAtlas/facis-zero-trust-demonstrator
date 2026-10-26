@@ -1,0 +1,10 @@
+# Render-only references, never deploy these placeholder digests.
+images:
+  guard: {digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
+  policy: {digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
+  envoy: {digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
+config:
+  issuer: https://connector.m3.invalid
+  jwks_url: http://ztd-connector:8080/.well-known/jwks.json
+  audience: https://resource.m3.invalid
+  published_base_url: http://ztd-guard:8080

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/cmd/policy-hook-probe/internal/hook"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hook"
 )
 
 // proofOrder is the order "prove all" runs the proofs in: the fail-closed proof kills the hook,

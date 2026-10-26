@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   # TDR-BDD-11: every chart passes lint, render and a server dry-run against a disposable cluster that
-  # serves the CRDs the charts render against (Cilium, Gatekeeper), and the two negative charts are
+  # serves the CRDs the charts render against (Cilium, Gatekeeper, Istio), and the two negative charts are
   # refused by the check each targets. A server dry-run proves render, API discovery and schemas; it
   # does not run admission webhooks or hooks and proves nothing about the release at runtime.
   chart-gate:

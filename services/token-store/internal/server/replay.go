@@ -12,7 +12,7 @@ import (
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/dpopproof"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/replay"
-	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/caller"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/meshcaller"
 )
 
 // The contract's default window (token-store.v1, replay-check): a proof is accepted when

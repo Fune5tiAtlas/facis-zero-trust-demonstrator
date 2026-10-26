@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/cmd/policy-hook-probe/internal/hook"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hook"
 )
 
 // The bootstraps, by the name the proofs and the evidence use.

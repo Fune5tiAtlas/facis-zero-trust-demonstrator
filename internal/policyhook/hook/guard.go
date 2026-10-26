@@ -87,6 +87,8 @@ type Config struct {
 	Audience string
 	// SourceID is the caller identity used when the transport authenticated none.
 	SourceID string
+	// Tenant is the configured upstream route partition, never copied from a request header.
+	Tenant *string
 	// DecisionTimeout bounds one policy decision; zero means unbounded.
 	DecisionTimeout time.Duration
 }
@@ -136,6 +138,7 @@ func (g *Guard) Evaluate(ctx context.Context, req Request) Outcome {
 	}
 	in := Input{
 		CorrelationID: id,
+		Tenant:        g.cfg.Tenant,
 		Source:        Source{SPIFFEID: source},
 		Request:       RequestInfo{Method: method, Path: path, Host: req.Host},
 		Token:         g.auth.Authenticate(req.Headers.Get("Authorization"), req.Headers.Get("DPoP")),
@@ -166,7 +169,7 @@ func (g *Guard) Evaluate(ctx context.Context, req Request) Outcome {
 	}
 	if dec.Substitutes() {
 		sub, err := g.subst.Substitute(ctx, SubstituteRequest{
-			PeerZone: g.cfg.PeerZone, Audience: g.cfg.Audience, Method: method,
+			PeerZone: g.cfg.PeerZone, Audience: g.cfg.Audience, Tenant: g.cfg.Tenant, Method: method,
 			TargetURI: g.cfg.PublishedBaseURL + path, CorrelationID: id,
 		})
 		if err != nil {

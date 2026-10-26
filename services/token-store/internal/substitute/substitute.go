@@ -22,7 +22,7 @@ import (
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/dpopproof"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/transit"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/acquire"
-	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/caller"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/meshcaller"
 )
 
 // OpTimeout bounds every single database, key-value store and transit operation of a substitution.
