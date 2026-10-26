@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/dpopproof"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/meshcaller"
@@ -48,7 +49,7 @@ type Runtime struct {
 }
 
 func New(cfg Config, events hook.EventSink) (*Runtime, error) {
-	if strings.TrimSpace(cfg.InboundAudience) == "" || strings.TrimSpace(cfg.UpstreamAudience) == "" || strings.ContainsAny(cfg.InboundAudience+cfg.UpstreamAudience, " \t\r\n") || cfg.InboundAudience == cfg.UpstreamAudience {
+	if strings.TrimSpace(cfg.InboundAudience) == "" || strings.TrimSpace(cfg.UpstreamAudience) == "" || strings.IndexFunc(cfg.InboundAudience+cfg.UpstreamAudience, unicode.IsSpace) >= 0 || cfg.InboundAudience == cfg.UpstreamAudience {
 		return nil, errors.New("guard requires distinct nonempty inbound and upstream audiences")
 	}
 	for _, raw := range []string{cfg.PublishedBaseURL, cfg.PolicyURL, cfg.StoreURL} {

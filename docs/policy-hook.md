@@ -207,3 +207,5 @@ and tested with final admitted digests. No global extensionProvider is changed.
 
 This deployment applies ADR-0008's ext_authz choice using a dedicated namespace
 Envoy. It does not claim native mesh CUSTOM attachment or deployed evidence.
+
+The guarded token path uses two distinct audiences. Participant clients obtain only the guard's inbound audience; token-store clients obtain only the Resource's upstream audience. The latter equals the guard's `upstream_audience` and the Resource's `PROTECTED_RESOURCE_AUDIENCE`. Configure the Connector's `oauth.exclusiveAudiences` with both values: registration and issuance enforce the boundary, including legacy client rows. Use separate registrar identities for the two roles.

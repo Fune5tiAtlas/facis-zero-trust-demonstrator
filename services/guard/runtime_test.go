@@ -20,7 +20,7 @@ func testConfig(endpoint string) Config {
 }
 
 func TestNewRejectsInvalidConfiguration(t *testing.T) {
-	for _, change := range []func(*Config){func(c *Config) { c.PublishedBaseURL = "https://resource.example/path" }, func(c *Config) { c.StoreURL = "http://user:password@store" }, func(c *Config) { c.PolicyURL = "ftp://policy" }, func(c *Config) { c.Issuer = "" }, func(c *Config) { c.InboundAudience = "" }, func(c *Config) { c.UpstreamAudience = "" }, func(c *Config) { c.UpstreamAudience = c.InboundAudience }, func(c *Config) { c.InboundAudience = " " }, func(c *Config) { c.UpstreamAudience = "bad audience" }, func(c *Config) { c.JWKSURL = "bad" }, func(c *Config) { c.AllowedCallers = []string{"invalid"} }, func(c *Config) { c.ScopeTenants["report:summary"] = "read" }} {
+	for _, change := range []func(*Config){func(c *Config) { c.PublishedBaseURL = "https://resource.example/path" }, func(c *Config) { c.StoreURL = "http://user:password@store" }, func(c *Config) { c.PolicyURL = "ftp://policy" }, func(c *Config) { c.Issuer = "" }, func(c *Config) { c.InboundAudience = "" }, func(c *Config) { c.UpstreamAudience = "" }, func(c *Config) { c.UpstreamAudience = c.InboundAudience }, func(c *Config) { c.InboundAudience = " " }, func(c *Config) { c.UpstreamAudience = "bad audience" }, func(c *Config) { c.InboundAudience = "guard\u00a0audience" }, func(c *Config) { c.UpstreamAudience = "resource\u2003audience" }, func(c *Config) { c.JWKSURL = "bad" }, func(c *Config) { c.AllowedCallers = []string{"invalid"} }, func(c *Config) { c.ScopeTenants["report:summary"] = "read" }} {
 		c := testConfig("http://127.0.0.1:1")
 		change(&c)
 		if _, err := New(c, nil); err == nil {
