@@ -61,7 +61,7 @@ spec:
               value: {{ .Values.openbao.address | quote }}
             {{- if .Values.runtime.enabled }}
             - name: TOKEN_STORE_ACQUIRE_CONFIG
-              value: /etc/token-store/acquisition.json
+              value: {{ printf "/etc/token-store/%s" .Values.runtime.configKey | quote }}
             - name: TOKEN_STORE_OPENBAO_TOKEN_FILE
               value: {{ printf "/var/run/token-store/credentials/%s" .Values.runtime.openbaoTokenKey | quote }}
             - name: TOKEN_STORE_REPLAY_CALLERS
@@ -100,8 +100,6 @@ spec:
         - name: acquisition
           configMap:
             name: {{ .Values.runtime.existingConfigMap | quote }}
-            items:
-              - {key: {{ .Values.runtime.configKey | quote }}, path: acquisition.json}
         - name: credentials
           secret:
             secretName: {{ .Values.runtime.credentialsSecret | quote }}

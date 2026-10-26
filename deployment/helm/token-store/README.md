@@ -160,3 +160,16 @@ An isolated deployment can use `example/token-store/upstream`; omission preserve
 `ztd/token-store/upstream` default. Prefixes contain only non-empty plain path
 segments; slash escapes, traversal and query delimiters are rejected. The scoped
 OpenBao policy must permit only the selected prefix.
+
+
+The acquisition ConfigMap is mounted in full at `/etc/token-store`, including
+public issuer key files referenced by `trusted_issuers[].public_key_file`.
+`runtime.configKey` selects its acquisition JSON file. Keep private fixture keys
+and client secrets in the credentials Secret, never this ConfigMap. Configure
+`connector_signing_key` with the issuer's transit key name; startup rejects a
+missing name or one equal to the store's `signing_key`. These roles need separate
+non-exportable keys and separate scoped credentials.
+
+Runtime schema Job pods request native Istio sidecars so the proxy does not hold
+Job completion open. This rendering is tested; live Job completion under the
+platform's injector still needs deployment evidence.

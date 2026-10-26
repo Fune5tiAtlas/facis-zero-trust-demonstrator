@@ -23,6 +23,8 @@ import (
 type Config struct {
 	// SigningKey is the store's transit key name (D9).
 	SigningKey string `json:"signing_key"`
+	// ConnectorSigningKey identifies the issuer key, which must never sign store proofs.
+	ConnectorSigningKey string `json:"connector_signing_key"`
 	// KVPrefix confines stored tokens and orphan sweeps to one deployment. Empty retains the legacy prefix.
 	KVPrefix string `json:"kv_prefix"`
 	// TrustedIssuers are the IF-03 issuers whose outcomes the store accepts: the peer's verifier keys.
@@ -89,6 +91,9 @@ func LoadConfig(path string) (Loaded, error) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&c); err != nil {
 		return Loaded{}, fmt.Errorf("acquisition config: %w", err)
+	}
+	if c.ConnectorSigningKey == "" || c.SigningKey == c.ConnectorSigningKey {
+		return Loaded{}, errors.New("acquisition config: connector_signing_key must be present and distinct from signing_key")
 	}
 	if c.SigningKey == "" {
 		return Loaded{}, errors.New("acquisition config: signing_key is required")
