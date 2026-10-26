@@ -29,8 +29,8 @@ the decision.
 Every reading above is declared rather than assumed. The five governing ADRs of 2026-09-08 (0001 to
 0005) were submitted to FACIS as the F-05 deviation package and the OpenBao licence exception as F-07;
 both are open at the time of writing. ADR-0009, which supersedes 0001 through the fallback clause that
-record foresaw, entered as *Proposed* after the package was submitted and is carried into its next
-update. A reading found after that package was submitted is recorded here as soon as it is found and
+record foresaw, was proposed after the package was submitted and accepted on 2026-10-26, and is
+carried into its next update. A reading found after that package was submitted is recorded here as soon as it is found and
 carried into the next update of the package. A reading that FACIS declines is handled as a plan change
 under the written-agreement rule, not absorbed into the implementation.
 

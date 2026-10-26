@@ -9,7 +9,7 @@ is a change with a named cost, not a discussion.
 The first five were taken by the project's Technical Design Authority and Project Leader on
 2026-09-08 and govern everything built afterwards. 0009 is the superseding record that the
 first one's fallback clause foresaw, under the number planning allocated to it: it was proposed by
-the delivery team on 2026-10-03 for the same deciders, and it replaces 0001 as the governing
+the delivery team on 2026-10-03 for the same deciders, who accepted it on 2026-10-26, and it replaces 0001 as the governing
 mesh-mode decision. A superseded record keeps
 its text and is read through the record that supersedes it.
 
@@ -20,7 +20,7 @@ its text and is read through the record that supersedes it.
 | [0003](0003-oauth2-authorisation-surface-in-the-go-connector.md) | OAuth2 authorisation surface in the Go connector | Accepted |
 | [0004](0004-openbao-as-x509-key-value-store.md) | OpenBao as X.509 key-value store | Accepted |
 | [0005](0005-three-cluster-reading-of-the-target-environment.md) | Three-cluster reading of the target environment | Accepted |
-| [0009](0009-service-mesh-mode-istio-sidecar-with-cilium.md) | Service mesh mode — Istio sidecar with Cilium (supersedes 0001) | Proposed |
+| [0009](0009-service-mesh-mode-istio-sidecar-with-cilium.md) | Service mesh mode — Istio sidecar with Cilium (supersedes 0001) | Accepted |
 
 ## TDR decisions
 
