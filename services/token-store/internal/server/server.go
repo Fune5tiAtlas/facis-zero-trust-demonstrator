@@ -51,6 +51,7 @@ type Server struct {
 	renewal     *renew.Worker       // nil without an acquisition config
 	subTimeout  time.Duration       // the deadline of one substitution; substituteTimeout
 	reconnected chan struct{}       // signalled when the pool opens a connection, so the replay epoch is rechecked
+	keyStarted  chan struct{}
 	issuerCache issuerSeparationCache
 	now         func() time.Time
 }
@@ -114,6 +115,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*Server, error) {
 		subTimeout:  substituteTimeout,
 		reconnected: reconnected,
 		now:         time.Now,
+		keyStarted:  make(chan struct{}),
 	}
 	if a := cfg.Acquisition; a != nil {
 		acquirer := &acquire.Acquirer{DB: pool, Signer: cfg.OpenBao, Secrets: cfg.OpenBao, KeyName: a.SigningKey,
@@ -193,7 +195,7 @@ func (s *Server) httpServer(h http.Handler) *http.Server {
 // returns nil after a clean stop.
 func (s *Server) Serve(ctx context.Context) error {
 	maintainCtx, stopMaintaining := context.WithCancel(context.Background())
-	keyStarted := make(chan struct{})
+	keyStarted := s.keyStarted
 	go func() {
 		defer close(keyStarted)
 		if s.cfg.Acquisition == nil {

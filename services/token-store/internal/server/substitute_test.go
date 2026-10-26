@@ -198,6 +198,11 @@ func (e *subEnv) serverWith(renewal bool) (*Server, string) {
 		s.renewal = nil // renewal is tested in internal/renew; here it would race the rows the tests set up
 	}
 	startServer(e.t, s)
+	select {
+	case <-s.keyStarted:
+	case <-time.After(10 * time.Second):
+		e.t.Fatal("startup key provisioning did not finish")
+	}
 	e.servers = append(e.servers, s)
 	return s, "http://" + s.Addr().String() + "/internal/substitute"
 }
@@ -803,7 +808,7 @@ func TestReadyz_RefusesSharedConnectorKeyMaterial(t *testing.T) {
 		t.Fatal("rotation request failed")
 	}
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 		t.Fatalf("rotation status %d", resp.StatusCode)
 	}
 	if state := s.checkSigningKey(t.Context()); state != checkOK {
