@@ -15,11 +15,11 @@ import (
 )
 
 func testConfig(endpoint string) Config {
-	return Config{Issuer: "https://issuer.example", JWKSURL: endpoint + "/jwks", Audience: "resource", PublishedBaseURL: "https://resource.example", PeerZone: "test", PolicyURL: endpoint, StoreURL: endpoint, AllowedCallers: []string{"spiffe://test/ns/demo/sa/participant"}, ScopeTenants: map[string]string{"report:read": "read", "report:summary": "summary"}}
+	return Config{Issuer: "https://issuer.example", JWKSURL: endpoint + "/jwks", InboundAudience: "guard", UpstreamAudience: "resource", PublishedBaseURL: "https://resource.example", PeerZone: "test", PolicyURL: endpoint, StoreURL: endpoint, AllowedCallers: []string{"spiffe://test/ns/demo/sa/participant"}, ScopeTenants: map[string]string{"report:read": "read", "report:summary": "summary"}}
 }
 
 func TestNewRejectsInvalidConfiguration(t *testing.T) {
-	for _, change := range []func(*Config){func(c *Config) { c.PublishedBaseURL = "https://resource.example/path" }, func(c *Config) { c.StoreURL = "http://user:password@store" }, func(c *Config) { c.PolicyURL = "ftp://policy" }, func(c *Config) { c.Issuer = "" }, func(c *Config) { c.Audience = "" }, func(c *Config) { c.JWKSURL = "bad" }, func(c *Config) { c.AllowedCallers = []string{"invalid"} }, func(c *Config) { c.ScopeTenants["report:summary"] = "read" }} {
+	for _, change := range []func(*Config){func(c *Config) { c.PublishedBaseURL = "https://resource.example/path" }, func(c *Config) { c.StoreURL = "http://user:password@store" }, func(c *Config) { c.PolicyURL = "ftp://policy" }, func(c *Config) { c.Issuer = "" }, func(c *Config) { c.InboundAudience = "" }, func(c *Config) { c.UpstreamAudience = "" }, func(c *Config) { c.UpstreamAudience = c.InboundAudience }, func(c *Config) { c.InboundAudience = " " }, func(c *Config) { c.UpstreamAudience = "bad audience" }, func(c *Config) { c.JWKSURL = "bad" }, func(c *Config) { c.AllowedCallers = []string{"invalid"} }, func(c *Config) { c.ScopeTenants["report:summary"] = "read" }} {
 		c := testConfig("http://127.0.0.1:1")
 		change(&c)
 		if _, err := New(c, nil); err == nil {
@@ -50,7 +50,19 @@ func (verifiedUnitIdentity) Verify(*http.Request) (tokenverify.Identity, error) 
 func TestRuntimeRemovesCallerHeadersBeforeForwarding(t *testing.T) {
 	dependency := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/decision" {
+			var input hook.Input
+			if json.NewDecoder(r.Body).Decode(&input) != nil || input.Token.Aud != "guard" {
+				t.Error("policy did not receive the verified inbound audience")
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"allow": true, "bundle_revision": "test", "obligations": []string{hook.ObligationSubstituteUpstreamToken}})
+			return
+		}
+		var request hook.SubstituteRequest
+		if json.NewDecoder(r.Body).Decode(&request) != nil || request.Audience != "resource" || request.TargetURI != "https://resource.example/demo" {
+			t.Error("store did not receive the upstream audience and published target")
+			w.WriteHeader(http.StatusForbidden)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"authorization": "DPoP upstream-unit-token", "dpop": "upstream-unit-proof", "expires_at": time.Now().Add(time.Minute).UTC().Format(time.RFC3339)})

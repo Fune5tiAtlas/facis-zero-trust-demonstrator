@@ -3,9 +3,11 @@
 {{- range .Values.images -}}
 {{- if or (not .repository) (not (regexMatch "^sha256:[a-f0-9]{64}$" .digest)) -}}{{ fail "every guard image requires repository and sha256 digest" }}{{- end -}}
 {{- end -}}
-{{- range $key := list "issuer" "jwks_url" "audience" "published_base_url" "peer_zone" "policy_url" "store_url" -}}
+{{- range $key := list "issuer" "jwks_url" "inbound_audience" "upstream_audience" "published_base_url" "peer_zone" "policy_url" "store_url" -}}
 {{- if not (get $.Values.config $key) -}}{{ fail (printf "config.%s is required" $key) }}{{- end -}}
 {{- end -}}
+{{- if hasKey .Values.config "audience" -}}{{ fail "config.audience is obsolete; configure separate inbound_audience and upstream_audience" }}{{- end -}}
+{{- if or (eq .Values.config.inbound_audience .Values.config.upstream_audience) (regexMatch "[[:space:]]" (printf "%s%s" .Values.config.inbound_audience .Values.config.upstream_audience)) -}}{{ fail "guard audiences must be distinct nonempty identifiers without whitespace" }}{{- end -}}
 {{- if or (not .Values.trustDomain) (not .Values.participantServiceAccount) (not .Values.resourceName) (not .Values.policyRevision) -}}{{ fail "guard identity, resource and policy revision are required" }}{{- end -}}
 {{- $participant := printf "spiffe://%s/ns/%s/sa/%s" .Values.trustDomain .Release.Namespace .Values.participantServiceAccount -}}
 {{- if and .Values.config.allowed_callers (or (ne (len .Values.config.allowed_callers) 1) (not (has $participant .Values.config.allowed_callers))) -}}{{ fail "allowed_callers must match this namespace's configured Participant service account" }}{{- end -}}

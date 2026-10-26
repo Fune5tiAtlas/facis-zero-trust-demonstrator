@@ -81,4 +81,4 @@ metadata:
   name: ztd-policy-config
   namespace: {{ .Release.Namespace }}
 data:
-  config.json: {{ toJson (dict "revision" .Values.policyRevision "audience" .Values.config.audience "host" (urlParse .Values.config.published_base_url).host "guard_callers" (list (printf "spiffe://%s/ns/%s/sa/ztd-guard" .Values.trustDomain .Release.Namespace)) "participant_callers" (list (printf "spiffe://%s/ns/%s/sa/%s" .Values.trustDomain .Release.Namespace .Values.participantServiceAccount)) "scope_tenants" .Values.config.scope_tenants) | quote }}
+  config.json: {{ toJson (dict "revision" .Values.policyRevision "audience" .Values.config.inbound_audience "host" (urlParse .Values.config.published_base_url).host "guard_callers" (list (printf "spiffe://%s/ns/%s/sa/ztd-guard" .Values.trustDomain .Release.Namespace)) "participant_callers" (list (printf "spiffe://%s/ns/%s/sa/%s" .Values.trustDomain .Release.Namespace .Values.participantServiceAccount)) "scope_tenants" .Values.config.scope_tenants) | quote }}

@@ -6,7 +6,8 @@ images:
 config:
   issuer: https://connector.m3.invalid
   jwks_url: http://ztd-connector:8080/.well-known/jwks.json
-  audience: https://resource.m3.invalid
+  inbound_audience: https://guard.facis.invalid
+  upstream_audience: https://resource.facis.invalid
   published_base_url: http://ztd-guard:8080
 
 networkPolicy:

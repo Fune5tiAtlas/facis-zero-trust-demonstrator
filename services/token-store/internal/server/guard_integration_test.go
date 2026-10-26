@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -73,7 +74,9 @@ func TestGuardWithRealConnectorStorePolicyPostgresAndOpenBao(t *testing.T) {
 		t.Skip("real Postgres/OpenBao inputs unavailable")
 	}
 	const issuer = "https://connector.guard.test"
-	const aud = "https://resource.guard.test"
+	const aud = "https://resource.facis.invalid"
+	const inbound = "https://guard.facis.invalid"
+	const published = "https://resource.guard.test"
 	const participantID = "spiffe://zone-b.test/ns/example/sa/ztd-participant"
 	const guardPrincipal = "spiffe://zone-b.test/ns/example/sa/ztd-guard"
 	const vpIssuer = "https://fixture.guard.test"
@@ -83,7 +86,7 @@ func TestGuardWithRealConnectorStorePolicyPostgresAndOpenBao(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := connectortest.Start(t, pgtest.MigratedURL(t, "guard_issuer"), addr, token, connectortest.Options{
-		Issuer: issuer, VPIssuer: vpIssuer, VPKid: vpKid, VPKey: &fixtureKey.PublicKey, Audiences: []string{aud},
+		Issuer: issuer, VPIssuer: vpIssuer, VPKid: vpKid, VPKey: &fixtureKey.PublicKey, Audiences: []string{inbound, aud},
 		ScopeMap: []connectortest.Scope{{Role: "reader", Scopes: []string{"report:read"}}, {Role: "viewer", Scopes: []string{"report:summary"}}, {Role: "unrelated", Scopes: []string{"other:read"}}},
 	})
 	bao, err := transit.New(transit.Config{Addr: addr, Token: func(context.Context) (string, error) { return token, nil }})
@@ -106,7 +109,7 @@ func TestGuardWithRealConnectorStorePolicyPostgresAndOpenBao(t *testing.T) {
 		}
 		loaded.Routes[tenant] = acquire.Route{Name: tenant, PeerZone: "zone-b", Audience: aud, Tenant: tenant, ConnectorURL: c.Base, ClientID: clientID, ClientSecretFile: file,
 			Outcomes: if03fixture.Fixture{Issuer: vpIssuer, Kid: vpKid, Key: fixtureKey, Claims: if03.Claims{Role: role}}}
-		loaded.Substitution = append(loaded.Substitution, meshcaller.Route{Callers: []string{guardPrincipal}, PeerZone: "zone-b", Audience: aud, Tenant: tenant, Methods: []string{"POST"}, TargetPrefix: aud + "/demo"})
+		loaded.Substitution = append(loaded.Substitution, meshcaller.Route{Callers: []string{guardPrincipal}, PeerZone: "zone-b", Audience: aud, Tenant: tenant, Methods: []string{"POST"}, TargetPrefix: published + "/demo"})
 	}
 	dsn := testDatabaseURL(t)
 	migrate(t, dsn)
@@ -120,29 +123,29 @@ func TestGuardWithRealConnectorStorePolicyPostgresAndOpenBao(t *testing.T) {
 	}
 	startServer(t, store)
 	storeFront := guardTestProxy(t, "http://"+store.Addr().String(), guardPrincipal)
-	policy, err := policyevaluator.New(policyevaluator.Config{Revision: "integration-1", Audience: aud, Host: "resource.guard.test", GuardCallers: []string{guardPrincipal}, ParticipantCallers: []string{participantID}, ScopeTenants: scopes})
+	policy, err := policyevaluator.New(policyevaluator.Config{Revision: "integration-1", Audience: inbound, Host: "resource.guard.test", GuardCallers: []string{guardPrincipal}, ParticipantCallers: []string{participantID}, ScopeTenants: scopes})
 	if err != nil {
 		t.Fatal(err)
 	}
 	policyServer := httptest.NewServer(policy)
 	t.Cleanup(policyServer.Close)
 	policyFront := guardTestProxy(t, policyServer.URL, guardPrincipal)
-	runtime, err := guard.New(guard.Config{Issuer: issuer, JWKSURL: c.Base + "/.well-known/jwks.json", Audience: aud, PublishedBaseURL: aud, PeerZone: "zone-b", PolicyURL: policyFront.URL, StoreURL: storeFront.URL, AllowedCallers: []string{participantID}, ScopeTenants: scopes}, nil)
+	runtime, err := guard.New(guard.Config{Issuer: issuer, JWKSURL: c.Base + "/.well-known/jwks.json", InboundAudience: inbound, UpstreamAudience: aud, PublishedBaseURL: published, PeerZone: "zone-b", PolicyURL: policyFront.URL, StoreURL: storeFront.URL, AllowedCallers: []string{participantID}, ScopeTenants: scopes}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resource, err := tokenverify.New(tokenverify.Config{Issuer: issuer, JWKSURL: c.Base + "/.well-known/jwks.json", Audience: aud, PublicBaseURL: aud, Replay: replay.NewMemory()})
+	resource, err := tokenverify.New(tokenverify.Config{Issuer: issuer, JWKSURL: c.Base + "/.well-known/jwks.json", Audience: aud, PublicBaseURL: published, Replay: replay.NewMemory()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var last hook.Request
 	for _, entry := range []struct{ role, scope string }{{"reader", "report:read"}, {"viewer", "report:summary"}, {"unrelated", "other:read"}} {
 		t.Run(entry.role, func(t *testing.T) {
-			id, secret := c.Register(t, "participant "+entry.role, entry.scope, aud)
+			id, secret := c.Register(t, "participant "+entry.role, entry.scope, inbound)
 			cc := &connectorclient.Client{BaseURL: c.Base, ClientID: id, ClientSecret: secret}
 			key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 			signer := guardTestKey{key}
-			challenge, err := cc.Challenge(t.Context(), aud)
+			challenge, err := cc.Challenge(t.Context(), inbound)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -150,12 +153,12 @@ func TestGuardWithRealConnectorStorePolicyPostgresAndOpenBao(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			granted, err := cc.Grant(t.Context(), signer, outcome, challenge.Value, aud)
+			granted, err := cc.Grant(t.Context(), signer, outcome, challenge.Value, inbound)
 			if err != nil {
 				t.Fatal(err)
 			}
 			makeRequest := func() hook.Request {
-				proof, err := dpopproof.Build(t.Context(), signer, dpopproof.Claims{HTM: "POST", HTU: aud + "/demo", ATH: connectorclient.ATH(granted.AccessToken)})
+				proof, err := dpopproof.Build(t.Context(), signer, dpopproof.Claims{HTM: "POST", HTU: published + "/demo", ATH: connectorclient.ATH(granted.AccessToken)})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -165,7 +168,17 @@ func TestGuardWithRealConnectorStorePolicyPostgresAndOpenBao(t *testing.T) {
 				header.Set("X-Forwarded-Client-Cert", "URI="+participantID)
 				return hook.Request{Method: "POST", Path: "/demo", Host: "resource.guard.test", Headers: header}
 			}
+			if _, err := cc.Challenge(t.Context(), aud); err == nil {
+				t.Fatal("Participant obtained a Resource-audience challenge")
+			}
+			// The very same valid proof/token must fail at the Resource before any
+			// mesh control is involved, then succeed through the guard after substitution.
 			req := makeRequest()
+			direct, _ := http.NewRequest(http.MethodPost, published+"/demo", nil)
+			direct.Header = req.Headers.Clone()
+			if _, err := resource.Verify(direct); !errors.Is(err, tokenverify.ErrAudience) {
+				t.Fatal("Resource did not reject Participant token for audience mismatch")
+			}
 			answer := runtime.Evaluate(t.Context(), req)
 			if entry.role == "unrelated" {
 				if answer.Allowed || answer.Status != 403 {
@@ -176,7 +189,7 @@ func TestGuardWithRealConnectorStorePolicyPostgresAndOpenBao(t *testing.T) {
 			if !answer.Allowed {
 				t.Fatalf("guard refused: status=%d reason=%s", answer.Status, answer.ReasonCode)
 			}
-			forwarded, _ := http.NewRequest(http.MethodPost, aud+"/demo", nil)
+			forwarded, _ := http.NewRequest(http.MethodPost, published+"/demo", nil)
 			for _, h := range answer.SetHeaders {
 				forwarded.Header.Set(h.Name, h.Value)
 			}
@@ -186,6 +199,12 @@ func TestGuardWithRealConnectorStorePolicyPostgresAndOpenBao(t *testing.T) {
 			}
 			if !slices.Contains(verified.Scopes, entry.scope) || (entry.role == "viewer" && slices.Contains(verified.Scopes, "report:read")) {
 				t.Fatal("substitution changed privilege")
+			}
+			// An upstream token is not accepted on the inbound guard boundary either.
+			upstreamAtGuard := hook.Request{Method: "POST", Path: "/demo", Host: "resource.guard.test", Headers: forwarded.Header.Clone()}
+			upstreamAtGuard.Headers.Set("X-Forwarded-Client-Cert", "URI="+participantID)
+			if runtime.Evaluate(t.Context(), upstreamAtGuard).ReasonCode != "audience_mismatch" {
+				t.Fatal("guard accepted a Resource-audience token")
 			}
 			if forwarded.Header.Get("Authorization") == req.Headers.Get("Authorization") {
 				t.Fatal("token was not substituted")

@@ -12,7 +12,8 @@ podAnnotations: {}
 config:
   issuer: ""
   jwks_url: ""
-  audience: ""
+  inbound_audience: ""
+  upstream_audience: ""
   published_base_url: ""
   peer_zone: zone-b
   policy_url: http://ztd-policy-evaluator:8080

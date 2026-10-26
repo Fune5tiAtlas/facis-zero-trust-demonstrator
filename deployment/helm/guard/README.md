@@ -52,3 +52,32 @@ Set `networkPolicy.istiod.enabled=true` for explicit TCP 15012 access to Istiod,
 or supply the required mesh-control peers in `networkPolicy.egress`. Empty control
 egress is rejected because the sidecar holds application startup. The participant
 service-account value also identifies its application label for ingress policy.
+
+## Audience boundary
+
+Set `config.inbound_audience` to `https://guard.facis.invalid` and
+`config.upstream_audience` to `https://resource.facis.invalid`, or supply two
+distinct deployment-specific identifiers. Empty, equal, whitespace-containing or
+legacy `config.audience` settings are refused. The policy evaluator receives the
+verified inbound audience; only the substitution request uses the upstream one.
+Audiences are claim identifiers, independent of the common published URL used for
+DPoP target binding and the internal Service Host rewrite.
+
+Register Participant clients only for the inbound audience and set
+`PARTICIPANT_AUDIENCE` to it. Register each token-store route client only for the
+upstream audience and use that audience in its acquisition and substitution
+routes. Set `PROTECTED_RESOURCE_AUDIENCE` to the upstream audience. The
+operator-only Connector registrar may provision both roles, but each registration
+token must name only its registration endpoint and the intended client audience.
+Neither workload receives registrar credentials or registration scope.
+
+Replace existing broad client registrations before enabling the guarded path;
+chart changes do not narrow existing database clients. Migrate both audience
+settings, client registrations, Participant configuration, Resource verifier and
+store routes together. There is no single-audience fallback. The files
+`../application-service/ci/guarded-participant-values.yaml` and
+`../application-service/ci/guarded-resource-values.yaml` are render-only examples.
+
+A direct Resource call with a Participant token must fail audience verification
+even with a valid DPoP proof. Keep mesh and network bypass controls as additional
+boundaries. Local cryptographic proof does not establish live mesh enforcement.

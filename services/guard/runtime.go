@@ -28,7 +28,8 @@ type Config struct {
 	ScopeTenants     map[string]string `json:"scope_tenants"`
 	Issuer           string            `json:"issuer"`
 	JWKSURL          string            `json:"jwks_url"`
-	Audience         string            `json:"audience"`
+	InboundAudience  string            `json:"inbound_audience"`
+	UpstreamAudience string            `json:"upstream_audience"`
 	PublishedBaseURL string            `json:"published_base_url"`
 	PeerZone         string            `json:"peer_zone"`
 	PolicyURL        string            `json:"policy_url"`
@@ -47,6 +48,9 @@ type Runtime struct {
 }
 
 func New(cfg Config, events hook.EventSink) (*Runtime, error) {
+	if strings.TrimSpace(cfg.InboundAudience) == "" || strings.TrimSpace(cfg.UpstreamAudience) == "" || strings.ContainsAny(cfg.InboundAudience+cfg.UpstreamAudience, " \t\r\n") || cfg.InboundAudience == cfg.UpstreamAudience {
+		return nil, errors.New("guard requires distinct nonempty inbound and upstream audiences")
+	}
 	for _, raw := range []string{cfg.PublishedBaseURL, cfg.PolicyURL, cfg.StoreURL} {
 		u, err := url.Parse(raw)
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
@@ -64,7 +68,7 @@ func New(cfg Config, events hook.EventSink) (*Runtime, error) {
 		return nil, errors.New("guard caller configuration invalid")
 	}
 	clients := NewClients(cfg.PolicyURL, cfg.StoreURL)
-	verifier, err := tokenverify.New(tokenverify.Config{Issuer: cfg.Issuer, JWKSURL: cfg.JWKSURL, Audience: cfg.Audience,
+	verifier, err := tokenverify.New(tokenverify.Config{Issuer: cfg.Issuer, JWKSURL: cfg.JWKSURL, Audience: cfg.InboundAudience,
 		PublicBaseURL: cfg.PublishedBaseURL, Replay: clients, Proof: dpopproof.Policy{Lifespan: proofLifespan, Skew: proofSkew}})
 	if err != nil {
 		return nil, errors.New("guard verifier configuration invalid")
@@ -121,7 +125,7 @@ func (r *Runtime) Evaluate(ctx context.Context, in hook.Request) hook.Outcome {
 	in.Scheme = target.Scheme
 	in.PeerID = peer.SPIFFEID
 	claims := verifiedClaims{hook.Token{Present: true, Sub: id.Subject, ClientID: id.ClientID, JKT: id.JKT,
-		Scope: strings.Join(id.Scopes, " "), Aud: r.cfg.Audience, ProofValid: true}}
+		Scope: strings.Join(id.Scopes, " "), Aud: r.cfg.InboundAudience, ProofValid: true}}
 	var tenant *string
 	for _, scope := range []string{"report:read", "report:summary"} {
 		if slices.Contains(id.Scopes, scope) {
@@ -131,7 +135,7 @@ func (r *Runtime) Evaluate(ctx context.Context, in hook.Request) hook.Outcome {
 		}
 	}
 	g := hook.New(hook.Config{PublishedBaseURL: r.cfg.PublishedBaseURL, PeerZone: r.cfg.PeerZone,
-		Audience: r.cfg.Audience, Tenant: tenant, DecisionTimeout: 6 * time.Second}, r.clients, claims, r.clients, r.events)
+		Audience: r.cfg.UpstreamAudience, Tenant: tenant, DecisionTimeout: 6 * time.Second}, r.clients, claims, r.clients, r.events)
 	out := g.Evaluate(ctx, in)
 	if out.Allowed {
 		out.RemoveHeaders = append(out.RemoveHeaders, "x-forwarded-client-cert")
