@@ -216,9 +216,13 @@ both control planes stays closed. A zone whose API server is managed outside its
 `networkPolicy.controlPlaneWebhooks.fromEntities` to `[kube-apiserver]` in its zone file. The
 participant clusters of zone A and zone B (Gardener) showed the other case: the API server runs
 outside the cluster and reaches in-cluster webhooks through the provider's `vpn-shoot` pod in
-`kube-system`, which is not on the host network. From another node its call arrives as that node;
-from the webhook pod's own node it arrives as the `vpn-shoot` pod, which no entity names, and the
-webhook times out. Their zone files therefore add `networkPolicy.controlPlaneWebhooks.fromEndpoints`
+`kube-system`, which is not on the host network. On the provider's VXLAN tunnel its call arrives
+as the `vpn-shoot` pod, also from another node: read with Hubble on both zones on 26 October 2026,
+with istiod and the SPIRE server on a node other than `vpn-shoot`'s, every call to the two webhook
+ports carried that pod's identity, none `remote-node` or `host` (a call from the webhook pod's own
+node was not read then). Under the earlier masquerading native routing a call from another node
+arrived as that node, and one from the webhook pod's own node as the `vpn-shoot` pod. No entity
+names that pod, so without an opening for it the webhook times out. Their zone files therefore add `networkPolicy.controlPlaneWebhooks.fromEndpoints`
 with that pod's namespace and labels (`app: vpn-shoot`, `type: tunnel`): the same two webhook
 ports, opened to that one pod by identity; no workload lane admits a pod by address, and the lanes
 are not widened to node addresses (the one address the chart admits is the kubelet probe address
@@ -508,13 +512,16 @@ record). A run shows:
 
 | Check | Proves |
 |---|---|
+| routing check (preconditions) | the pod network keeps a pod's address between nodes: tunnel routing, or native routing with masquerading off or with every node's pod range inside `ipv4-native-routing-cidr`; when it fails, or `cilium-config` cannot be read, the run stops before anything is uninstalled or installed |
 | `install-order-idempotent` | the eight releases install in order with no manual step, every pod is Ready, and a second run leaves every release's manifest identical |
 | `svid-over-csi-socket` | a labelled pod gets, over the mounted socket, the SVID of its service account in the zone's trust domain, chained to the SPIRE CA; an unlabelled pod gets no entry and no SVID |
 | `native-sidecar-version` | the server is 1.33 or later and the proxy is an init container with `restartPolicy: Always` |
 | `mesh-identity-issued-by-spire` | the proxy's certificate has `O = SPIRE`, the SPIRE CA as issuer and the SVID's URI SAN, and its `ROOTCA` bundle is the SPIRE CA; under the capture rule (`capture-at-injector-defaults`), a pod in a plane namespace with an excluded application port, capture mode `NONE`, a moved status port, a proxy-config override, an injection opt-out, a swapped proxy image or a pod-supplied `istio-proxy` is refused at admission, an ordinary pod is admitted carrying the injector's status-port exclusion and `REDIRECT`, and the istiod and `istio-cni` pods, which opt out of injection, are admitted in `istio-system` |
-| `unregistered-workload-cut-off` | an unlabelled pod's proxy has no certificate, its application never starts, and the peer refuses a call from it, while the labelled pod's call succeeds |
+| `unregistered-workload-cut-off` | an unlabelled pod's proxy has no certificate, its application never starts, and the peer refuses a call from it, made from a node other than the peer's, while the labelled pod's call succeeds |
 | `traffic-through-the-proxies` | the peer sees the caller's SPIFFE ID in `X-Forwarded-Client-Cert` and both proxies count the request as mTLS |
-| `default-deny-with-chained-cni` | the Istio plugin runs after Cilium, `cni-exclusive=false`, and the umbrella's cross-plane denial and matrix lane hold with the proxies in place |
+| `mesh-on-every-node` | on every node with a SPIRE agent, a meshed stand-in of its own is Ready and its proxy holds a SPIRE-issued certificate for that stand-in's own SPIFFE ID, one check per node |
+| `cross-node-calls` | every node's meshed stand-in calls the next node's across a node boundary; the receiver sees the caller's own SPIFFE ID and both proxies count the request as mTLS, one check per call |
+| `default-deny-with-chained-cni` | the Istio plugin runs after Cilium, `cni-exclusive=false`, and the umbrella's cross-plane denial (from a node other than the peer's) and matrix lane hold with the proxies in place |
 | `control-planes-under-default-deny` | only the declared openings exist in the two namespaces, the agents and the proxies are served, and a stand-in pod's probes on every other port are denied |
 | `registration-inventory` | every entry on the SPIRE server, by SPIFFE ID, next to the pod that holds it and the certificate in use with that ID; no entry outside a plane namespace or not created by the registration rule, and every certificate in use has an entry of its own pod in a plane namespace ([declared workloads](#declared-workloads-and-the-registration-inventory)) |
 

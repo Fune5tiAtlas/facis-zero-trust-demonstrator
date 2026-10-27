@@ -133,16 +133,20 @@ next run replaces it, so its log can be collected (`kubectl -n ztd-mgmt logs job
 with the unseal key (`bao operator generate-root`), issue a new periodic token with the `ztd-verify`
 policy, write it to the Secret's `verify-token`, and revoke the root token again.
 
-### The node pin on the participant zones
+### Placement
 
-On the participant clusters of zone A and zone B the provider's pod network masquerades pod traffic
-between nodes, so a meshed pod on another node than istiod never passes its proxy's readiness. Their
-zone files set `openbao.pinToMeshNode: true`, and the installer then reads the node istiod runs on
-after the istiod release and pins the OpenBao server and both jobs to it, a required node affinity on
-`kubernetes.io/hostname` (the chart value `global.pin.node`; `istiod-node-not-found`, which matches no
-node, when istiod has none). The server's volume (`WaitForFirstConsumer`) binds on that node. The pin
-is temporary: it falls when the provider's network is fixed
-([OSC environment](environments/osc.md#the-node-pin-of-openbao)). The kind zone is not pinned.
+No pod of the release is held to a node, on any zone: the server and both jobs carry no node
+affinity or node selector, and the scheduler places them. The server's volume (`WaitForFirstConsumer`)
+is provisioned when the server first runs. On the participant zones the volume (`csi.onmetal.de`)
+has no node affinity and the zone's nodes share one availability zone, so a server that moves to
+another node finds its volume there. Zone A and zone B as installed on 26 October 2026 still run the
+server and its jobs on istiod's node, where the installer of that date held them (a pin set while
+the provider's pod network masqueraded pod traffic between nodes). The next install of a zone with
+`scripts/install-zone/install.sh install`, an upgrade of the release, drops that placement: the
+server restarts wherever the scheduler places it, its volume attaches there, and the bootstrap
+unseals it with the stored key, so the store keeps its data. Only a proof run, whose clean slate
+uninstalls the zone, resets the store. Neither has been run on the zones since
+([OSC environment](environments/osc.md#the-secret-store)).
 
 ### After a restart: manual unseal
 
