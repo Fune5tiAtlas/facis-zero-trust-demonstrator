@@ -214,8 +214,6 @@ verification:
 # OpenBao (ZT-11, ADR-0004; docs/secrets.md) is not part of this chart: it is the release
 # `ztd-openbao` (deployment/helm/ztd-openbao), the last of a zone, installed after zone-policy so its
 # pods hold a mesh identity from their first start. The schema refuses the values this chart once
-# took for it (openbao.enabled and the rest of openbao.*, openbaoBootstrap, openbaoExternal). The
-# one key a zone file may set under `openbao` is read by scripts/install-zone/install.sh, not here:
-#   openbao.pinToMeshNode: true   pin ztd-openbao to istiod's node (temporary; participant zones on
-#                                 a provider-masqueraded pod network, docs/environments/osc.md)
+# took for it (openbao.enabled and the rest of openbao.*, openbaoBootstrap, openbaoExternal), and
+# any other key under `openbao`: no release of a zone is placed on a node by its zone file.
 # --------------------------------------------------------------------------------------------

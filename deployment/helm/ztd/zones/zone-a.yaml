@@ -24,9 +24,9 @@ zone:
 mesh:
   mode: sidecar
 
-# kubectl -n kube-system get ds cilium: Cilium 1.18.8, installed and upgraded by the provider, with
-# cni-exclusive=false already set (kubectl -n kube-system get cm cilium-config). Verified, never
-# installed or reconfigured by the zone.
+# kubectl -n kube-system get ds cilium: Cilium 1.19.6, installed and upgraded by the provider, with
+# cni-exclusive=false already set and tunnel routing over VXLAN (kubectl -n kube-system get cm
+# cilium-config: routing-mode, tunnel-protocol). Verified, never installed or reconfigured by the zone.
 cni:
   cilium:
     enabled: true
@@ -75,14 +75,3 @@ networkPolicy:
         type: tunnel
   identityServer:
     enabled: true
-
-# The secret store, release ztd-openbao (deployment/helm/ztd-openbao), installed by
-# scripts/install-zone/install.sh after zone-policy with this zone's storage class (zone.storageClass)
-# and the umbrella's management namespace. TEMPORARY pin: the provider's pod network masquerades
-# cross-node pod traffic, so a meshed pod on another node than istiod never passes its proxy's
-# readiness; the installer pins the OpenBao server and both of its jobs to istiod's node (required
-# node affinity on kubernetes.io/hostname). The server's volume (WaitForFirstConsumer) binds on that
-# node. The pin falls when the provider's network is fixed, the criterion that gates mesh enrolment
-# on this cluster (docs/environments/osc.md, "The node pin of OpenBao").
-openbao:
-  pinToMeshNode: true

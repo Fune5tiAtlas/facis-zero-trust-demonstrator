@@ -67,7 +67,7 @@ declared derogation of the preferred stack first (`docs/workload-identity.md`).
 | `allowMatrix` | the lanes of architecture §6 | Data-plane → management-plane lanes, as data (see below) |
 | `verification.enabled` | `true` | Post-install job that reads the layout back and fails the release if it is wrong |
 | `verification.image` | `curlimages/curl` by digest | Image of the verification job |
-| `openbao.pinToMeshNode` | unset | Not read by this chart: `scripts/install-zone/install.sh` reads it for the release `ztd-openbao` (pin to istiod's node, participant zones, temporary). Every other `openbao` key, `openbaoBootstrap` and `openbaoExternal` are refused by the schema |
+| `openbao.*`, `openbaoBootstrap`, `openbaoExternal` | unset | Refused by the schema: the chart installs no OpenBao (below), and no zone file places the release `ztd-openbao` on a node |
 
 The chart installs no OpenBao. The secret store is the release `ztd-openbao`, the last of a zone,
 from [deployment/helm/ztd-openbao](../ztd-openbao/README.md); its placement, bootstrap, manual unseal

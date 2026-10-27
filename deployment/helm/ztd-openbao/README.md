@@ -33,7 +33,7 @@ The chart wraps the upstream `openbao` chart 0.28.3 (OpenBao v2.5.4), a dependen
   server reads the fixture value (a hash, never the value) and round-trips the fixture transit key;
 - **the identity label** `spiffe.io/spire-managed-identity: "true"` on the server pods
   (`openbao.server.extraLabels`) and on both jobs' pods;
-- **the node pin**, off by default (below).
+- **no node placement**: no pod of the release carries a node affinity or a node selector (below).
 
 Install it with `--wait --wait-for-jobs` into the management namespace the umbrella created. The
 installer does, and fills the zone facts:
@@ -56,14 +56,13 @@ helm upgrade --install ztd-openbao deployment/helm/ztd-openbao -n ztd-mgmt \
 | Value | Default | Meaning |
 |---|---|---|
 | `managementNamespace` | `ztd-mgmt` | The management-plane namespace (zone fact `planes.management.namespace`); the bootstrap and the hook go there |
-| `global.pin.node` | `""` | The node the server and both jobs must run on (required node affinity on `kubernetes.io/hostname`); empty: no pin. Temporary, participant zones only (below) |
 | `cilium.enabled` | `true` | Open the bootstrap Job's API lane with a `CiliumNetworkPolicy` (zone fact `cni.cilium.enabled`); without Cilium the umbrella's `networkPolicy.kubeApi` lane must be open |
 | `openbao.global.enabled` | `false` | Every upstream piece off unless turned on by name, so external mode renders nothing upstream |
 | `openbao.global.namespace` | `ztd-mgmt` | Zone fact `planes.management.namespace`; must equal `managementNamespace`, the chart refuses to render otherwise |
 | `openbao.server.enabled` | `true` | The bundled server; `false` to verify an external OpenBao. Exclusive with `external.address` |
 | `openbao.server.dataStorage.storageClass` | `null` | Zone fact `zone.storageClass`; required with the bundled server |
 | `openbao.server.extraLabels` | the identity label | Labels of the server pods; the identity label makes them declared workloads under `zone-policy` |
-| `openbao.server.affinity` | node pin or the upstream anti-affinity | A template evaluated by the upstream chart: the node affinity of `global.pin.node` when set |
+| `openbao.server.affinity` | the upstream anti-affinity | Not set by this chart: the upstream default, a pod anti-affinity between server replicas; no node affinity |
 | `openbao.server.updateStrategyType` | `RollingUpdate` | Not the upstream `OnDelete`: an upgrade that changes the pod template restarts the server, and the rerun bootstrap unseals it |
 | `openbao.*` | see `values.yaml` | Passed to the upstream chart: standalone, file storage, one replica, image pinned by digest, no injector, no auth-delegator |
 | `bootstrap.image` | `curlimages/curl` by digest | Image of the bootstrap Job and the verification hook |
@@ -81,16 +80,11 @@ exclusive`.
   `external.verifyTokenSecret` set. Nothing is installed or initialised; only the verification hook
   runs against that address (health, unseal state, the two engines).
 
-## The node pin
+## Placement
 
-On the participant clusters of zone A and zone B the provider's pod network masquerades pod traffic
-between nodes, so a meshed pod on another node than istiod never passes its proxy's readiness. Their
-zone files set `openbao.pinToMeshNode: true`; the installer then reads istiod's node after the istiod
-release and sets `global.pin.node` to it (`istiod-node-not-found`, which matches no node, when istiod
-has none; `render` uses that placeholder). The value sits under `global` because Helm passes a
-parent's values to a subchart only there, so one value pins the server and both jobs. The pin is
-temporary: it falls when the provider's network is fixed (`docs/environments/osc.md`). The kind zone
-is not pinned.
+No pod of the release is held to a node: the server, the bootstrap Job and the verification hook
+carry no node affinity or node selector, and the scheduler places them. `values.schema.json` refuses
+a `global` key, so a stale value that once placed the release on a node does not render.
 
 ## The manual unseal
 
