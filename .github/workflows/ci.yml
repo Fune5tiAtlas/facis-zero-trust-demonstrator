@@ -89,8 +89,15 @@ jobs:
               } >> "$GITHUB_STEP_SUMMARY"
             fi
 
-            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-              aquasec/trivy:0.74.0 image --exit-code 1 --severity HIGH,CRITICAL "${skips[@]}" "$image"
+            vex=()
+            if [ -f "$(dirname "$dockerfile")/vex.json" ]; then
+              # Exact component/revision statements retain fixed-version attribution for upstream
+              # binaries whose Go pseudo-version sorts below their actual release version.
+              vex=(--vex "/source/$(dirname "$dockerfile")/vex.json" --show-suppressed)
+              echo "Version attribution: $(dirname "$dockerfile")/vex.json" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/source:ro" \
+              aquasec/trivy:0.74.0 image --exit-code 1 --severity HIGH,CRITICAL "${skips[@]}" "${vex[@]}" "$image"
           done
 
   # The signing profile end to end: the release signing script signs and attests throwaway images
