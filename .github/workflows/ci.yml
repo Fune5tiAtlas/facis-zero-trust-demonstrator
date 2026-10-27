@@ -64,6 +64,11 @@ jobs:
 
             docker build --platform linux/amd64 -f "$dockerfile" -t "$image" .
 
+            role="$(basename "$(dirname "$dockerfile")")"
+            case "$role" in
+              participant|protected-resource) python3 scripts/ci/check-runtime-files.py "$image" "$role" ;;
+            esac
+
             # ZT-13 requires Linux images; assert it rather than trust the Dockerfile.
             platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")
             echo "$image platform: $platform"
