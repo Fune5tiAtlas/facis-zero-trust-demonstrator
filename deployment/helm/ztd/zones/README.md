@@ -16,8 +16,8 @@ storage class, the management namespace, the Cilium switch), so they cannot disa
 
 The secret store is not an umbrella value: the umbrella's schema refuses `openbao.enabled` and the
 other values it once took for OpenBao. Every zone the installer installs gets the release
-`ztd-openbao` (`deployment/helm/ztd-openbao`), with the zone's `zone.storageClass`; the one OpenBao
-key a zone file may carry is `openbao.pinToMeshNode`, which the installer reads (below).
+`ztd-openbao` (`deployment/helm/ztd-openbao`), with the zone's `zone.storageClass`; a zone file
+carries no OpenBao key, and the schema refuses any under `openbao`.
 
 The chart has no defaults for the zone record on purpose. `zone.kubernetesVersion`,
 `zone.storageClass` and `zone.loadBalancer.type` are facts about the cluster, and the chart
@@ -48,17 +48,17 @@ trust domain.
 
 `zone-a.yaml` and `zone-b.yaml` record the two participant clusters on the Open Sovereign Cloud
 (contexts `zerotrust-a` and `zerotrust-b`): Kubernetes `v1.34.7`, StorageClass `default`,
-`loadBalancer.type: cloud` (not yet exercised), Cilium 1.18.8 installed by the provider with
-`cni-exclusive=false`, the mesh in sidecar mode, the two control-plane namespaces and the three
+`loadBalancer.type: cloud` (not yet exercised), Cilium 1.19.6 installed by the provider with
+`cni-exclusive=false` and tunnel routing (VXLAN), the mesh in sidecar mode, the two control-plane namespaces and the three
 openings, and the API lane on port 443 by entity, with no address in the file. Two facts of the
 provider's platform are recorded with them: CoreDNS listens on 8053 (`networkPolicy.dns.ports`),
 and the zone's namespaces carry Gardener's opt-out label
 `apiserver-proxy.networking.gardener.cloud/inject: disable` (`planes.namespaceLabels`), so that the
 provider's webhook leaves the pods on the `kubernetes` Service and they reach the API through the
-`kubeApi` lane. Both set `openbao.pinToMeshNode: true`: the provider's pod network masquerades
-cross-node pod traffic, so the installer pins the OpenBao server and its jobs to istiod's node until
-the network is fixed (`docs/environments/osc.md`). `ionos.yaml` carries no OpenBao value: the
-installer does not install that cluster, which runs the visualization only.
+`kubeApi` lane. No zone file places a release on a node: the scheduler places the OpenBao server
+and its jobs as it places every other pod (`docs/environments/osc.md`, "The secret store", on the
+zones as they were installed before). `ionos.yaml` carries no OpenBao value either: the installer
+does not install that cluster, which runs the visualization only.
 
 | Zone file | `zone.trustDomain` | Status |
 |---|---|---|

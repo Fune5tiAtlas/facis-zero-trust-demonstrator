@@ -148,9 +148,6 @@ spec:
         {{- include "ztd-openbao.podIdentity" . | nindent 8 }}
     spec:
       serviceAccountName: {{ $name }}
-      {{- /* The node pin (global.pin.node): TEMPORARY, participant zones only - the provider's pod
-      network masquerades cross-node pod traffic, so this meshed pod must run on istiod's node. */}}
-      {{- include "ztd-openbao.pinAffinity" . | nindent 6 }}
       restartPolicy: Never
       securityContext:
         runAsNonRoot: true
