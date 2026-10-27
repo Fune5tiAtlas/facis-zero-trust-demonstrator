@@ -13,12 +13,18 @@
 # checks, the registration inventory (every entry on the SPIRE server against the certificates in use
 # in the plane namespaces, by SPIFFE ID, both ways), the cluster's CNI left as found, and a teardown that leaves nothing behind (or, on a
 # participant cluster with the keep opt-in and every check passed, the record of what stays).
-# On a participant cluster every pod the proof creates (the stand-ins, their -capture-check copies,
-# the probe of section 8's scratch namespace, the kube-public pod of section 13) is pinned to the
-# node istiod runs on, with a required node affinity on kubernetes.io/hostname: the provider's pod
-# network masquerades pod traffic between nodes, so the mesh is proven node-locally there until the
-# provider changes it. The one exception is the per-node SVID stand-ins, each placed on its own node.
-# Kind is not pinned.
+# On every cluster, kind and participant, the proof places a meshed stand-in on every node with a
+# SPIRE agent (fixtures/mesh-on-node.yaml, mesh-on-<node> in the data plane) and calls, from each, the
+# stand-in of the next node in a ring, so that every node is a caller and a receiver across a node
+# boundary; the cross-plane denial and the unregistered workload's refusal run with the caller on a
+# node other than the peer's. No pod the proof creates is held to istiod's node (no pin): besides those
+# placements on purpose (and the per-node SVID stand-ins), the scheduler places the pods. No release
+# of the zone is held to a node either: section 5 checks that no pod of ztd-openbao carries a node
+# affinity or a node selector. Among the
+# preconditions, the routing check fails the run when the cluster's Cilium would masquerade pod traffic
+# between nodes (native routing, masquerading on, a node's pod range outside ipv4-native-routing-cidr)
+# and stops it there, before the clean slate: nothing is uninstalled or installed, and the record of the
+# preconditions is written.
 # Writes evidence.md and environment.json to a run directory outside the repository (see
 # ZTD_EVIDENCE_DIR below) and prints that directory as its last line; it never writes under docs/ or
 # anywhere else in the repository, which holds no record of a run. Never run by CI: the evidence is
@@ -35,7 +41,8 @@
 #   1-124    the number of failed checks (capped at 124); the evidence is written
 #   125      refused or not run (an argument, CI, the context guard, a run directory inside the
 #            repository): nothing written
-#   130/143  interrupted (INT/TERM); on a participant cluster the zone is torn down, no evidence
+#   130/143  interrupted (INT/TERM); on a participant cluster the zone is torn down once the run has
+#            reached the clean slate (section 1), and left as found before it; no evidence
 #
 # Environment:
 #   KUBE_CONTEXT          kubectl context (default: kind-ztd). Accepted: a kind cluster (named
@@ -48,7 +55,8 @@
 #   ZTD_CONFIRM_CLUSTER   on a participant cluster: the context name, typed for this run
 #   ZTD_KEEP_ZONE         on a participant cluster: the context name to leave the zone installed when
 #                         every check passed (the teardown is replaced by the record of what remains);
-#                         unset, a failed check or an interrupted run tears the zone down. Refused on
+#                         unset, a failed check or an interrupted run tears the zone down once the run
+#                         has reached section 1 (before it, the cluster is left as found). Refused on
 #                         kind and with any other value.
 #   ZONE_VALUES           zone file (default: deployment/helm/ztd/ci/values.yaml on kind,
 #                         deployment/helm/ztd/zones/zone-<a|b>.yaml on zerotrust-<a|b>); on a
@@ -57,11 +65,12 @@
 #                         repository (exit 125). Default: a new directory per run,
 #                         ${XDG_STATE_HOME:-$HOME/.local/state}/ztd/verify-mesh-identity/<context>/<UTC start, YYYYMMDDTHHMMSSZ>/
 #
-# On zerotrust-a and zerotrust-b the proof's pods are pinned to istiod's node (read after the install);
-# the evidence header, section 5 and the record of what remains state the pin and its reason. On kind
-# the scheduler places them as before. On every cluster the per-node SVID stand-ins (svid-on-<node> in
-# spire-system, one per node with a SPIRE agent) are placed by their own node affinity, never pinned,
-# and removed with the other stand-ins.
+# Placement: on every cluster the per-node stand-ins (svid-on-<node> in spire-system and mesh-on-<node>
+# in the data plane, one each per node with a SPIRE agent) are placed by their own node affinity, and
+# the management-plane caller and the unregistered stand-in by a node affinity to a node other than the
+# peer's, preferring one that is not istiod's either (where no such node exists, it is istiod's, which is
+# then the only node other than the peer's); every other pod is placed by the scheduler. All of them
+# are removed with the other stand-ins.
 #
 # Every check is "<test>; check $? <title>": the status of the test is what the check records.
 # shellcheck disable=SC2319,SC2016,SC2181,SC1091
@@ -175,26 +184,30 @@ restore_capture() {
 # only once that record is written to the run directory, so an interrupt or a failed write before
 # then still tears the zone down; written: 1 once both files of the evidence are written (an
 # interrupt between that write and kept=1 keeps the zone the record names); cleaned: 1 once the
-# teardown ran.
-keep_zone=0; kept=0; written=0; cleaned=0
-# provider_cleanup: on a participant cluster, unless the run ended with the zone kept or already torn
-# down, removes everything the run put there (the fixture of section 13, the scratch namespace of
+# teardown ran; installed: 1 once the run starts writing to the cluster (section 1), so a run that
+# stops before (a failed routing check, an interrupt or an error in the preconditions) leaves the
+# cluster as found, a zone it already runs included.
+keep_zone=0; kept=0; written=0; cleaned=0; installed=0
+# provider_cleanup: on a participant cluster, unless the run stopped before section 1 or ended with the
+# zone kept or already torn down, removes everything the run put there (the fixture of section 13, the scratch namespace of
 # section 8, the eight releases, the release namespace), so that an error, INT or TERM leaves the
 # cluster as it was found; idempotent, every step ignores what is already gone.
 # delete_stand_ins: removes the stand-in pods of section 5 while the SPIFFE CSI driver still runs, so
 # that their csi.spiffe.io volumes unmount (once the spire release is gone they would hang in
 # Terminating and hold their namespace); a no-op when there are none. The per-node SVID stand-ins of
 # fixtures/svid-on-node.yaml go too, by their label (whatever nodes they were rendered for, a run
-# interrupted before section 6 included), and the ServiceAccount of that fixture with them.
+# interrupted before section 6 included), and the ServiceAccount of that fixture with them. So do the
+# per-node meshed stand-ins of fixtures/mesh-on-node.yaml, their Services and ServiceAccounts, by their label.
 delete_stand_ins() {
   sed -e "s/__DATA__/$DATA/g" -e "s/__MGMT__/$MGMT/g" fixtures/stand-ins.yaml \
     | kubectl --context "$CONTEXT" delete -f - --ignore-not-found --wait=true >/dev/null 2>&1
+  kubectl --context "$CONTEXT" -n "$DATA" delete pod,service,serviceaccount -l app.kubernetes.io/name=mesh-on-node --ignore-not-found --wait=true >/dev/null 2>&1
   kubectl --context "$CONTEXT" -n "$SPIRE_NS" delete pod -l app.kubernetes.io/name=svid-on-node --ignore-not-found --wait=true >/dev/null 2>&1
   kubectl --context "$CONTEXT" -n "$SPIRE_NS" delete serviceaccount stand-in --ignore-not-found >/dev/null 2>&1
 }
 # shellcheck disable=SC2317  # called from the EXIT trap only
 provider_cleanup() {
-  [ "$CLUSTER_KIND" = provider ] && [ "$kept" != 1 ] && [ "$cleaned" != 1 ] || return 0
+  [ "$CLUSTER_KIND" = provider ] && [ "$installed" = 1 ] && [ "$kept" != 1 ] && [ "$cleaned" != 1 ] || return 0
   [ "$keep_zone" = 1 ] && [ "$written" = 1 ] && return 0
   if [ "$keep_zone" = 1 ]; then
     echo "verify-mesh-identity: every check passed but the record of the kept zone was not written; no evidence of it exists, tearing it down on $CONTEXT" >&2
@@ -255,7 +268,7 @@ host_get() {
 # spire_agent samples
 agent_answers() {
   local n; n=$(host_get "$1" 127.0.0.1 9988 | grep -c '^spire_agent')
-  [ "$n" -gt 0 ]; check $? "node $1: the agent's metrics answer on 127.0.0.1:9988 (the contract with a node-local collector)" "$n spire_agent samples"
+  [ "$n" -gt 0 ]; check $? "node $1: the agent's metrics answer on 127.0.0.1:9988 (the contract with a collector on the node)" "$n spire_agent samples"
 }
 # metrics_answer <component> <family> <port>: the check that the endpoint of <component> in the SPIRE
 # server pod answers on <port> with HTTP 200 and at least one sample of <family>, read from the host
@@ -356,40 +369,137 @@ reader_ended() {
 }
 # cert_uri <pem>: the SPIFFE URI SAN of a certificate
 cert_uri() { openssl x509 -noout -ext subjectAltName -in "$1" 2>/dev/null | grep -o 'URI:spiffe://[^,]*' | head -1 | sed 's/^URI://'; }
-# The pin of a participant cluster (see the header): PIN_NODE is istiod's node once section 5 read it;
-# PIN_NONE, a node name that matches nothing, stands in when istiod has no node, so no pod runs unpinned.
-PIN_NODE=""; PIN_NONE=istiod-node-not-found
-# pin_affinity <node>: the pod spec fragment, as JSON, that requires the node <node>
-pin_affinity() {
-  jq -cn --arg n "$1" '{affinity: {nodeAffinity: {requiredDuringSchedulingIgnoredDuringExecution: {nodeSelectorTerms: [{matchExpressions: [{key: "kubernetes.io/hostname", operator: "In", values: [$n]}]}]}}}}'
-}
-# pin_pods <node> <file>...: adds that affinity to every Pod of each manifest file, in place
-pin_pods() {
-  local node=$1; shift
-  python3 - "$(pin_affinity "$node")" "$@" <<'PY'
-import json, sys, yaml
-aff = json.loads(sys.argv[1])["affinity"]
-for f in sys.argv[2:]:
-    docs = [d for d in yaml.safe_load_all(open(f)) if d]
-    for d in docs:
-        if d.get("kind") == "Pod":
-            d["spec"]["affinity"] = aff
-    yaml.safe_dump_all(docs, open(f, "w"), sort_keys=False)
+# on_node <node> <file> <pod>...: adds to each named Pod of the manifest file, in place, a required node
+# affinity on kubernetes.io/hostname to <node>; used for the callers of the cross-node denials (section 5)
+on_node() {
+  python3 - "$@" <<'PY'
+import sys, yaml
+node, f, names = sys.argv[1], sys.argv[2], set(sys.argv[3:])
+aff = {"nodeAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": {"nodeSelectorTerms": [
+    {"matchExpressions": [{"key": "kubernetes.io/hostname", "operator": "In", "values": [node]}]}]}}}
+docs = [d for d in yaml.safe_load_all(open(f)) if d]
+for d in docs:
+    if d.get("kind") == "Pod" and d["metadata"]["name"] in names:
+        d["spec"]["affinity"] = aff
+yaml.safe_dump_all(docs, open(f, "w"), sort_keys=False)
 PY
 }
+# node_of <ns> <pod>: the node a pod is scheduled on, empty when it is not (yet)
+node_of() { k -n "$1" get pod "$2" -o jsonpath='{.spec.nodeName}' 2>/dev/null; }
+# proxy_leaf <ns> <pod> <prefix>: the proxy's workload certificate (default) and root bundle (ROOTCA),
+# read with istioctl proxy-config secret, as <prefix>-secret.json, <prefix>-leaf.pem and
+# <prefix>-root.pem in $work; the trust domains of the ROOTCA bundle on stdout
+proxy_leaf() {
+  istioctl --context "$CONTEXT" proxy-config secret "$2" -n "$1" -o json >"$work/$3-secret.json" 2>/dev/null
+  jq -r '.dynamicActiveSecrets[] | select(.name == "default") | .secret.tlsCertificate.certificateChain.inlineBytes' "$work/$3-secret.json" 2>/dev/null \
+    | base64 -d >"$work/$3-chain.pem" 2>/dev/null
+  # SPIRE serves ROOTCA as Envoy's SPIFFE certificate validator: one trust bundle per trust domain.
+  jq -r --arg td "$TD" '.dynamicActiveSecrets[] | select(.name == "ROOTCA") | .secret.validationContext
+    | (.trustedCa.inlineBytes // (.customValidatorConfig.typedConfig.trustDomains[]? | select(.name == $td) | .trustBundle.inlineBytes))' \
+    "$work/$3-secret.json" 2>/dev/null | base64 -d >"$work/$3-root.pem" 2>/dev/null
+  openssl x509 -in "$work/$3-chain.pem" -out "$work/$3-leaf.pem" 2>/dev/null || : >"$work/$3-leaf.pem"
+  jq -r '[.dynamicActiveSecrets[] | select(.name == "ROOTCA") | .secret.validationContext.customValidatorConfig.typedConfig.trustDomains[]?.name] | join(",")' "$work/$3-secret.json" 2>/dev/null
+}
+# issued_by_spire <leaf.pem>: status 0 when the certificate's issuer is the SPIRE server CA (the subject
+# of the bundle read from the server in section 6) and it chains to that bundle
+issued_by_spire() {
+  local issuer; issuer=$(openssl x509 -noout -issuer -nameopt RFC2253 -in "$1" 2>/dev/null)
+  [ -n "$issuer" ] && [ "${issuer#issuer=}" = "${ca_subject#subject=}" ] && openssl verify -CAfile "$work/spire-bundle.pem" "$1" >/dev/null 2>&1
+}
+# mtls_requests <ns> <pod> <reporter> <label="value">: istio_requests_total of the proxy for one reporter
+# and one more label, summed. A destination proxy labels a request it took over mutual TLS
+# connection_security_policy="mutual_tls"; a source proxy labels its requests with
+# destination_principal, the URI SAN of the certificate the receiver presented in the handshake.
+mtls_requests() {
+  k -n "$1" exec "$2" -c istio-proxy -- pilot-agent request GET stats/prometheus 2>/dev/null \
+    | awk -v r="reporter=\"$3\"" -v l="$4" '/^istio_requests_total/ && index($0, r) && index($0, l) { s += $NF } END { print s + 0 }'
+}
+# routing_verdict <cilium-config data JSON> <nodes>: whether pod-to-pod traffic between nodes keeps the
+# source pod's address, and so its identity at the destination. <nodes> holds one "<node> <pod range>"
+# line per node and pod range. Cilium masquerades traffic to destinations outside
+# ipv4-native-routing-cidr: in native routing with masquerading on (enable-ipv4-masquerade or
+# enable-bpf-masquerade), a node whose pod range lies outside that range reaches a pod on another node
+# as remote-node, not as itself. Prints the status (0 pass, 1 fail) on the first line and the detail on
+# the second. An absent key is read as Cilium's default, and the record says so: routing-mode tunnel,
+# tunnel-protocol vxlan, enable-ipv4-masquerade true, enable-bpf-masquerade false. A flag is read as
+# Go reads a boolean (true/false in any case, 1/0, t/f); any other value, or a range that is not a
+# network, fails the check with that value named. A cilium-config that could not be read (the run
+# writes null for it), or one that holds no keys at all, fails the check with that reason: it is never
+# read as all defaults.
+# routing-verdict-begin
+routing_verdict() {
+  python3 - "$1" "$2" <<'PY'
+import ipaddress, json, sys
+def verdict(status, text):
+    print(status); print(text); sys.exit()
+try:
+    d = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    d = None
+if not isinstance(d, dict):
+    verdict(1, "kube-system/cilium-config could not be read, so it cannot be shown that pod addresses are kept between nodes")
+if not d:
+    verdict(1, "kube-system/cilium-config holds no keys (Cilium writes its settings there), so it cannot be shown that pod addresses are kept between nodes")
+nodes = [l.split() for l in open(sys.argv[2]) if l.strip()]
+DEFAULTS = {"enable-ipv4-masquerade": "true", "enable-bpf-masquerade": "false"}
+def flag(k):
+    raw = d.get(k)
+    v = DEFAULTS[k] if raw is None or raw == "" else str(raw)
+    shown = f"{k}={v}" + (" (absent: Cilium's default)" if raw is None or raw == "" else "")
+    b = {"true": True, "t": True, "1": True, "false": False, "f": False, "0": False}.get(v.strip().lower())
+    return b, shown
+mode = d.get("routing-mode") or "tunnel"
+mode_text = d.get("routing-mode") or "tunnel (absent: Cilium's default)"
+masq = {k: flag(k) for k in DEFAULTS}
+flags = " ".join(shown for _, shown in masq.values())
+if mode == "tunnel":
+    proto = d.get("tunnel-protocol") or "vxlan (absent: Cilium's default)"
+    verdict(0, f"routing-mode={mode_text} tunnel-protocol={proto} {flags}: pod addresses are kept between nodes")
+if mode != "native":
+    verdict(1, f"routing-mode={mode_text} {flags}: an unknown routing mode, so it cannot be shown that pod addresses are kept between nodes")
+native = d.get("ipv4-native-routing-cidr") or ""
+head = f"routing-mode={mode_text} ipv4-native-routing-cidr={native or 'none'} {flags}"
+bad = [shown for b, shown in masq.values() if b is None]
+if bad:
+    verdict(1, f"{head}: {', '.join(bad)} is not a boolean, so it cannot be shown that masquerading is off")
+if not any(b for b, _ in masq.values()):
+    verdict(0, f"{head}: masquerading off, pod addresses are kept between nodes")
+try:
+    net = ipaddress.ip_network(native, strict=False) if native else None
+except ValueError:
+    verdict(1, f"{head}: ipv4-native-routing-cidr is not an IPv4 network, so it cannot be shown that pod addresses are kept between nodes")
+v4 = [(n[0], n[1]) for n in nodes if len(n) > 1 and ":" not in n[1]]
+if not v4:
+    verdict(1, f"{head}: no node pod range could be read, so it cannot be shown that pod addresses are kept between nodes")
+out, unread = [], []
+for n, c in v4:
+    try:
+        r = ipaddress.ip_network(c, strict=False)
+    except ValueError:
+        unread.append(f"{n} ({c})"); continue
+    if net is None or r.version != net.version or not r.subnet_of(net):
+        out.append(f"{n} ({c})")
+if unread:
+    verdict(1, f"{head}: {len(unread)} node pod range(s) are not networks, so it cannot be shown that pod addresses are kept between nodes: {', '.join(unread)}")
+if out:
+    verdict(1, f"{head}: {len(out)} of {len(v4)} node pod ranges outside ipv4-native-routing-cidr, masqueraded to the node address between nodes: {', '.join(out)}")
+verdict(0, f"{head}: all {len(v4)} node pod ranges inside ipv4-native-routing-cidr, pod addresses are kept between nodes")
+PY
+}
+# routing-verdict-end
 
 : > "$OUT"
 say "# Mesh identity evidence ($started)" ''
 if [ "$CLUSTER_KIND" = kind ]; then
-  say "Cluster kind: **kind**, the local cluster from \`scripts/dev/kind-cilium-up.sh\` with Cilium chained. Keep opt-in: not applicable on kind; the run tears the zone down." ''
+  say "Cluster kind: **kind**, the local cluster from \`scripts/dev/kind-cilium-up.sh\` with Cilium chained. Keep opt-in: not applicable on kind; the run tears down the zone it installs." ''
 else
-  keep_text="not set: the run tears the zone down"
-  [ "$KEEP" = 1 ] && keep_text="set (\`ZTD_KEEP_ZONE=$CONTEXT\`): the zone stays installed only if every check passes, otherwise the run tears it down"
+  keep_text="not set: the run tears down the zone it installs"
+  [ "$KEEP" = 1 ] && keep_text="set (\`ZTD_KEEP_ZONE=$CONTEXT\`): the zone stays installed only if every check passes, otherwise the run tears down the zone it installed"
   interim=""; [[ $TD == *.trust.invalid ]] && interim=" The trust domain \`$TD\` is **interim**: the zone is re-installed with its final name under the delegated trust-framework zone once that name is confirmed, and a zone on an interim name is not acceptance evidence."
   say "Cluster kind: **participant cluster** \`$CONTEXT\` (zone \`$ZONE_NAME\`), Cilium installed and managed by the provider, confirmed with \`ZTD_CONFIRM_CLUSTER=$CONTEXT\`. Keep opt-in: $keep_text.$interim Every IPv4 address of the cluster is replaced by \`<address>\` in this record." ''
-  say "Proof pods pinned to __PIN_NODE__: every pod this run creates but the per-node SVID stand-ins (the stand-ins of section 5, their \`-capture-check\` copies, the \`probe\` of section 8's scratch namespace, the \`kube-public\` pod of section 13) carries a required node affinity on \`kubernetes.io/hostname\` to the node istiod runs on, because the provider's pod network masquerades pod traffic between nodes (see the preconditions); the mesh is proven node-locally on this cluster, and cross-node meshed traffic is not proven here until the provider changes its pod network. The exception: the per-node SVID stand-ins of section 6 (\`svid-on-<node>\` in \`$SPIRE_NS\`, unmeshed) are placed one per node with a SPIRE agent by their own node affinity, never pinned, so the SVID is shown on every node." ''
 fi
 say "Cluster context \`$CONTEXT\`, zone file \`${ZONE_VALUES#"$REPO"/}\` (trust domain \`$TD\`), installed with \`scripts/install-zone/install.sh\`: the eight releases \`ztd\`, \`spire-crds\`, \`spire\`, \`istio-base\`, \`istiod\`, \`istio-cni\`, \`zone-policy\`, \`ztd-openbao\`. Commit \`$commit\`, tree dirty: $dirty. Versions in \`environment.json\`." ''
+say "Placement: no pin. No pod the proof creates is held to istiod's node. Three placements are made on purpose: the per-node stand-ins one per node with a SPIRE agent (\`svid-on-<node>\` in \`$SPIRE_NS\`, section 6; the meshed \`mesh-on-<node>\` in \`$DATA\`, section 10), and the callers of the two cross-node refusals (\`mgmt-caller\`, \`unregistered\`) on a node other than the peer's, preferring one that is not istiod's either (section 5); the scheduler places every other pod. No release of the zone is held to a node: no pod of \`ztd-openbao\` carries a node affinity or a node selector (section 5)." ''
 say 'Probe results: an HTTP code with the first line of the body when the call went through its proxies; `denied(28)` when a raw TCP connection timed out because the policy dropped the packets; `denied(56)` when the peer reset the connection; `error(<exit>)`, which fails a negative check, for any other failure (a name that does not resolve, an exec that failed).' ''
 
 # --------------------------------------------------------------------------------------------
@@ -423,24 +533,19 @@ cni_check() {
   [ "$cni_after" = "$cni_before" ]; check $? "the Cilium DaemonSet (image, generation) and cilium-config (resource version) are unchanged by the run" "before \`$cni_before\`; after \`$cni_after\`"
 }
 say "  the Cilium DaemonSet and its ConfigMap as found: \`$cni_before\`"
-# Whether pod-to-pod traffic between nodes keeps the source pod's address (and so its identity at the
-# destination): Cilium masquerades traffic to destinations outside ipv4-native-routing-cidr. Only the
-# yes/no outcome is recorded, never an address.
-routing=$(k -n kube-system get cm cilium-config -o json 2>/dev/null | jq -r '.data | "routing-mode=\(.["routing-mode"] // "-") enable-ipv4-masquerade=\(.["enable-ipv4-masquerade"] // "-") enable-bpf-masquerade=\(.["enable-bpf-masquerade"] // "-")"')
-native=$(k -n kube-system get cm cilium-config -o jsonpath='{.data.ipv4-native-routing-cidr}' 2>/dev/null)
-pod_cidrs=$(k get nodes -o jsonpath='{.items[*].spec.podCIDR}')
-# shellcheck disable=SC2086  # one argument per pod range
-inside=$(python3 -c 'import ipaddress, sys
-n, cidrs = sys.argv[1], sys.argv[2:]
-if not n or not cidrs: print("unknown"); sys.exit()
-net = ipaddress.ip_network(n, strict=False)
-inn = sum(1 for c in cidrs if ipaddress.ip_network(c, strict=False).subnet_of(net))
-print(f"{inn} of {len(cidrs)} node pod ranges inside ipv4-native-routing-cidr")' "$native" $pod_cidrs)
-if [ -n "$native" ]; then
-  say "  pod-to-pod routing as found: \`$routing\`, ${inside:-unknown}. In native routing a pod range outside ipv4-native-routing-cidr is masqueraded to the node address when masquerading is on, so a pod on another node then reaches a pod as remote-node, not as itself."
-else
-  say "  pod-to-pod routing as found: \`$routing\`; no ipv4-native-routing-cidr (tunnel): pod addresses are kept between nodes."
-fi
+# The routing check (routing_verdict above): pod-to-pod traffic between nodes must keep the source
+# pod's address, and so its identity at the destination, or the label- and namespace-keyed openings drop
+# a meshed pod's traffic to istiod and to its peers on other nodes. On a participant cluster the
+# record's addresses (the pod ranges a failure names) are masked like every other address.
+# A ConfigMap that cannot be read is written as null, which the check fails on (never as all defaults).
+if cm_json=$(k -n kube-system get cm cilium-config -o json 2>/dev/null) \
+  && jq -e '.data // {}' <<<"$cm_json" >"$work/cilium-config.json" 2>/dev/null; then :
+else echo null >"$work/cilium-config.json"; fi
+k get nodes -o json 2>/dev/null | jq -r '.items[] | .metadata.name as $n | (.spec.podCIDRs // [.spec.podCIDR // empty])[] | "\($n) \(.)"' >"$work/pod-ranges.txt" 2>/dev/null
+mapfile -t routing < <(routing_verdict "$work/cilium-config.json" "$work/pod-ranges.txt" 2>&1)
+routing_ok=0; [ "${routing[0]:-1}" = 0 ] && routing_ok=1
+[ "$routing_ok" = 1 ]
+check $? "pod-to-pod routing keeps a pod's address between nodes: no native routing with masquerading on and a node's pod range outside ipv4-native-routing-cidr (a pod on another node would reach a pod as remote-node, not as itself)" "${routing[1]:-the routing could not be read: ${routing[0]:-no output}}"
 # The inotify instance limit of every node, read through the node's own Cilium agent (one per node,
 # host /proc): the Istio CNI agent fails below 512. On kind every node shares this machine's kernel.
 inotify_detail=""; inotify_read=0; inotify_ok=1
@@ -465,6 +570,18 @@ check $? "every node allows 512 inotify instances, read on the node through its 
 provider=$(k get nodes -o jsonpath='{.items[0].spec.providerID}' | sed -n 's#^\([a-z0-9-]*\)://.*#\1#p')
 nodes_json=$(k get nodes -o json | jq -c '[.items[] | {name: .metadata.name, osImage: .status.nodeInfo.osImage, kubelet: .status.nodeInfo.kubeletVersion, containerRuntime: .status.nodeInfo.containerRuntimeVersion}]')
 code "$(k get nodes -o wide | sed 's/  */ /g')"
+
+# A failed routing check stops the run here, before the clean slate: the zone could not work across
+# nodes, so the proof neither uninstalls what the cluster runs nor installs anything. The record of the
+# preconditions is written and the run exits with the number of failed checks. Sections 1 to 15 below
+# run only when the routing check passed; they are not indented under this if, to keep them readable.
+if [ "$routing_ok" != 1 ]; then
+  not_kept="the routing check failed: the run stopped before the clean slate, nothing was uninstalled or installed"
+  say '' "**The routing check failed, so the run stops here, before section 1.** Nothing was uninstalled or installed: the cluster is left as found, a zone it already runs included." ''
+else
+# From here on the run writes to the cluster: on a participant cluster the EXIT trap tears down what it
+# installed unless the zone is kept.
+installed=1
 
 # --------------------------------------------------------------------------------------------
 section "1. Clean slate"
@@ -552,48 +669,63 @@ mesh_td=$(k -n "$ISTIO_NS" get cm istio -o jsonpath='{.data.mesh}' | awk '/^trus
 section "5. Stand-in pods"
 say 'From `scripts/verify-mesh-identity/fixtures/stand-ins.yaml`: in the data plane a meshed peer, a labelled caller with a Workload API client on the CSI socket, an unlabelled meshed pod, an unlabelled pod without proxy with a Workload API client, the matrix pair `pdp-adapter` and the cross-plane caller `data-plain`; in the management plane `tsa-policy-engine`, `openbao-standin` (a management-plane destination without a lane in the allow matrix, named apart from the real store, the release `ztd-openbao`) and `mgmt-caller`; in both a proxy-less `probe` for raw TCP probes. All in the service account `stand-in` unless noted.' ''
 sed -e "s/__DATA__/$DATA/g" -e "s/__MGMT__/$MGMT/g" fixtures/stand-ins.yaml >"$work/stand-ins.yaml"
-# The pin (participant cluster only): every pod the proof creates runs on istiod's node. The provider's
-# pod network masquerades pod traffic between nodes to the node address (see the preconditions), so a
-# proxy on another node reaches istiod as remote-node, which no opening admits, and never starts.
-if [ "$CLUSTER_KIND" = provider ]; then
-  PIN_NODE=$(k -n "$ISTIO_NS" get pod -l app=istiod -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null)
-  pin_detail=$PIN_NODE; [ -n "$PIN_NODE" ] || pin_detail="no istiod pod with a node in $ISTIO_NS: the proof's pods are pinned to the unmatched name $PIN_NONE and stay Pending"
-  [ -n "$PIN_NODE" ]; check $? "istiod's node is read, to pin the proof's pods to it" "$pin_detail"
-  PIN_NODE=${PIN_NODE:-$PIN_NONE}
-  # The zone file pins the release ztd-openbao the same way (openbao.pinToMeshNode): its server and
-  # its job pods run on istiod's node.
-  bao_nodes=$(k -n "$MGMT" get pods -o json | jq -r '.items[] | select((.metadata.labels["app.kubernetes.io/name"] // "") as $n | ["openbao","ztd-openbao-bootstrap","ztd-verify-openbao"] | index($n)) | "\(.metadata.name)=\(.spec.nodeName // "none")"')
-  off=$(grep -v "=$PIN_NODE\$" <<<"$bao_nodes" || true)
-  [ -n "$bao_nodes" ] && [ -z "$off" ]; check $? "ztd-openbao: the server and its job pods run on istiod's node (the zone file's pin, applied by the installer)" "$(paste -sd' ' <<<"${bao_nodes:-no pod}")"
-  say '' "The proof's pods are pinned to the node \`$PIN_NODE\`, the node istiod runs on (a required node affinity on \`kubernetes.io/hostname\`): the provider's pod network masquerades pod traffic between nodes to the node's address, so a meshed pod on another node reaches istiod on 15012 as \`remote-node\`, which no namespace- or label-keyed opening admits, and never starts. The mesh is proven node-locally on this cluster until the provider changes its pod network; nothing of this pin is in the charts or the policies. The zone file pins one release the same way, \`ztd-openbao\` (\`openbao.pinToMeshNode\`, applied by the installer)." ''
-fi
+# The release ztd-openbao is held to no node, on every cluster: no pod of it (the server, the
+# bootstrap Job's, the verification Job's) carries a node affinity or a node selector, and the
+# scheduler placed each. The server pod must be among them, so the check cannot pass on no pod.
+bao_pods=$(k -n "$MGMT" get pods -o json | jq -r '.items[] | select((.metadata.labels["app.kubernetes.io/name"] // "") as $n | ["openbao","ztd-openbao-bootstrap","ztd-verify-openbao"] | index($n)) | "\(.metadata.name)=\(.spec.nodeName // "none")\(if (.spec.affinity.nodeAffinity // null) != null or ((.spec.nodeSelector // {}) | length) > 0 then "(held)" else "" end)"')
+bao_held=$(grep -F '(held)' <<<"$bao_pods" || true)
+grep -q '^ztd-openbao-0=' <<<"$bao_pods" && [ -z "$bao_held" ]; check $? "ztd-openbao: no pod of the release carries a node affinity or a node selector (the server and its job pods, placed by the scheduler)" "$(paste -sd' ' <<<"${bao_pods:-no pod}")"
 # The stand-ins that opt out of injection go apart: the capture rule refuses them (below).
 # Their refusal is asked with a server dry-run create of a copy under other names (suffix
 # -capture-check): a create of a name that exists would still reach admission, but kubectl apply of
 # an unchanged object sends no request at all, and an update of a pod's spec fails on pod
-# immutability before the policy is asked.
-python3 - "$work/stand-ins.yaml" "$work/stand-ins-meshed.yaml" "$work/stand-ins-proxyless.yaml" "$work/stand-ins-proxyless-check.yaml" <<'PY'
+# immutability before the policy is asked. The callers of the two cross-node refusals (mgmt-caller of
+# section 11, unregistered of section 9) go apart too: they are placed once the peer's node is known.
+python3 - "$work/stand-ins.yaml" "$work/stand-ins-meshed.yaml" "$work/stand-ins-proxyless.yaml" "$work/stand-ins-proxyless-check.yaml" "$work/stand-ins-cross-node.yaml" <<'PY'
 import copy, sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
 off = lambda d: (d["metadata"].get("annotations") or {}).get("sidecar.istio.io/inject") == "false"
-yaml.safe_dump_all([d for d in docs if not off(d)], open(sys.argv[2], "w"), sort_keys=False)
+cross = lambda d: d["kind"] == "Pod" and d["metadata"]["name"] in ("mgmt-caller", "unregistered")
+yaml.safe_dump_all([d for d in docs if not off(d) and not cross(d)], open(sys.argv[2], "w"), sort_keys=False)
+yaml.safe_dump_all([d for d in docs if cross(d)], open(sys.argv[5], "w"), sort_keys=False)
 yaml.safe_dump_all([d for d in docs if off(d)], open(sys.argv[3], "w"), sort_keys=False)
 check = [copy.deepcopy(d) for d in docs if off(d)]
 for d in check: d["metadata"]["name"] += "-capture-check"
 yaml.safe_dump_all(check, open(sys.argv[4], "w"), sort_keys=False)
 PY
-[ "$CLUSTER_KIND" = provider ] && pin_pods "$PIN_NODE" "$work/stand-ins-meshed.yaml" "$work/stand-ins-proxyless.yaml" "$work/stand-ins-proxyless-check.yaml"
 # The per-node SVID stand-ins (section 6): fixtures/svid-on-node.yaml rendered once per node the SPIRE
-# agent runs on, each with its own node affinity; never passed to pin_pods, so on a participant
-# cluster they are the one exception to the pin.
+# agent runs on, each with its own node affinity. The per-node meshed stand-ins (section 10):
+# fixtures/mesh-on-node.yaml rendered once per node the same way.
 SVID_NODES=$(agent_nodes)
-svid_files=(); svid_pods=()
+svid_files=(); svid_pods=(); mesh_files=(); mesh_pods=()
 for NODE in $SVID_NODES; do
   sed "s/__NODE__/$NODE/g" fixtures/svid-on-node.yaml >"$work/svid-on-$NODE.yaml"
   svid_files+=(-f "$work/svid-on-$NODE.yaml"); svid_pods+=("pod/svid-on-$NODE")
+  sed -e "s/__NODE__/$NODE/g" -e "s/__DATA__/$DATA/g" fixtures/mesh-on-node.yaml >"$work/mesh-on-$NODE.yaml"
+  mesh_files+=(-f "$work/mesh-on-$NODE.yaml"); mesh_pods+=("pod/mesh-on-$NODE")
 done
-say "In \`$SPIRE_NS\`, from \`scripts/verify-mesh-identity/fixtures/svid-on-node.yaml\`: one unmeshed stand-in per node with a SPIRE agent ($(paste -sd, - <<<"$SVID_NODES" | sed 's/,/, /g')), \`svid-on-<node>\`, each placed on its node by a required node affinity$([ "$CLUSTER_KIND" = provider ] && echo ', not pinned to istiod'"'"'s node') (section 6)." ''
-k apply -f "$work/stand-ins-meshed.yaml" "${svid_files[@]}" >/dev/null
+say "In \`$SPIRE_NS\`, from \`scripts/verify-mesh-identity/fixtures/svid-on-node.yaml\`: one unmeshed stand-in per node with a SPIRE agent ($(paste -sd, - <<<"$SVID_NODES" | sed 's/,/, /g')), \`svid-on-<node>\`, each placed on its node by a required node affinity (section 6)." ''
+say "In \`$DATA\`, from \`scripts/verify-mesh-identity/fixtures/mesh-on-node.yaml\`: one meshed stand-in per node with a SPIRE agent, \`mesh-on-<node>\` with its Service and its own service account \`mesh-on-<node>\` (so each node's stand-in has its own SPIFFE ID), the identity label, each placed on its node by a required node affinity; each serves HTTP and calls the next node's (section 10)." ''
+k apply -f "$work/stand-ins-meshed.yaml" "${svid_files[@]}" "${mesh_files[@]}" >/dev/null
+# The callers of the cross-node refusals: once the peer is scheduled, mgmt-caller and unregistered are
+# placed by a required node affinity on a node with a SPIRE agent other than the peer's, preferring one
+# that is not istiod's node either (the first such node in name order).
+PEER_NODE=""
+for _ in $(seq 60); do PEER_NODE=$(node_of "$DATA" peer); [ -n "$PEER_NODE" ] && break; sleep 2; done
+ISTIOD_NODE=$(k -n "$ISTIO_NS" get pod -l app=istiod -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null)
+CROSS_NODE=$(grep -vxF -e "${PEER_NODE:-}" -e "${ISTIOD_NODE:-}" <<<"$SVID_NODES" | grep -m1 .)
+cross_note="a node that is neither the peer's nor istiod's"
+if [ -z "$CROSS_NODE" ]; then
+  CROSS_NODE=$(grep -vxF -e "${PEER_NODE:-}" <<<"$SVID_NODES" | grep -m1 .)
+  cross_note="no node with a SPIRE agent is neither the peer's nor istiod's, so the node other than the peer's is istiod's"
+fi
+if [ -n "$CROSS_NODE" ] && [ -n "$PEER_NODE" ]; then
+  on_node "$CROSS_NODE" "$work/stand-ins-cross-node.yaml" mgmt-caller unregistered
+  say "The peer runs on \`$PEER_NODE\`; \`mgmt-caller\` and \`unregistered\`, the callers of the cross-node refusals (sections 9 and 11), are placed on \`$CROSS_NODE\` by a required node affinity: $cross_note." ''
+else
+  say "The callers of the cross-node refusals (\`mgmt-caller\`, \`unregistered\`) are placed by the scheduler: the peer's node is ${PEER_NODE:-unknown} and no other node with a SPIRE agent was found to place them on. The refusals of sections 9 and 11 count only between two different nodes, so their checks pass only if the scheduler happens to put the caller on a node other than the peer's, and fail otherwise; the record of each names both nodes." ''
+fi
+k apply -f "$work/stand-ins-cross-node.yaml" >/dev/null
 proxyless=$(python3 -c 'import sys,yaml
 print(", ".join("`" + d["metadata"]["name"] + "` in " + d["metadata"]["namespace"] for d in yaml.safe_load_all(open(sys.argv[1])) if d))' "$work/stand-ins-proxyless.yaml")
 say '' "The three proxy-less stand-ins ($proxyless) opt out of injection, which the capture rule of \`$POLICY\` refuses in a plane namespace (section 8). They stand for the program without a proxy that the later sections show the zone resisting anyway, so the proof creates them with that one validation lifted from the policy for the time of their creation, puts it back unchanged, and checks that it refuses them again; the template and socket rules stay in force throughout." ''
@@ -637,6 +769,8 @@ k -n "$DATA" wait --for=condition=Ready pod/peer pod/caller pod/unregistered-svi
 k -n "$MGMT" wait --for=condition=Ready pod/tsa-policy-engine pod/openbao-standin pod/mgmt-caller pod/probe --timeout=240s >/dev/null 2>&1; check $? "the management-plane stand-ins are Ready"
 # The per-node stand-ins are counted in section 6, node by node.
 [ ${#svid_pods[@]} -gt 0 ] && k -n "$SPIRE_NS" wait --for=condition=Ready "${svid_pods[@]}" --timeout=240s >/dev/null 2>&1
+# The per-node meshed stand-ins are counted in section 10, node by node.
+[ ${#mesh_pods[@]} -gt 0 ] && k -n "$DATA" wait --for=condition=Ready "${mesh_pods[@]}" --timeout=240s >/dev/null 2>&1
 sleep 10
 code "$(k get pods -n "$DATA" -o wide | sed 's/  */ /g'; echo; k get pods -n "$MGMT" -o wide | sed 's/  */ /g'; echo; k get pods -n "$SPIRE_NS" -l app.kubernetes.io/name=svid-on-node -o wide | sed 's/  */ /g')"
 
@@ -664,7 +798,7 @@ entry_for() { jq -r --arg u "k8s:pod-uid:$1" '.entries[] | select([.selectors[] 
 [ -z "$(entry_for "$uid_unreg")$(entry_for "$uid_unreg_svid")" ]; check $? "the SPIRE server lists no entry for the two unlabelled pods"
 out=$(k -n "$DATA" exec unregistered-svid -c svid -- /opt/spire/bin/spire-agent api fetch x509 -socketPath /run/spiffe/socket -timeout 5s 2>&1); rc=$?
 [ $rc -ne 0 ]; check $? "an unlabelled pod's fetch over the mounted socket returns no SVID" "$(grep -v 'command terminated' <<<"$out" | tail -1)"
-say '' "The \`caller\` above runs on one node$([ "$CLUSTER_KIND" = provider ] && echo ", istiod's (the pin)"). Every node with a SPIRE agent, the \`caller\`'s included, is asked too, by the per-node stand-ins of section 5 (\`svid-on-<node>\`, the \`caller\`'s \`svid\` container alone, service account \`stand-in\`, the identity label). They are unmeshed and in \`$SPIRE_NS\` because that is the plane namespace without the injection label on every cluster the proof accepts, so they need no proxy and no opt-out$([ "$CLUSTER_KIND" = provider ] && echo ", and a meshed pod off istiod's node does not start on this cluster (the pin)"); the fetch is a node-local read over a Unix socket to the node's agent and needs no lane. They are placed one per node by their own node affinity, so the SVID is shown on every node a workload can run on:" ''
+say '' "The \`caller\` above runs on one node, the scheduler's choice. Every node with a SPIRE agent, the \`caller\`'s included, is asked too, by the per-node stand-ins of section 5 (\`svid-on-<node>\`, the \`caller\`'s \`svid\` container alone, service account \`stand-in\`, the identity label). They are unmeshed and in \`$SPIRE_NS\` because that is the plane namespace without the injection label on every cluster the proof accepts, so they need no proxy and no opt-out; the fetch is a read over a Unix socket to the agent of the pod's own node and needs no lane. The meshed stand-ins of every node are shown in section 10. They are placed one per node by their own node affinity, so the SVID is shown on every node a workload can run on:" ''
 SVID_NODE_ID="spiffe://$TD/ns/$SPIRE_NS/sa/stand-in"
 svid_n=$(wc -w <<<"$SVID_NODES"); svid_ready=0; svid_state=""
 for NODE in $SVID_NODES; do
@@ -712,19 +846,12 @@ check $? "the injected init containers (istio-validation) are pinned by digest" 
 section "8. mesh-identity-issued-by-spire"
 istioctl --context "$CONTEXT" proxy-config secret caller -n "$DATA" >"$work/secret.txt" 2>&1
 code "$(cat "$work/secret.txt")"
-istioctl --context "$CONTEXT" proxy-config secret caller -n "$DATA" -o json >"$work/secret.json" 2>/dev/null
-jq -r '.dynamicActiveSecrets[] | select(.name == "default") | .secret.tlsCertificate.certificateChain.inlineBytes' "$work/secret.json" | base64 -d >"$work/proxy-chain.pem" 2>/dev/null
-# SPIRE serves ROOTCA as Envoy's SPIFFE certificate validator: one trust bundle per trust domain.
-jq -r --arg td "$TD" '.dynamicActiveSecrets[] | select(.name == "ROOTCA") | .secret.validationContext
-  | (.trustedCa.inlineBytes // (.customValidatorConfig.typedConfig.trustDomains[]? | select(.name == $td) | .trustBundle.inlineBytes))' \
-  "$work/secret.json" | base64 -d >"$work/proxy-root.pem" 2>/dev/null
-rootca_domains=$(jq -r '[.dynamicActiveSecrets[] | select(.name == "ROOTCA") | .secret.validationContext.customValidatorConfig.typedConfig.trustDomains[]?.name] | join(",")' "$work/secret.json")
-openssl x509 -in "$work/proxy-chain.pem" -out "$work/proxy-leaf.pem" 2>/dev/null
+rootca_domains=$(proxy_leaf "$DATA" caller proxy)
 subj=$(openssl x509 -noout -subject -nameopt RFC2253 -in "$work/proxy-leaf.pem" 2>/dev/null)
 p_issuer=$(openssl x509 -noout -issuer -nameopt RFC2253 -in "$work/proxy-leaf.pem" 2>/dev/null)
 p_uri=$(openssl x509 -noout -ext subjectAltName -in "$work/proxy-leaf.pem" 2>/dev/null | grep -o 'URI:[^,]*' | sed 's/URI://')
 grep -q 'O=SPIRE' <<<"$subj"; check $? "the proxy's workload certificate (default) has O = SPIRE in its subject" "$subj"
-[ "${p_issuer#issuer=}" = "${ca_subject#subject=}" ] && openssl verify -CAfile "$work/spire-bundle.pem" "$work/proxy-leaf.pem" >/dev/null 2>&1
+issued_by_spire "$work/proxy-leaf.pem"
 check $? "its issuer is the SPIRE server CA and it chains to SPIRE's bundle" "$p_issuer"
 [ "$p_uri" = "$svid_id" ]; check $? "its URI SAN equals the SVID fetched over the socket" "$p_uri"
 [ -s "$work/proxy-root.pem" ] && [ "$(fingerprint "$work/proxy-root.pem")" = "$(fingerprint "$work/spire-bundle.pem")" ]
@@ -881,7 +1008,6 @@ check $? "there it is admitted with a proxy and no SPIRE socket: that proxy woul
 printf '%s\n' 'apiVersion: v1' 'kind: Pod' 'metadata: { name: probe }' \
   'spec: { terminationGracePeriodSeconds: 2, containers: [ { name: app, image: "docker.io/curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b", command: [sleep, "3600"] } ] }' \
   >"$work/outside-probe.yaml"
-[ "$CLUSTER_KIND" = provider ] && pin_pods "$PIN_NODE" "$work/outside-probe.yaml"
 k -n "$OUTSIDE" create -f "$work/outside-probe.yaml" >/dev/null
 k -n "$OUTSIDE" wait --for=condition=Ready pod/probe --timeout=120s >/dev/null 2>&1
 ISTIOD_IP=$(k -n "$ISTIO_NS" get pod -l app=istiod -o jsonpath='{.items[0].status.podIP}')
@@ -904,13 +1030,32 @@ jq -r '.svids[0].x509_svid_key' "$work/svid.json" | base64 -d | openssl pkey -in
 for f in istiod-leaf.pem istiod-leaf.key svid.pem svid.key; do k -n "$DATA" exec -i probe -c app -- tee "/tmp/$f" <"$work/$f" >/dev/null; done
 PEER_IP=$(k -n "$DATA" get pod peer -o jsonpath='{.status.podIP}')
 # mtls <cert> <key> [curl option...]: an HTTPS request straight to the peer's proxy, presenting that
-# client certificate; the options (a TLS version bound) go to curl as they stand
-mtls() { local cert=$1 key=$2; shift 2; k -n "$DATA" exec probe -c app -- curl -sS -k -m 15 "$@" --cert "/tmp/$cert" --key "/tmp/$key" -w '\n%{http_code}' "https://$PEER_IP:8080/hostname" 2>&1; }
+# client certificate; the options (a TLS version bound) go to curl as they stand. curl writes its
+# error line to stdout (--stderr -) and the HTTP code on a line of its own, so the one stream keeps
+# both whole (kubectl can interleave a container's stdout and stderr mid-line).
+mtls() { local cert=$1 key=$2; shift 2; k -n "$DATA" exec probe -c app -- curl -sS --stderr - -k -m 15 "$@" --cert "/tmp/$cert" --key "/tmp/$key" -w '\n%{http_code}\n' "https://$PEER_IP:8080/hostname" 2>&1; }
 out=$(mtls svid.pem svid.key)
 [ "$(tail -1 <<<"$out")" = 200 ]; check $? "with the caller's SPIRE SVID the peer's proxy completes the handshake and the request succeeds" "→ $(tr '\n' ' ' <<<"$out")"
-out=$(mtls istiod-leaf.pem istiod-leaf.key)
-[ "$(tail -1 <<<"$out")" != 200 ] && grep -q 'alert' <<<"$out"
-check $? "with the istiod-signed certificate for the same SPIFFE ID the peer's proxy refuses the handshake: its ROOTCA is SPIRE's bundle only" "→ $(grep -o 'curl: .*' <<<"$out" | head -1)"
+# Under TLS 1.3 the peer verifies the client certificate after the client has finished its side of
+# the handshake, so its alert races curl's request: curl reads the alert, or writes into the closed
+# connection first (55, broken pipe), which shows the refusal but not its reason. Up to three tries,
+# each recorded with curl's error line and HTTP code (the last line of exactly three digits, curl's
+# %{http_code}; kubectl may add "command terminated ..." after it). A try is unanswered only when the
+# code is 000 (no HTTP reply); any other code (200, 503, ...) means the peer accepted the certificate,
+# and no code at all means the try cannot be judged: both fail the check at once. One unanswered try
+# must show the TLS alert in curl's own error line ("curl: (NN) ... alert ..."); with the code 000
+# no reply was read, so no reply body can supply that text.
+alert=1; refusals=""
+for try in 1 2 3; do
+  out=$(mtls istiod-leaf.pem istiod-leaf.key)
+  code=$(grep -xE '[0-9]{3}' <<<"$out" | tail -1)
+  err=$(grep -m1 -oE 'curl: \([0-9]+\) .*' <<<"$out")
+  refusals="$refusals${refusals:+; }try $try: HTTP ${code:-none}${err:+, $err}"
+  if [ "$code" != 000 ]; then alert=2; break; fi
+  grep -q 'alert' <<<"$err" && { alert=0; break; }
+done
+[ "$alert" = 0 ]
+check $? "with the istiod-signed certificate for the same SPIFFE ID the peer's proxy refuses the handshake with a TLS alert: its ROOTCA is SPIRE's bundle only (up to three tries, none answered)" "→ $refusals"
 say '' "The security baseline sets TLS 1.3 as the minimum (ADR 005), and the \`istiod\` release raises the mesh mTLS minimum to it (\`meshConfig.meshMTLS.minProtocolVersion: TLSV1_3\`; Istio's default is TLS 1.2). The same SVID, once at TLS 1.3 and once with TLS 1.2 as the highest version offered:" ''
 out=$(mtls svid.pem svid.key --tlsv1.3)
 [ "$(tail -1 <<<"$out")" = 200 ]; check $? "at TLS 1.3 with the caller's SPIRE SVID the peer's proxy completes the handshake and the request succeeds" "→ $(tr '\n' ' ' <<<"$out")"
@@ -932,7 +1077,9 @@ log=$(k -n "$DATA" logs unregistered -c istio-proxy --tail=200 2>/dev/null | gre
 appstate=$(k -n "$DATA" get pod unregistered -o jsonpath='{.status.containerStatuses[?(@.name=="app")].state}')
 grep -q waiting <<<"$appstate"; check $? "its application container never starts: the native sidecar holds it until the proxy has a certificate" "$appstate"
 r=$(http "$DATA" unregistered istio-proxy "http://peer.$DATA.svc:8080/hostname")
-case $r in denied*) true;; *) false;; esac; check $? "a call from its network namespace to the meshed peer is refused: the peer accepts mTLS only (STRICT)" "→ $r"
+from=$(node_of "$DATA" unregistered); to=$(node_of "$DATA" peer)
+case $r in denied*) [ -n "$from" ] && [ -n "$to" ] && [ "$from" != "$to" ];; *) false;; esac
+check $? "a call from its network namespace, on another node than the peer's, to the meshed peer is refused: the peer accepts mTLS only (STRICT)" "unregistered on ${from:-no node} → peer on ${to:-no node}: $r"
 r=$(http "$DATA" caller app "http://peer.$DATA.svc:8080/hostname")
 [ "${r%% *}" = 200 ]; check $? "the labelled pod's call to the same peer succeeds" "→ $r"
 
@@ -946,6 +1093,41 @@ src1=$(metric "$DATA" caller source); dst1=$(metric "$DATA" peer destination)
 [ "$src1" -gt "$src0" ] && [ "$dst1" -gt "$dst0" ]; check $? "both proxies counted the request (istio_requests_total)" "caller (reporter=source) $src0 → $src1, peer (reporter=destination) $dst0 → $dst1"
 k -n "$DATA" exec peer -c istio-proxy -- pilot-agent request GET stats/prometheus 2>/dev/null | grep '^istio_requests_total' | grep -q 'connection_security_policy="mutual_tls"'
 check $? "the peer's proxy records the requests as mutual_tls"
+say '' '### mesh-on-every-node' ''
+say "One meshed stand-in per node with a SPIRE agent (\`mesh-on-<node>\`, section 5), one check per node: placed on its node, Ready (so its native-sidecar proxy is ready), and the workload certificate its proxy holds is issued by the SPIRE CA with that stand-in's own SPIFFE ID (\`spiffe://$TD/ns/$DATA/sa/mesh-on-<node>\`, one service account per node), read with \`istioctl proxy-config secret\` and checked as in \`mesh-identity-issued-by-spire\` (section 8)." ''
+MESH_NODES=$SVID_NODES
+mesh_n=$(wc -w <<<"$MESH_NODES")
+# mesh_id <node>: the SPIFFE ID of the meshed stand-in of <node>, from its own service account
+mesh_id() { echo "spiffe://$TD/ns/$DATA/sa/mesh-on-$1"; }
+for NODE in $MESH_NODES; do
+  pod=mesh-on-$NODE; on=$(node_of "$DATA" "$pod")
+  ready=$(k -n "$DATA" get pod "$pod" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+  proxy_leaf "$DATA" "$pod" "mesh-$NODE" >/dev/null
+  uri=$(openssl x509 -noout -ext subjectAltName -in "$work/mesh-$NODE-leaf.pem" 2>/dev/null | grep -o 'URI:[^,]*' | sed 's/URI://')
+  iss=$(openssl x509 -noout -issuer -nameopt RFC2253 -in "$work/mesh-$NODE-leaf.pem" 2>/dev/null)
+  [ "$on" = "$NODE" ] && [ "$ready" = True ] && [ "$uri" = "$(mesh_id "$NODE")" ] && issued_by_spire "$work/mesh-$NODE-leaf.pem"
+  check $? "node $NODE: the meshed stand-in $pod runs on the node and is Ready, and its proxy's certificate is issued by the SPIRE CA with its own SPIFFE ID $(mesh_id "$NODE")" "on ${on:-no node}, Ready ${ready:-absent}, ${uri:-no certificate}, ${iss:-no issuer}"
+done
+say '' '### cross-node-calls' ''
+say "With the nodes in name order, the meshed stand-in of node *i* calls the one of node *(i+1) mod N* through its Service (agnhost \`/header?key=X-Forwarded-Client-Cert\`): every node is then a caller and a receiver across a node boundary, in N calls. Each stand-in has its own SPIFFE ID, so the caller and the receiver of a call can be told apart. Each call is checked for: the two nodes differ, the receiver saw the caller's own SPIFFE ID in \`X-Forwarded-Client-Cert\`, the caller's proxy counted a request whose receiver presented the receiver's own SPIFFE ID in the handshake (reporter=source, \`destination_principal\`), and the receiver's proxy counted a request over mutual TLS (reporter=destination, \`connection_security_policy=\"mutual_tls\"\`)." ''
+if [ "$mesh_n" -lt 2 ]; then
+  false; check $? "a call crosses nodes through the mesh: two nodes with a SPIRE agent are needed, one to call from and one to receive" "nodes with a SPIRE agent: $mesh_n (${MESH_NODES:-none})"
+else
+  mapfile -t ring <<<"$MESH_NODES"
+  for i in "${!ring[@]}"; do
+    from=${ring[$i]}; to=${ring[$(( (i + 1) % mesh_n ))]}
+    src=mesh-on-$from; dst=mesh-on-$to
+    on_from=$(node_of "$DATA" "$src"); on_to=$(node_of "$DATA" "$dst")
+    from_id=$(mesh_id "$from"); to_id=$(mesh_id "$to")
+    s0=$(mtls_requests "$DATA" "$src" source "destination_principal=\"$to_id\""); d0=$(mtls_requests "$DATA" "$dst" destination 'connection_security_policy="mutual_tls"')
+    xfcc=$(k -n "$DATA" exec "$src" -c curl -- curl -sS -m 15 "http://$dst.$DATA.svc:8080/header?key=X-Forwarded-Client-Cert" 2>&1)
+    seen=$(grep -o 'URI=[^;,]*' <<<"$xfcc" | head -1 | sed 's/^URI=//')
+    sleep 3
+    s1=$(mtls_requests "$DATA" "$src" source "destination_principal=\"$to_id\""); d1=$(mtls_requests "$DATA" "$dst" destination 'connection_security_policy="mutual_tls"')
+    [ -n "$on_from" ] && [ -n "$on_to" ] && [ "$on_from" != "$on_to" ] && [ "$seen" = "$from_id" ] && [ "$s1" -gt "$s0" ] && [ "$d1" -gt "$d0" ]
+    check $? "call $((i + 1)) of $mesh_n: $src (node $on_from) → $dst (node $on_to) crosses nodes, the receiver sees the caller's own SPIFFE ID, the caller's proxy saw the receiver's own, and both proxies count it as mutual TLS" "caller node ${on_from:-none}, receiver node ${on_to:-none}, identity received ${seen:-none ($(head -1 <<<"$xfcc" | cut -c1-120))} (caller's: $from_id); caller (reporter=source, destination_principal=$to_id) $s0 → $s1, receiver (reporter=destination, mutual_tls) $d0 → $d1"
+  done
+fi
 
 # --------------------------------------------------------------------------------------------
 section "11. default-deny-with-chained-cni"
@@ -965,7 +1147,9 @@ r=$(http "$DATA" pdp-adapter app "http://tsa-policy-engine.$MGMT.svc:8080/hostna
 r=$(http "$DATA" pdp-adapter app "http://openbao-standin.$MGMT.svc:8080/hostname")
 case $r in denied*) true;; *) false;; esac; check $? "pdp-adapter → openbao-standin: DENIED (a lane is one pair, not a licence)" "→ $r"
 r=$(http "$MGMT" mgmt-caller app "http://peer.$DATA.svc:8080/hostname")
-case $r in denied*) true;; *) false;; esac; check $? "management pod → data plane: DENIED (the default deny is both directions)" "→ $r"
+from=$(node_of "$MGMT" mgmt-caller); to=$(node_of "$DATA" peer)
+case $r in denied*) [ -n "$from" ] && [ -n "$to" ] && [ "$from" != "$to" ];; *) false;; esac
+check $? "management pod → data plane, from another node than the peer's: DENIED (the default deny is both directions, across nodes)" "mgmt-caller on ${from:-no node} → peer on ${to:-no node}: $r"
 r=$(k -n "$DATA" exec probe -c app -- nslookup "openbao-standin.$MGMT.svc.cluster.local" 2>&1 | grep -A1 '^Name:' | tr '\n' ' ')
 [ -n "$r" ]; check $? "DNS bypass: names still resolve" "$r"
 
@@ -1020,8 +1204,7 @@ metrics_answer "the SPIRE controller-manager" controller_runtime_ 8082
 section "13. A declared registration without its entry fails the release"
 say 'The registrations-reconciled check counts the labelled pods of every plane namespace past Pending (running, or finished as the completed job pods of the OpenBao release are) and compares them with what the controller-manager reconciled. To make one registration go unreconciled, the namespace `kube-public`, which the controller-manager is configured to ignore on every cluster (the default `ignoreNamespaces` of the SPIRE chart) and which holds no pod, is labelled as a plane for the duration of the step and gets a labelled pod; then zone-policy is upgraded through the lifecycle step with a 20 s check timeout. Afterwards the label and the pod are removed and the rollback restores the release.' ''
 k label ns kube-public ztd.facis.io/plane=data --overwrite >/dev/null
-pin_overrides=(); [ "$CLUSTER_KIND" = provider ] && pin_overrides=(--overrides "{\"apiVersion\":\"v1\",\"spec\":$(pin_affinity "$PIN_NODE")}")
-k -n kube-public run declared-not-reconciled --image=docker.io/curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b --labels=spiffe.io/spire-managed-identity=true "${pin_overrides[@]}" --command -- sleep 3600 >/dev/null
+k -n kube-public run declared-not-reconciled --image=docker.io/curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b --labels=spiffe.io/spire-managed-identity=true --command -- sleep 3600 >/dev/null
 k -n kube-public wait --for=condition=Ready pod/declared-not-reconciled --timeout=120s >/dev/null 2>&1
 printf 'trustDomain: %s\nchecks:\n  timeoutSeconds: 20\n' "$TD" >"$work/zp-values.yaml"
 k config view --minify --flatten --context "$CONTEXT" >"$work/kubeconfig"
@@ -1441,17 +1624,18 @@ else
   metrics_answer "the SPIRE controller-manager" controller_runtime_ 8082
   for NODE in $(agent_nodes); do agent_answers "$NODE"; done
   # The proof's fixtures are gone (delete_stand_ins ran above, its errors silenced): the stand-ins of
-  # both planes and their Services and ServiceAccounts, the per-node SVID stand-ins and the
-  # ServiceAccount stand-in of the SPIRE namespace, the kube-public pod, the scratch namespace, and
-  # any SPIRE entry for a stand-in identity (the controller-manager removes those once the pods are
+  # both planes and their Services and ServiceAccounts, the per-node meshed stand-ins and their
+  # Services and ServiceAccounts, the per-node SVID stand-ins and the ServiceAccount stand-in of the SPIRE namespace, the kube-public pod, the scratch namespace, and
+  # any SPIRE entry for a stand-in identity, the per-node meshed stand-ins' included (the controller-manager removes those once the pods are
   # gone, so they are waited for). A leftover is a failed check, so the zone is torn down after all.
   left=$( { sed -e "s/__DATA__/$DATA/g" -e "s/__MGMT__/$MGMT/g" fixtures/stand-ins.yaml | k get -f - --ignore-not-found -o name \
+    && k -n "$DATA" get pods,services,serviceaccounts -l app.kubernetes.io/name=mesh-on-node -o name \
     && k -n "$SPIRE_NS" get pods -l app.kubernetes.io/name=svid-on-node -o name \
     && k -n "$SPIRE_NS" get serviceaccount stand-in --ignore-not-found -o name \
     && k -n kube-public get pod declared-not-reconciled --ignore-not-found -o name \
     && k get namespace mesh-identity-outside --ignore-not-found -o name; } 2>&1 || echo "a read failed")
   for _ in $(seq 30); do
-    entries=$(spire_server entry show -output json 2>/dev/null | jq -er '[.entries[] | select(.spiffe_id.path | endswith("/sa/stand-in")) | "spiffe://\(.spiffe_id.trust_domain)\(.spiffe_id.path)"] | join(" ")') || entries="the entries could not be read"
+    entries=$(spire_server entry show -output json 2>/dev/null | jq -er '[.entries[] | select(.spiffe_id.path | endswith("/sa/stand-in") or contains("/sa/mesh-on-")) | "spiffe://\(.spiffe_id.trust_domain)\(.spiffe_id.path)"] | join(" ")') || entries="the entries could not be read"
     [ -z "$entries" ] && break; sleep 2
   done
   # The certificates in use by the proxies of the plane namespaces (section 14's reader): none may
@@ -1470,7 +1654,7 @@ else
       if [ -z "$ns" ] || [ "$up" != running ]; then continue; fi
       proxy_cert "$ns" "$pod" "$work/left-cert.pem"
       case $? in
-        0) u=$(cert_uri "$work/left-cert.pem"); [[ $u == */sa/stand-in ]] && certs_left="$certs_left $ns/$pod=$u";;
+        0) u=$(cert_uri "$work/left-cert.pem"); [[ $u == */sa/stand-in || $u == */sa/mesh-on-* ]] && certs_left="$certs_left $ns/$pod=$u";;
         1) ;;
         *) pod_gone "$ns" "$pod" "$uid" || reader_ended "$ns" "$pod" "$uid" istio-proxy || certs_left="$certs_left $ns/$pod=unread($(cat "$work/left-cert.pem.err" 2>/dev/null))";;
       esac
@@ -1480,7 +1664,7 @@ else
   fi
   rm -f "$work/left-cert.pem" "$work/left-cert.pem.err"; certs_left=${certs_left# }
   [ -z "$left" ] && [ -z "$entries" ] && [ -z "$certs_left" ]
-  check $? "nothing of the proof's fixtures stays in the zone: no stand-in pod, Service or ServiceAccount in either plane, no per-node SVID stand-in and no stand-in ServiceAccount in $SPIRE_NS, no kube-public pod, no scratch namespace, no SPIRE entry for a stand-in identity, and no proxy of a plane namespace holding a certificate for one (every running proxy read)" "left: $(tr '\n' ' ' <<<"${left:-none}"); stand-in entries: ${entries:-none}; stand-in certificates: ${certs_left:-none}"
+  check $? "nothing of the proof's fixtures stays in the zone: no stand-in pod, Service or ServiceAccount in either plane, no per-node meshed stand-in, its Service or its ServiceAccount, no per-node SVID stand-in and no stand-in ServiceAccount in $SPIRE_NS, no kube-public pod, no scratch namespace, no SPIRE entry for a stand-in identity, and no proxy of a plane namespace holding a certificate for one, the per-node meshed stand-ins' included (every running proxy read)" "left: $(tr '\n' ' ' <<<"${left:-none}"); stand-in entries: ${entries:-none}; stand-in certificates: ${certs_left:-none}"
   code "$(k -n "$SPIRE_NS" get pods -o wide | sed 's/  */ /g')"
   server_td=$(k -n "$SPIRE_NS" get cm spire-server -o jsonpath='{.data.server\.conf}' | jq -r .server.trust_domain)
   td_note="final"; [[ $server_td == *.trust.invalid ]] && td_note="interim"
@@ -1488,7 +1672,6 @@ else
   if [ "$failures" -eq "$before" ]; then
     keep_zone=1
     say '' "The zone stays installed on \`$CONTEXT\` with the trust domain \`$server_td\` ($td_note). An interim trust domain is fixed in the SPIRE root CA, so the zone is re-installed with its final name under the delegated trust-framework zone once that name is confirmed; until then this kept zone is not acceptance evidence. A later run of this proof starts from the clean slate (section 1) and uninstalls it first."
-    [ "$CLUSTER_KIND" = provider ] && say '' "The mesh of this zone was proven node-locally, with the proof's pods pinned to istiod's node \`$PIN_NODE\`: cross-node meshed traffic is not proven and does not work on this cluster until the provider changes its pod network to keep a pod's address between nodes."
   else
     not_kept="$((failures - before)) check(s) of the CNI read-back and the record of what remains failed"
   fi
@@ -1518,6 +1701,7 @@ if [ "$keep_zone" != 1 ]; then
   section "The cluster's CNI as found"
   cni_check
 fi
+fi # routing_ok: the end of sections 1 to 15
 
 # --------------------------------------------------------------------------------------------
 say '' '## Result' ''
@@ -1564,10 +1748,6 @@ write_environment() {
     }' >"$1"
 }
 write_environment "$work/environment.json"
-# The node of the pin is known from section 5 on; the header written before the install names it now.
-if [ -n "$PIN_NODE" ]; then pin_text="\`$PIN_NODE\`, the node istiod runs on"
-else pin_text="istiod's node (never read: the run did not reach section 5)"; fi
-sed -i "s|__PIN_NODE__|$pin_text|" "$OUT"
 
 if mkdir -p "$EVID"; then
   if [ "$CLUSTER_KIND" = kind ]; then
