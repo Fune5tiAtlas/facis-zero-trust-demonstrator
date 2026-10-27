@@ -43,26 +43,6 @@ spiffe.io/spire-managed-identity: "true"
 {{- end }}
 
 {{/*
-ztd-openbao.pinAffinity: the node pin of a job's pod (global.pin.node), the same required node
-affinity on kubernetes.io/hostname that openbao.server.affinity gives the server. TEMPORARY,
-participant zones only: the provider's pod network masquerades cross-node pod traffic, so a meshed
-pod on another node than istiod never passes its proxy's readiness; the pin falls when the
-provider's network is fixed (docs/environments/osc.md). Renders nothing without a pin.
-*/}}
-{{- define "ztd-openbao.pinAffinity" -}}
-{{- with (.Values.global.pin).node }}
-affinity:
-  nodeAffinity:
-    requiredDuringSchedulingIgnoredDuringExecution:
-      nodeSelectorTerms:
-        - matchExpressions:
-            - key: kubernetes.io/hostname
-              operator: In
-              values: [{{ . | quote }}]
-{{- end }}
-{{- end }}
-
-{{/*
 ztd-openbao.bootstrapScript: the bootstrap Job's script (POSIX sh, curl image). See the state table in
 bootstrap.yaml. Inputs: BAO_ADDR, SECRET, STS and POD (the server's StatefulSet and its pod). Never
 prints a credential.

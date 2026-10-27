@@ -3,31 +3,11 @@
   "title": "ztd-openbao chart values",
   "type": "object",
   "additionalProperties": false,
-  "required": ["managementNamespace", "global", "cilium", "openbao", "bootstrap", "external"],
+  "required": ["managementNamespace", "cilium", "openbao", "bootstrap", "external"],
   "properties": {
     "managementNamespace": {
       "$ref": "#/$defs/name",
       "description": "The management-plane namespace the umbrella created (zone fact planes.management.namespace)."
-    },
-    "global": {
-      "type": "object",
-      "description": "Values shared with the upstream chart; the node pin lives here.",
-      "required": ["pin"],
-      "properties": {
-        "pin": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["node"],
-          "properties": {
-            "node": {
-              "type": "string",
-              "description": "The node the server and both jobs must run on; empty: no pin. Temporary, participant zones only.",
-              "pattern": "^([a-z0-9]([-a-z0-9.]*[a-z0-9])?)?$",
-              "maxLength": 253
-            }
-          }
-        }
-      }
     },
     "cilium": {
       "type": "object",

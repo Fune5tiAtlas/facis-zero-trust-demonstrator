@@ -14,7 +14,7 @@ on failure), each waiting on the previous:
 | 5 | `istiod` | `istio-system` | `istiod` 1.31.1 | `deployment/helm/values/istiod.yaml` + zone facts |
 | 6 | `istio-cni` | `istio-system` | `cni` 1.31.1 | `deployment/helm/values/istio-cni.yaml` |
 | 7 | `zone-policy` | `istio-system` | `deployment/helm/zone-policy` | chart defaults + zone facts; also waits for its Jobs |
-| 8 | `ztd-openbao` | the management namespace (`ztd-mgmt`) | `deployment/helm/ztd-openbao`, its `openbao` 0.28.3 dependency built from `Chart.lock` | chart defaults + zone facts (+ the node pin); also waits for its Jobs |
+| 8 | `ztd-openbao` | the management namespace (`ztd-mgmt`) | `deployment/helm/ztd-openbao`, its `openbao` 0.28.3 dependency built from `Chart.lock` | chart defaults + zone facts; also waits for its Jobs |
 
 The umbrella creates every namespace the later releases install into; the lifecycle step never
 creates one. `ztd-openbao` comes last so that its server and its jobs are created after istiod and
@@ -86,17 +86,11 @@ copy against the committed pins before Helm reads it, so the bytes installed are
 and the chart's own templates and values are always the checkout's. The upstream repository is
 reached at the first build, as SPIRE's and Istio's are at their first fetch.
 
-## The node pin of OpenBao
+## Placement
 
-When the zone file sets `openbao.pinToMeshNode: true` (zone A and zone B), `install` reads the node
-istiod runs on once the istiod release is deployed and sets the `ztd-openbao` value
-`global.pin.node` to it: the server and both jobs get a required node affinity on
-`kubernetes.io/hostname`. When istiod has no node the value is `istiod-node-not-found`, which matches
-no node, so nothing runs unpinned; `render` and the pre-install render use that placeholder and
-touch no cluster. The reason is the provider's pod network, which masquerades pod traffic between
-nodes: a meshed pod on another node than istiod never passes its proxy's readiness. The pin is
-temporary and falls when that network is fixed (`docs/environments/osc.md`); the kind zone is not
-pinned.
+No release is placed on a node: the installer sets no node affinity or node selector, and the
+scheduler places every pod, the OpenBao server and both of its jobs included. A zone file that still
+carries a key under `openbao` is refused by the umbrella's values schema before anything is rendered.
 
 ## What the installer accepts
 
@@ -144,7 +138,6 @@ by the zone file:
 | `ztd-openbao` | `managementNamespace`, `openbao.global.namespace` (and its release namespace) | `planes.management.namespace` |
 | `ztd-openbao` | `openbao.server.dataStorage.storageClass` | `zone.storageClass` |
 | `ztd-openbao` | `cilium.enabled` | `cni.cilium.enabled` |
-| `ztd-openbao` | `global.pin.node` (istiod's node) | `openbao.pinToMeshNode` |
 
 A release whose zone fact is missing does not render, and the message names the fact and the
 release.
@@ -173,11 +166,12 @@ docker run --rm -v "$PWD:/repo" -w /repo -v "$(command -v helm):/usr/local/bin/h
   sh -c 'apk add --no-cache python3 py3-yaml curl >/dev/null && bash --version | head -1 && bash scripts/install-zone/install.sh render'
 ```
 
-Last run (2026-10-17, `bash:3.2` container, GNU bash 3.2.57(1)-release, repository mounted
+Last run (2026-10-26, `bash:3.2` container, GNU bash 3.2.57(1)-release, repository mounted
 read-only, the chart cache mounted writable): exit 0, all eight releases rendered (`ztd` 38 objects,
 `spire-crds` 3, `spire` 36, `istio-base` 17, `istiod` 17, `istio-cni` 7, `zone-policy` 14,
-`ztd-openbao` 12), no `unbound variable`; `render ztd-openbao` rendered the one release, and `plan`
-with zone A's file listed the node pin. An earlier run (2026-10-09) also showed a zone copy with
+`ztd-openbao` 13), no `unbound variable`; `plan` with zone A's file listed the eight steps and no
+placement. An earlier run (2026-10-17) also rendered `ztd-openbao` alone with `render ztd-openbao`,
+and one before it (2026-10-09) showed a zone copy with
 `mesh.revision: canary` exiting 1 naming the key with nothing rendered; the script before that fix
 stopped there with `want[@]: unbound variable` and still exited 0 having rendered nothing.
 

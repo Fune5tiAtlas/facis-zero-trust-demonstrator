@@ -479,7 +479,7 @@ section "2. install-order-idempotent: the zone from an empty cluster, twice"
 start=$(date +%s)
 "$INSTALL" install >"$work/install1.log" 2>&1; rc=$?
 check $rc "first installer run from an empty cluster returns 0, no manual step between the releases" "$(( $(date +%s) - start ))s"
-code "$(grep -E '^(  [0-9]/8|  ztd-openbao is pinned|step|zone installed)' "$work/install1.log")"
+code "$(grep -E '^(  [0-9]/8|step|zone installed)' "$work/install1.log")"
 [ $rc -ne 0 ] && code "$(tail -30 "$work/install1.log")"
 for r in $RELEASES; do h get manifest "${r%%:*}" -n "${r#*:}" >"$work/manifest-1-${r%%:*}.yaml" 2>/dev/null; done
 start=$(date +%s)

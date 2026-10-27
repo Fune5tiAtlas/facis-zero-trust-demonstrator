@@ -52,14 +52,7 @@
 # Every namespace the releases install into is created by the umbrella; the one namespace this
 # script creates is the umbrella's own release namespace, which holds only the release record and
 # its verification job. Needs helm, kubectl, jq, curl, python3 with PyYAML, and sha256sum or shasum.
-#
-# The node pin of ztd-openbao (TEMPORARY): when the zone file sets openbao.pinToMeshNode (zone A and
-# zone B), the provider's pod network masquerades cross-node pod traffic and a meshed pod on another
-# node than istiod never passes its proxy's readiness, so `install` reads istiod's node after the
-# istiod release and pins the OpenBao server and both of its jobs to it (global.pin.node); when
-# istiod has no node it pins to istiod-node-not-found, which matches no node. `render` uses that
-# placeholder and touches no cluster. The pin falls when the provider's network is fixed
-# (docs/environments/osc.md).
+# No release is placed on a node: the scheduler places every pod, ztd-openbao's included.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -99,8 +92,6 @@ STEPS=(
   "ztd-openbao|=planes.management.namespace|ztd-openbao||managementNamespace=planes.management.namespace,openbao.global.namespace=planes.management.namespace,openbao.server.dataStorage.storageClass=zone.storageClass,cilium.enabled=cni.cilium.enabled|wait-for-jobs"
 )
 # A namespace written "=<zone key>" is that zone fact (the management namespace of ztd-openbao).
-# The node pin: a node name that matches nothing, used by render and when istiod has no node.
-PIN_NONE=istiod-node-not-found
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -183,9 +174,6 @@ step_ns() {
   esac
 }
 
-# pin_wanted: the zone file asks for the node pin of ztd-openbao (openbao.pinToMeshNode).
-pin_wanted() { [ "$(zone_fact openbao.pinToMeshNode)" = true ]; }
-
 plan() {
   zone_file
   zone_mesh
@@ -201,9 +189,6 @@ plan() {
     printf '  %d/%d  %-12s into %-13s chart %-12s values %s%s%s\n' "$i" "${#STEPS[@]}" "$release" "$ns" \
       "$(chart_label "$chart")" "$label" "${facts:+ + zone facts ${facts//,/ }}" "${extra:+ ($extra)}"
   done
-  if pin_wanted; then
-    say "  ztd-openbao is pinned to istiod's node (openbao.pinToMeshNode), read after istiod; $PIN_NONE without one"
-  fi
 }
 
 chart_label() {
@@ -299,15 +284,14 @@ chart_path() {
   esac
 }
 
-# merged_values <release> <values> <facts> <out> [<key>=<value>...]: the values file with the zone
-# facts set, each read from the zone document (the umbrella's defaults with the zone file on top);
-# refuses when a fact is empty there, so a fact the umbrella leaves empty (zone.trustDomain,
-# zone.name, zone.storageClass) must be stated by the zone file. Further <key>=<value> pairs are set
-# as strings (the node pin). Paths travel as arguments, never inside the source.
+# merged_values <release> <values> <facts> <out>: the values file with the zone facts set, each read
+# from the zone document (the umbrella's defaults with the zone file on top); refuses when a fact is
+# empty there, so a fact the umbrella leaves empty (zone.trustDomain, zone.name, zone.storageClass)
+# must be stated by the zone file. Paths travel as arguments, never inside the source.
 merged_values() {
   if [ "$2" = zone ]; then cp "$ZONE_VALUES" "$4"; return; fi
   zone_py "$@" <<'PY'
-release, values_file, facts, out = ARGS[:4]
+release, values_file, facts, out = ARGS
 values = (yaml.safe_load(open(values_file)) if values_file else None) or {}
 doc = zone_doc()
 def put(target, v):
@@ -327,9 +311,6 @@ for pair in filter(None, facts.split(",")):
 if missing:
     sys.exit(f"install-zone: release {release}: the zone file {ZONE} does not state the zone fact "
              + ", ".join(missing))
-for pair in ARGS[4:]:
-    target, v = pair.split("=", 1)
-    put(target, v)
 yaml.safe_dump(values, open(out, "w"), sort_keys=False)
 PY
 }
@@ -367,7 +348,7 @@ PY
 }
 
 render() {
-  local want=("$@") step release ns chart values facts extra path out name names="" pin
+  local want=("$@") step release ns chart values facts extra path out name names=""
   zone_file
   zone_mesh
   for step in "${STEPS[@]}"; do names="$names ${step%%|*}"; done
@@ -385,9 +366,7 @@ render() {
     IFS='|' read -r release ns chart values facts extra <<<"$step"
     if [ ${#want[@]} -gt 0 ] && [[ ! " ${want[*]+${want[*]}} " == *" $release "* ]]; then continue; fi
     ns=$(step_ns "$ns")
-    # Without a cluster the node pin names the placeholder, which matches no node.
-    pin=$(pin_value "$release" "$PIN_NONE")
-    merged_values "$release" "$values" "$facts" "$work/$release.values.yaml" ${pin:+"$pin"} || exit 1
+    merged_values "$release" "$values" "$facts" "$work/$release.values.yaml" || exit 1
     path=$(chart_path "$chart")
     out=${RENDER_DIR:+$RENDER_DIR/$release.yaml}
     if ! helm template "$release" "$path" --namespace "$ns" --values "$work/$release.values.yaml" \
@@ -400,24 +379,6 @@ render() {
 }
 
 kctx() { kubectl --context "$KUBE_CONTEXT" "$@"; }
-
-# pin_value <release> <node>: the value that pins ztd-openbao to <node> when the zone file asks for
-# the pin (openbao.pinToMeshNode), else nothing. TEMPORARY: the provider's pod network masquerades
-# cross-node pod traffic, so a meshed pod on another node than istiod never passes its proxy's
-# readiness; the pin falls when that network is fixed (docs/environments/osc.md).
-pin_value() {
-  if [ "$1" = ztd-openbao ] && pin_wanted; then echo "global.pin.node=$2"; fi
-}
-
-# istiod_node: the node istiod runs on, read after the istiod release; empty when there is none.
-istiod_node() {
-  local step release ns rest
-  for step in "${STEPS[@]}"; do
-    IFS='|' read -r release ns rest <<<"$step"
-    [ "$release" = istiod ] || continue
-    kctx -n "$ns" get pod -l app=istiod -o jsonpath='{.items[0].spec.nodeName}' 2>/dev/null || true
-  done
-}
 
 # plane namespaces of the zone: the two fixed planes and planes.extra, from the zone document
 zone_namespaces() {
@@ -474,19 +435,12 @@ install() {
   local umbrella_ns
   umbrella_ns=$(IFS='|' read -r _ ns _ <<<"${STEPS[0]}"; echo "$ns")
   kctx get namespace "$umbrella_ns" >/dev/null 2>&1 || kctx create namespace "$umbrella_ns" >/dev/null
-  local i=0 step release ns chart values facts extra line ok pin node
+  local i=0 step release ns chart values facts extra line ok
   for step in "${STEPS[@]}"; do
     IFS='|' read -r release ns chart values facts extra <<<"$step"
     ns=$(step_ns "$ns")
     i=$((i + 1))
-    pin=""
-    if [ -n "$(pin_value "$release" x)" ]; then
-      # The node pin (see pin_value): istiod's node, read now that the istiod release is deployed.
-      node=$(istiod_node)
-      pin=$(pin_value "$release" "${node:-$PIN_NONE}")
-      say "step $i/${#STEPS[@]}: $release pinned to ${node:-$PIN_NONE}$([ -n "$node" ] && echo ", the node istiod runs on" || echo ": istiod has no node, so no pod of $release is scheduled")"
-    fi
-    merged_values "$release" "$values" "$facts" "$work/$release.values.yaml" ${pin:+"$pin"}
+    merged_values "$release" "$values" "$facts" "$work/$release.values.yaml"
     say "step $i/${#STEPS[@]}: $release into $ns ..."
     line=$(LIFECYCLE_RELEASE=$release LIFECYCLE_NAMESPACE=$ns LIFECYCLE_CHART=$(chart_path "$chart") \
       LIFECYCLE_VALUES_FILE=$work/$release.values.yaml LIFECYCLE_TIMEOUT=$STEP_TIMEOUT \

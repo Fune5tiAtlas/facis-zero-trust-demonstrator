@@ -13,20 +13,6 @@
 # must name the same namespace (the chart refuses to render otherwise).
 managementNamespace: ztd-mgmt
 
-# Values shared with the upstream chart. Helm hands a parent chart's values to a subchart only
-# through `global`, so the node pin lives here: one value pins the server (through
-# openbao.server.affinity below) and both jobs.
-global:
-  pin:
-    # The node the server and both jobs must run on (required node affinity on
-    # kubernetes.io/hostname); empty: no pin. TEMPORARY, participant zones only: the provider's pod
-    # network masquerades cross-node pod traffic, so a meshed pod on another node than istiod
-    # never passes its proxy's readiness. The installer sets it to istiod's node when the zone file
-    # sets openbao.pinToMeshNode (istiod-node-not-found when istiod has no node, which matches no
-    # node, so nothing runs unpinned). The pin falls when the provider's network is fixed
-    # (docs/environments/osc.md). The server's volume binds on the node the server first runs on.
-    node: ""
-
 # The Kubernetes API lane of the bootstrap Job under Cilium (zone fact: cni.cilium.enabled). Under
 # Cilium a NetworkPolicy ipBlock does not select the API server, so the chart opens the Job's lane
 # with a CiliumNetworkPolicy to the kube-apiserver entity; with another CNI the umbrella's
@@ -57,27 +43,7 @@ openbao:
     # the server pod gets spiffe://<trust domain>/ns/<management namespace>/sa/ztd-openbao.
     extraLabels:
       spiffe.io/spire-managed-identity: "true"
-    # Pinned to global.pin.node when it is set (see global.pin); otherwise the upstream default, a
-    # pod anti-affinity between server replicas. A template string, evaluated by the upstream chart.
-    affinity: |
-      {{- if (.Values.global.pin).node }}
-      nodeAffinity:
-        requiredDuringSchedulingIgnoredDuringExecution:
-          nodeSelectorTerms:
-            - matchExpressions:
-                - key: kubernetes.io/hostname
-                  operator: In
-                  values: [{{ .Values.global.pin.node | quote }}]
-      {{- else }}
-      podAntiAffinity:
-        requiredDuringSchedulingIgnoredDuringExecution:
-          - labelSelector:
-              matchLabels:
-                app.kubernetes.io/name: {{ template "openbao.name" . }}
-                app.kubernetes.io/instance: "{{ .Release.Name }}"
-                component: server
-            topologyKey: kubernetes.io/hostname
-      {{- end }}
+    # affinity: the upstream default, a pod anti-affinity between server replicas; no node affinity.
     # The Kubernetes auth method is not used yet (deferred with the ZT-11 signing flow), so the
     # cluster-wide auth-delegator binding is not created.
     authDelegator:
