@@ -32,7 +32,8 @@ meshConfig:
             destination: "%DOWNSTREAM_LOCAL_URI_SAN%"
             authority: "%REQ(:authority)%"
             code: "%RESPONSE_CODE%"
-            detail: "%RESPONSE_CODE_DETAILS%"
+            detail: "%RESPONSE_CODE_DETAILS%"            # an HTTP request's decision
+            termination: "%CONNECTION_TERMINATION_DETAILS%"  # a TCP connection's decision
             flags: "%RESPONSE_FLAGS%"
             time: "%START_TIME%"
 # Images, pinned by tag and digest (the multi-arch index digest of the 1.31.1 tag, read from its
