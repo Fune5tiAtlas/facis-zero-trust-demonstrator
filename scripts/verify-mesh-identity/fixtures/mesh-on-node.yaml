@@ -10,13 +10,14 @@
 # The placement spreads the proof over every node on purpose, like the per-node SVID stand-ins; it
 # holds no pod to istiod's node. Nothing here is part of a zone: the proof removes the pods, the
 # Services and the ServiceAccounts, by their label app.kubernetes.io/name=mesh-on-node, with the other
-# stand-ins in every case.
+# stand-ins in every case. Every object carries app.kubernetes.io/part-of: verify-mesh-identity, by
+# which the registration inventory marks the pods as the proof's own.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: mesh-on-__NODE__
   namespace: __DATA__
-  labels: { app.kubernetes.io/name: mesh-on-node }
+  labels: { app.kubernetes.io/name: mesh-on-node, app.kubernetes.io/part-of: verify-mesh-identity }
 ---
 apiVersion: v1
 kind: Pod
@@ -25,6 +26,7 @@ metadata:
   namespace: __DATA__
   labels:
     app.kubernetes.io/name: mesh-on-node
+    app.kubernetes.io/part-of: verify-mesh-identity
     app.kubernetes.io/instance: mesh-on-__NODE__
     spiffe.io/spire-managed-identity: "true"
 spec:
@@ -50,7 +52,7 @@ kind: Service
 metadata:
   name: mesh-on-__NODE__
   namespace: __DATA__
-  labels: { app.kubernetes.io/name: mesh-on-node }
+  labels: { app.kubernetes.io/name: mesh-on-node, app.kubernetes.io/part-of: verify-mesh-identity }
 spec:
   selector: { app.kubernetes.io/instance: mesh-on-__NODE__ }
   ports: [{ name: http, port: 8080 }]
