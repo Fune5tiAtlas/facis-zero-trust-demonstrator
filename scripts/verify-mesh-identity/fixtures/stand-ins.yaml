@@ -12,6 +12,11 @@
 # identity (verify.sh, section 10, stand-in-identities). The two probes hold no identity and keep the
 # namespace's default account. Every object here carries app.kubernetes.io/part-of:
 # verify-mesh-identity, by which the registration inventory marks the proof's own pods.
+# Under the mesh default deny of zone-policy, a stand-in is served only through a declared pair: the
+# allow-matrix row pdp-adapter-to-tsa (zone-policy) and the proof's own pairs (fixtures/mesh-pairs.yaml,
+# caller -> peer and each mesh-on-<node> to the next). pdp-impostor (the labels of pdp-adapter, an
+# account of its own) and unpaired (no pair) are the registered callers the mesh refuses (verify.sh,
+# section 11, mesh-default-deny).
 #
 # A meshed peer that serves HTTP and echoes request headers (agnhost netexec /header).
 apiVersion: v1
@@ -282,6 +287,53 @@ metadata:
 spec:
   terminationGracePeriodSeconds: 2   # sleep ignores SIGTERM; the stand-ins hold no state
   serviceAccountName: mgmt-caller
+  containers:
+    - name: app
+      image: docker.io/curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b
+      command: [sleep, "3600"]
+---
+# The impostor on the lane pdp-adapter-to-tsa: the pod labels of pdp-adapter, so the matrix lane's
+# NetworkPolicy admits it, but a service account and so a SPIFFE ID of its own, which the lane's mesh
+# rule does not name: the mesh refuses it (verify.sh, section 11, mesh-default-deny).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pdp-impostor
+  namespace: __DATA__
+  labels: { app.kubernetes.io/part-of: verify-mesh-identity }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pdp-impostor
+  namespace: __DATA__
+  labels: { app.kubernetes.io/name: pdp-adapter, app.kubernetes.io/part-of: verify-mesh-identity, spiffe.io/spire-managed-identity: "true" }
+spec:
+  terminationGracePeriodSeconds: 2   # sleep ignores SIGTERM; the stand-ins hold no state
+  serviceAccountName: pdp-impostor
+  containers:
+    - name: app
+      image: docker.io/curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b
+      command: [sleep, "3600"]
+---
+# A registered neighbour of the peer in the data plane, with no pair: the network layer is open inside
+# the plane namespace, so only the mesh refuses it (verify.sh, section 11, mesh-default-deny).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: unpaired
+  namespace: __DATA__
+  labels: { app.kubernetes.io/part-of: verify-mesh-identity }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: unpaired
+  namespace: __DATA__
+  labels: { app.kubernetes.io/name: unpaired, app.kubernetes.io/part-of: verify-mesh-identity, spiffe.io/spire-managed-identity: "true" }
+spec:
+  terminationGracePeriodSeconds: 2   # sleep ignores SIGTERM; the stand-ins hold no state
+  serviceAccountName: unpaired
   containers:
     - name: app
       image: docker.io/curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b
