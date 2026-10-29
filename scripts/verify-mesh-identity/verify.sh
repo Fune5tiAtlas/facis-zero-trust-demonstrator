@@ -8,7 +8,9 @@
 # loopback ones, the proxy's certificate and root bundle issued by SPIRE, no proxy without the SPIRE
 # socket and a certificate from istiod's CA refused by a meshed peer, the proxy's traffic capture
 # held at the injector's defaults (the capture rule), the TLS 1.3 minimum of mesh mTLS, an
-# unregistered workload cut off, traffic through the proxies, the default deny intact with the
+# unregistered workload cut off, traffic through the proxies, a SPIFFE ID of its own for every meshed
+# stand-in (one service account per stand-in, so a lane's pair and the callers refused on it differ
+# by identity), the default deny intact with the
 # chained CNI and both control planes inside it, the native-sidecar version rule, the identity-band
 # checks, the registration inventory (every entry on the SPIRE server against the certificates in use
 # in the plane namespaces, by SPIFFE ID, both ways), the cluster's CNI left as found, and a teardown that leaves nothing behind (or, on a
@@ -1139,6 +1141,27 @@ else
     check $? "call $((i + 1)) of $mesh_n: $src (node $on_from) → $dst (node $on_to) crosses nodes, the receiver sees the caller's own SPIFFE ID, the caller's proxy saw the receiver's own, and both proxies count it as mutual TLS" "caller node ${on_from:-none}, receiver node ${on_to:-none}, identity received ${seen:-none ($(head -1 <<<"$xfcc" | cut -c1-120))} (caller's: $from_id); caller (reporter=source, destination_principal=$to_id) $s0 → $s1, receiver (reporter=destination, mutual_tls) $d0 → $d1"
   done
 fi
+say '' '### stand-in-identities' ''
+say "Each meshed stand-in of \`fixtures/stand-ins.yaml\` runs in a service account of its own, named after the pod, so that the stand-ins of a lane of the allow matrix and those refused on it are told apart by identity, not only by label. One check per stand-in: the workload certificate its proxy holds, read with \`istioctl proxy-config secret\` and checked as in \`mesh-identity-issued-by-spire\` (section 8), carries \`spiffe://$TD/ns/<namespace>/sa/<pod>\` and is issued by the SPIRE CA. Then the lane \`pdp-adapter-to-tsa\`: its caller \`pdp-adapter\` and the refused caller \`data-plain\` carry different SPIFFE IDs, and so do the management-plane stand-ins \`tsa-policy-engine\` (the lane's receiver), \`openbao-standin\` (a destination without a lane) and \`mgmt-caller\` (refused toward the data plane), one from another. An ID that is missing counts as no ID, never as a different one." ''
+# The SPIFFE ID read from each stand-in's proxy certificate, by <namespace>/<pod>
+declare -A standin_id=()
+for sp in "$DATA/peer" "$DATA/caller" "$DATA/pdp-adapter" "$DATA/data-plain" "$MGMT/tsa-policy-engine" "$MGMT/openbao-standin" "$MGMT/mgmt-caller"; do
+  ns=${sp%%/*}; pod=${sp#*/}; want="spiffe://$TD/ns/$ns/sa/$pod"
+  proxy_leaf "$ns" "$pod" "standin-$ns-$pod" >/dev/null
+  uri=$(cert_uri "$work/standin-$ns-$pod-leaf.pem")
+  iss=$(openssl x509 -noout -issuer -nameopt RFC2253 -in "$work/standin-$ns-$pod-leaf.pem" 2>/dev/null)
+  standin_id[$sp]=$uri
+  [ "$uri" = "$want" ] && issued_by_spire "$work/standin-$ns-$pod-leaf.pem"
+  check $? "$pod ($ns): its proxy's certificate carries its own SPIFFE ID $want, from its own service account, and is issued by the SPIRE CA" "${uri:-no certificate}, ${iss:-no issuer}"
+done
+id_pdp=${standin_id[$DATA/pdp-adapter]}; id_plain=${standin_id[$DATA/data-plain]}
+[ -n "$id_pdp" ] && [ -n "$id_plain" ] && [ "$id_pdp" != "$id_plain" ]
+check $? "lane pdp-adapter-to-tsa: the lane's caller pdp-adapter and the refused caller data-plain carry different SPIFFE IDs" "pdp-adapter ${id_pdp:-no ID}, data-plain ${id_plain:-no ID}"
+mgmt_ids=("${standin_id[$MGMT/tsa-policy-engine]}" "${standin_id[$MGMT/openbao-standin]}" "${standin_id[$MGMT/mgmt-caller]}")
+n_set=0; for i in "${mgmt_ids[@]}"; do [ -n "$i" ] && n_set=$((n_set+1)); done
+[ "$n_set" = 3 ] && [ "$(printf '%s\n' "${mgmt_ids[@]}" | sort -u | wc -l)" = 3 ]
+check $? "the management-plane stand-ins tsa-policy-engine, openbao-standin and mgmt-caller carry three different SPIFFE IDs" "tsa-policy-engine ${mgmt_ids[0]:-no ID}, openbao-standin ${mgmt_ids[1]:-no ID}, mgmt-caller ${mgmt_ids[2]:-no ID}"
+rm -f "$work"/standin-*
 
 # --------------------------------------------------------------------------------------------
 section "11. default-deny-with-chained-cni"
