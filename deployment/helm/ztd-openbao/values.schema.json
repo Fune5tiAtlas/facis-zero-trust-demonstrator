@@ -3,7 +3,7 @@
   "title": "ztd-openbao chart values",
   "type": "object",
   "additionalProperties": false,
-  "required": ["managementNamespace", "cilium", "openbao", "bootstrap", "external"],
+  "required": ["managementNamespace", "cilium", "mesh", "trustDomain", "openbao", "bootstrap", "external"],
   "properties": {
     "managementNamespace": {
       "$ref": "#/$defs/name",
@@ -16,6 +16,24 @@
       "properties": {
         "enabled": { "type": "boolean", "description": "Open the bootstrap Job's API lane with a CiliumNetworkPolicy (zone fact cni.cilium.enabled)." }
       }
+    },
+    "mesh": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["none", "sidecar", "ambient"],
+          "description": "The zone's mesh mode (zone fact mesh.mode); with any mode but none the release renders the allow rules of its own pairs."
+        }
+      }
+    },
+    "trustDomain": {
+      "type": "string",
+      "maxLength": 255,
+      "pattern": "^$|^[a-z0-9]([-a-z0-9_]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9_]*[a-z0-9])?)*$",
+      "description": "The zone's SPIFFE trust domain (zone fact zone.trustDomain); required when mesh.mode is not none."
     },
     "openbao": {
       "type": "object",
@@ -64,6 +82,8 @@
     "$comment": "Both modes at once are refused. The required name is the message Helm prints: either the release installs OpenBao or it verifies an existing one.",
     "required": ["openbao.server.enabled and external.address are exclusive"]
   },
+  "if": { "properties": { "mesh": { "properties": { "mode": { "not": { "const": "none" } } } } } },
+  "then": { "properties": { "trustDomain": { "minLength": 1 } } },
   "$defs": {
     "name": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 }
   }

@@ -20,6 +20,18 @@ managementNamespace: ztd-mgmt
 cilium:
   enabled: true
 
+# The zone's mesh (zone facts: mesh.mode and zone.trustDomain). Under a mesh (any mode but none) the
+# release renders the allow rules of its own pairs (templates/authorizationpolicy-own-pairs.yaml):
+# the zone-policy release denies every mesh request by default, so the bootstrap Job
+# (spiffe://<trust domain>/ns/<management namespace>/sa/ztd-openbao-bootstrap) and the verification
+# hook (.../sa/ztd-verify-openbao) are admitted to the server on its API port by their SPIFFE
+# identities, and no other identity reaches it. Without a mesh (the secrets baseline on kind's own
+# CNI, scripts/secrets/baseline.sh) nothing is rendered: there is no AuthorizationPolicy CRD there.
+# The trust domain is required when mode is not none.
+mesh:
+  mode: none
+trustDomain: ""
+
 # The upstream chart (openbao 0.28.3, OpenBao v2.5.4): one standalone server with file storage on a
 # volume in the management plane. The release name `ztd-openbao` makes its fullname `ztd-openbao`:
 # the StatefulSet, the pod ztd-openbao-0, the Services ztd-openbao and ztd-openbao-internal and the

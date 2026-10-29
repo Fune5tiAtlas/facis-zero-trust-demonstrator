@@ -57,12 +57,26 @@ of the namespace. The server listens without TLS inside its pod; between pods th
 sidecars carry its traffic as mesh mTLS under the mesh-wide STRICT peer authentication
 ([ADR-0009](adr/0009-service-mesh-mode-istio-sidecar-with-cilium.md),
 [Workload identity](workload-identity.md)), and the plane's default deny admits only pods of the same
-plane. The jobs complete under injection: the native sidecar exits with the job's container. The
+plane.
+
+The mesh then decides which of those pods may call the server. The `zone-policy` release denies every
+mesh request by default, and the release declares its own pairs: two `AuthorizationPolicy` resources
+of the chart, `allow-ztd-openbao-bootstrap-to-server` and `allow-ztd-verify-openbao-to-server`, admit
+the bootstrap Job (`…/sa/ztd-openbao-bootstrap`) and the verification hook (`…/sa/ztd-verify-openbao`)
+to the server pods on the API port 8200, by their SPIFFE identities. The server is reached by no other
+identity: any other pod of the management plane, labelled or not, is refused by the server's proxy with
+`403 RBAC: access denied`, and the refusal is logged with both identities
+([Workload identity](workload-identity.md#mesh-authorization)). The rules are the release's own, so
+it installs under the default deny without a row in the umbrella's allow matrix, and its
+`--wait-for-jobs` proves both pairs on every install and upgrade. An application error is not a mesh
+refusal: the server's own `403 permission denied` to an admitted caller with a wrong token passes
+the mesh and leaves no denial line. The jobs complete under injection: the native sidecar exits with the job's container. The
 mesh-identity proof (`scripts/verify-mesh-identity/verify.sh`) shows `ztd-mgmt/ztd-openbao-0` as a
 matched declared workload in its registration inventory.
 
 Without a mesh (the secrets baseline on kind's own CNI) the label is inert: the pods start without a
-proxy and the release installs the same way.
+proxy, the chart renders no `AuthorizationPolicy` (`mesh.mode` is `none`, its default) and the
+release installs the same way.
 
 ### Bootstrap
 
