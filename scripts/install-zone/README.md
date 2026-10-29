@@ -199,11 +199,13 @@ docker run --rm -v "$PWD:/repo" -w /repo -v "$(command -v helm):/usr/local/bin/h
   sh -c 'apk add --no-cache python3 py3-yaml curl >/dev/null && bash --version | head -1 && bash scripts/install-zone/install.sh render'
 ```
 
-Last run (2026-10-26, `bash:3.2` container, GNU bash 3.2.57(1)-release, repository mounted
+Last run (2026-10-29, `bash:3.2` container, GNU bash 3.2.57(1)-release, repository mounted
 read-only, the chart cache mounted writable): exit 0, all eight releases rendered (`ztd` 38 objects,
-`spire-crds` 3, `spire` 36, `istio-base` 17, `istiod` 17, `istio-cni` 7, `zone-policy` 14,
-`ztd-openbao` 13), no `unbound variable`; `plan` with zone A's file listed the eight steps and no
-placement. An earlier run (2026-10-17) also rendered `ztd-openbao` alone with `render ztd-openbao`,
+`spire-crds` 3, `spire` 36, `istio-base` 17, `istiod` 17, `istio-cni` 7, `zone-policy` 21,
+`ztd-openbao` 15) and the pairs coupling held (5 allow rules for the 5 declared pairs), no
+`unbound variable`. The run before it (2026-10-26) rendered `zone-policy` with 14 objects and
+`ztd-openbao` with 13, before the mesh authorization, and
+`plan` with zone A's file listed the eight steps and no placement. An earlier run (2026-10-17) also rendered `ztd-openbao` alone with `render ztd-openbao`,
 and one before it (2026-10-09) showed a zone copy with
 `mesh.revision: canary` exiting 1 naming the key with nothing rendered; the script before that fix
 stopped there with `want[@]: unbound variable` and still exited 0 having rendered nothing.
