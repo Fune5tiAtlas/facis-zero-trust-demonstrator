@@ -59,7 +59,8 @@ it is what it was before.
   `ztd-openbao` included); the store's bootstrap Secret in state `configured` and the verification
   hook's log (each check, a hash of the fixture value, never a value).
 - **3.** the identity-band checks of `zone-policy` on the install; **4.** the layout of the control
-  planes; **5.** the stand-in pods, with the capture rule's refusal of the three proxyless ones,
+  planes; **5.** the stand-in pods, each that runs a proxy or fetches an SVID in a service account
+  of its own named after the pod, with the capture rule's refusal of the three proxyless ones,
   the per-node SVID stand-ins (`svid-on-<node>` in `spire-system`, one per node with a SPIRE agent,
   unmeshed), the per-node meshed stand-ins (`mesh-on-<node>` in the data plane with their Services and
   their own ServiceAccounts `mesh-on-<node>`),
@@ -72,8 +73,8 @@ it is what it was before.
   and, node by node, the SVID of the per-node stand-in in the zone's trust domain, chained to the
   SPIRE CA),
   `native-sidecar-version`, `mesh-identity-issued-by-spire`, `unregistered-workload-cut-off` (the
-  refusal across nodes), `traffic-through-the-proxies` (with `mesh-on-every-node` and
-  `cross-node-calls`, below), `default-deny-with-chained-cni` (the cross-plane denial across nodes)
+  refusal across nodes), `traffic-through-the-proxies` (with `mesh-on-every-node`,
+  `cross-node-calls` and `stand-in-identities`, below), `default-deny-with-chained-cni` (the cross-plane denial across nodes)
   and
   `control-planes-under-default-deny` (with `metrics-endpoints-answer`: the SPIRE server's 9988 and
   the controller-manager's 8082 answering from the host of the server's node, beside the agents'
@@ -113,7 +114,8 @@ it is what it was before.
   label) on one line; no failure. Then the OpenBao server of the release `ztd-openbao` with the
   outcome of its entry: two checks, the server is a matched declared workload, and no pod of the
   release (server, bootstrap, verification) is a plane pod without an identity; a finished job pod
-  is gone to the reader, its entry one without a certificate in use. Rows of the proof's own pods (service account `stand-in`, or a pod of
+  is gone to the reader, its entry one without a certificate in use. Rows of the proof's own pods (the
+  label `app.kubernetes.io/part-of: verify-mesh-identity` that every fixture carries, or a pod of
   `fixtures/stand-ins.yaml`) are marked `fixture`.
 - **15.** the render guards.
 - **16. Teardown** (kind, a participant cluster without the keep opt-in, or any failed check; 17
@@ -159,6 +161,27 @@ participant cluster alike:
   (reporter `destination`) with `connection_security_policy="mutual_tls"`. With fewer than two
   nodes running a SPIRE agent the check fails, saying that two are needed: the local kind cluster
   has two workers for that reason.
+
+### Every stand-in has an identity of its own
+
+Every stand-in of `fixtures/stand-ins.yaml` that runs a proxy or fetches an SVID runs in a service
+account of its own, named after the pod (`peer`, `caller`, `unregistered`, `unregistered-svid`,
+`pdp-adapter`, `data-plain`, `tsa-policy-engine`, `openbao-standin`, `mgmt-caller`), so its SPIFFE
+ID is `spiffe://<trust domain>/ns/<namespace>/sa/<pod>`. The two `probe` pods hold no identity and
+keep their namespace's default account; the per-node SVID stand-ins share the account `stand-in` in
+`spire-system`, as their check expects one ID. The caller's checks (`svid-over-csi-socket`,
+`mesh-identity-issued-by-spire`, `X-Forwarded-Client-Cert`) expect the caller's own ID,
+`spiffe://<trust domain>/ns/<data plane>/sa/caller`, and the identity the peer saw must equal it.
+
+Under section 10 a third heading, **`stand-in-identities`**, has one check per meshed stand-in
+(`peer`, `caller`, `pdp-adapter`, `data-plain`, `tsa-policy-engine`, `openbao-standin`,
+`mgmt-caller`): its proxy's certificate, read with `istioctl proxy-config secret`, carries its own
+SPIFFE ID and is issued by the SPIRE CA. Two checks follow: the lane `pdp-adapter-to-tsa`'s caller
+`pdp-adapter` and the refused caller `data-plain` carry different IDs, and the management-plane
+stand-ins `tsa-policy-engine`, `openbao-standin` and `mgmt-caller` carry three different ones. A
+missing ID never counts as a different one. The lanes themselves are still enforced by labels
+(`default-deny-with-chained-cni`); these checks show that an identity-based rule could tell the
+stand-ins apart.
 
 The two refused paths run across nodes too: the unregistered workload's call to the peer (section 9)
 and the management-plane caller's call to the peer (section 11) come from a node other than the
@@ -292,7 +315,7 @@ in both cases before the cluster is touched.
 | `native-sidecar-version` | the server is 1.33 or later; the proxy is an init container with `restartPolicy: Always` |
 | `mesh-identity-issued-by-spire` | read with `istioctl proxy-config secret`: the proxy's certificate has `O = SPIRE`, the SPIRE CA as issuer, the SVID's URI SAN; its `ROOTCA` bundle is the SPIRE CA, and istiod's CA did not issue it; a pod that chooses its injection templates, brings its own proxy without the SPIRE socket, or runs Istio's agent under another container name is refused at admission; so is, under the capture rule (`capture-at-injector-defaults`), a pod that excludes an application port from the capture, switches the capture off (`NONE`), moves the status port, overrides its proxy's configuration, opts out of injection, swaps its proxy's image or brings its own `istio-proxy` container, and, under the proxy rule, an `istio-proxy` of another image on the SPIRE socket, a second proxy under another name, and an `istio-proxy` of the injector's image with its own `postStart` hook or `NET_ADMIN` (next to the same pre-set status with nothing added, admitted), and, under the socket rule, an `istio-proxy` that mounts the SPIRE socket volume with a `subPath`, while a pod annotated `prometheus.io/scrape` and `prometheus.io/port` is admitted with the injector's `ISTIO_PROMETHEUS_ANNOTATIONS`, while an ordinary pod is admitted carrying the injector's status-port exclusion and `REDIRECT`, and the istiod and `istio-cni` pods, which opt out of injection, are admitted in `istio-system` (no injection label) and refused in the data plane; a label added to a running pod is admitted (an update is checked for what it changes), an added excluded port refused, the same through the `pods/status` subresource refused, a status update that changes no annotation admitted, and the removal of `sidecar.istio.io/status` from a running injected pod refused; outside the plane namespaces istiod's 15012 is not reachable; a certificate signed with istiod's CA key for the caller's SPIFFE ID is refused by the meshed peer with a TLS alert (up to three tries, each recorded with its HTTP code, none answered: any code other than `000` fails the check, and the alert must be in curl's own error line; under TLS 1.3 the alert races the client's request, which can meet the closed connection first), the caller's SPIRE SVID accepted |
 | `unregistered-workload-cut-off` | an unlabelled pod's proxy has no certificate, its application never starts, and the peer refuses a call from its network namespace, on another node than the peer's, under STRICT; the labelled pod's call succeeds |
-| `traffic-through-the-proxies` | the peer sees the caller's SPIFFE ID in `X-Forwarded-Client-Cert`; both proxies count the request, as mTLS; `mesh-on-every-node`: on every node with a SPIRE agent a meshed stand-in is Ready with a SPIRE-issued proxy certificate, one check per node; `cross-node-calls`: every node's stand-in calls the next node's, and each call crosses nodes, carries the caller's SPIFFE ID to the receiver and is counted as mTLS by both proxies |
+| `traffic-through-the-proxies` | the peer sees the caller's own SPIFFE ID (`sa/caller`) in `X-Forwarded-Client-Cert`; both proxies count the request, as mTLS; `mesh-on-every-node`: on every node with a SPIRE agent a meshed stand-in is Ready with a SPIRE-issued proxy certificate, one check per node; `cross-node-calls`: every node's stand-in calls the next node's, and each call crosses nodes, carries the caller's SPIFFE ID to the receiver and is counted as mTLS by both proxies; `stand-in-identities`: every meshed stand-in's proxy holds a SPIRE-issued certificate for its own service account, and the lane's caller and the refused callers carry different IDs |
 | `default-deny-with-chained-cni` | the Istio plugin is chained after Cilium on every node, `cni-exclusive=false`, and the umbrella's cross-plane denial (from another node than the peer's) and matrix lane hold with the proxies in place |
 | `control-planes-under-default-deny` | `spire-system` and `istio-system` hold only the declared openings; no SPIRE pod has a sidecar; every agent is attested; the proxies are SYNCED; a stand-in pod's TCP probes to the SPIRE server and istiod on every port but istiod's xDS port are denied; the agents' metrics port listens on each node's loopback only and answers there with `spire_agent` samples; `metrics-endpoints-answer`: the SPIRE server's metrics (pod port 9988) answer with `spire_server_` samples and the controller-manager's (8082) with `controller_runtime_` samples, read from the host of the server pod's node through its Cilium agent (read-only `kubectl exec`, no lane, no pod), while the same ports stay denied from both planes |
 | `registration-inventory` | every entry on the SPIRE server, by SPIFFE ID, next to the pod its `k8s:pod-uid` names and the certificate in use read from that pod: matched, or without a certificate in use (recorded); no entry outside a plane namespace and none not created by the registration rule (the `k8s:pod-uid` of a labelled plane pod, the agent of its node as parent, the template's ID); every certificate in use read from the pods (proxies and Workload API clients) has an entry of its own pod, sits in a plane namespace and chains to the SPIRE CA; the plane pods without an identity listed |
