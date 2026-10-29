@@ -162,6 +162,10 @@ participant cluster alike:
   nodes running a SPIRE agent the check fails, saying that two are needed: the local kind cluster
   has two workers for that reason.
 
+The two refused paths run across nodes too: the unregistered workload's call to the peer (section 9)
+and the management-plane caller's call to the peer (section 11) come from a node other than the
+peer's, and each check names both nodes and requires them to differ.
+
 ### Every stand-in has an identity of its own
 
 Every stand-in of `fixtures/stand-ins.yaml` that runs a proxy or fetches an SVID runs in a service
@@ -182,10 +186,6 @@ stand-ins `tsa-policy-engine`, `openbao-standin` and `mgmt-caller` carry three d
 missing ID never counts as a different one. The lanes themselves are still enforced by labels
 (`default-deny-with-chained-cni`); these checks show that an identity-based rule could tell the
 stand-ins apart.
-
-The two refused paths run across nodes too: the unregistered workload's call to the peer (section 9)
-and the management-plane caller's call to the peer (section 11) come from a node other than the
-peer's, and each check names both nodes and requires them to differ.
 
 ## Reading `environment.json`
 
