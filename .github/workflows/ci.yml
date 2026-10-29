@@ -305,6 +305,18 @@ jobs:
       - name: Test the chart check
         run: scripts/ci/check-charts_test.sh
 
+      # No address in a policy (ZT-25): every NetworkPolicy, CiliumNetworkPolicy and
+      # AuthorizationPolicy the umbrella, zone-policy and ztd-openbao render with each shipped zone
+      # file and the CI zone file is free of ipBlock, CIDR rules and address literals; the test
+      # plants an address and the derogation branch (the API lane without Cilium) and expects both
+      # reported. zone-policy and ztd-openbao render through the installer, which fetches nothing for
+      # them but the upstream openbao dependency (from its Chart.lock, checked by digest).
+      - name: Check that no policy names an address
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user pyyaml
+          scripts/ci/check-policy-addresses.sh
+          scripts/ci/check-policy-addresses_test.sh
+
       # A zone is eight releases (scripts/install-zone/install.sh): three project charts linted above
       # (the umbrella, zone-policy and ztd-openbao, the last wrapping the upstream openbao chart from
       # its Chart.lock) and five upstream charts, SPIRE's and Istio's, pinned by version and digest in
@@ -318,6 +330,9 @@ jobs:
       # baseline (ADR 005), and the installer must refuse a revisioned or an ambient zone before it
       # renders anything (it installs the default, unrevisioned istiod in sidecar mode only), and a
       # zone-policy whose proxy image or status port differs from istiod's before it renders anything.
+      # zone-policy is rendered through the installer too, so the pairs coupling (its allow rules
+      # exactly one per allow-matrix row and intra-plane pair) runs, and a copy of the tree that
+      # drops a pair's rule must be refused; the istiod render must define the denial-log provider.
       - name: Render the upstream releases of a zone
         run: |
           python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user pyyaml
@@ -417,6 +432,31 @@ jobs:
             grep -q "proxySocketPolicy.$field" "$copy.err" || { echo "the refusal does not name proxySocketPolicy.$field" >&2; exit 1; }
             [ ! -e "$copy/out/istiod.yaml" ] || { echo "install-zone rendered istiod before refusing the $field mismatch" >&2; exit 1; }
           done
+          # zone-policy renders one allow rule per row of the umbrella's allowMatrix and
+          # intraPlanePairs; a copy of the tree whose pair template drops the last pair, with a zone
+          # file that plants one intra-plane pair, must be refused naming that pair.
+          copy="$RUNNER_TEMP/coupling-pairs"
+          mkdir -p "$copy/scripts" "$copy/deployment/helm"
+          cp -r scripts/install-zone scripts/ci "$copy/scripts/"
+          cp -r deployment/helm/values deployment/helm/zone-policy deployment/helm/ztd "$copy/deployment/helm/"
+          sed -i 's/{{- range .Values.pairs }}/{{- range (initial .Values.pairs) }}/' \
+            "$copy/deployment/helm/zone-policy/templates/authorizationpolicy-pairs.yaml"
+          python3 - deployment/helm/ztd/ci/values.yaml "$copy/zone.yaml" <<'PY'
+          import sys, yaml
+          zone = yaml.safe_load(open(sys.argv[1]))
+          zone["intraPlanePairs"] = [{"name": "planted",
+              "from": {"plane": "data", "podSelector": {"app.kubernetes.io/name": "caller"}, "serviceAccount": "caller"},
+              "to": {"plane": "data", "podSelector": {"app.kubernetes.io/name": "peer"}}}]
+          yaml.safe_dump(zone, open(sys.argv[2], "w"), sort_keys=False)
+          PY
+          ZONE_VALUES="$copy/zone.yaml" RENDER_DIR="$RUNNER_TEMP/render-planted" scripts/install-zone/install.sh render zone-policy \
+            | grep 'pairs coupling: 6 allow rules' || { echo "install-zone did not render the planted pair" >&2; exit 1; }
+          if ZONE_VALUES="$copy/zone.yaml" RENDER_DIR="$copy/out" "$copy/scripts/install-zone/install.sh" render zone-policy 2>"$copy.err"; then
+            echo "install-zone rendered a zone-policy without the rule of a declared pair" >&2; exit 1
+          fi
+          cat "$copy.err"
+          grep -q 'intraPlanePairs row planted: no AuthorizationPolicy allow-planted' "$copy.err" \
+            || { echo "the refusal does not name the missing pair" >&2; exit 1; }
 
       # The upstream-state checker against local stand-ins that answer 404, 500 and the wrong
       # document: an error page must count as unreachable, never as the document. Its record goes
