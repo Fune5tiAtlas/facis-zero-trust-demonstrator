@@ -14,7 +14,7 @@ on failure), each waiting on the previous:
 | 5 | `istiod` | `istio-system` | `istiod` 1.31.1 | `deployment/helm/values/istiod.yaml` + zone facts |
 | 6 | `istio-cni` | `istio-system` | `cni` 1.31.1 | `deployment/helm/values/istio-cni.yaml` |
 | 7 | `zone-policy` | `istio-system` | `deployment/helm/zone-policy` | chart defaults + zone facts (the trust domain, the plane namespaces and the pairs of the umbrella's `allowMatrix` and `intraPlanePairs`); also waits for its Jobs |
-| 8 | `ztd-openbao` | the management namespace (`ztd-mgmt`) | `deployment/helm/ztd-openbao`, its `openbao` 0.28.3 dependency built from `Chart.lock` | chart defaults + zone facts; also waits for its Jobs |
+| 8 | `ztd-openbao` | the management namespace (`ztd-mgmt`) | `deployment/helm/ztd-openbao`, its `openbao` 0.28.3 dependency built from `Chart.lock` | chart defaults + zone facts; also waits for its Jobs, which reach the server through the release's own allow rules |
 
 The umbrella creates every namespace the later releases install into; the lifecycle step never
 creates one. `ztd-openbao` comes last so that its server and its jobs are created after istiod and
@@ -141,6 +141,7 @@ by the zone file:
 | `ztd-openbao` | `managementNamespace`, `openbao.global.namespace` (and its release namespace) | `planes.management.namespace` |
 | `ztd-openbao` | `openbao.server.dataStorage.storageClass` | `zone.storageClass` |
 | `ztd-openbao` | `cilium.enabled` | `cni.cilium.enabled` |
+| `ztd-openbao` | `trustDomain`, `mesh.mode` | `zone.trustDomain`, `mesh.mode` (its own pairs' rules render only under a mesh) |
 
 A release whose zone fact is missing does not render, and the message names the fact and the
 release. Every fact is written into the release's generated values file, never passed with

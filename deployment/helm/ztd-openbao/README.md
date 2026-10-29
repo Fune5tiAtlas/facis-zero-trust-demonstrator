@@ -33,6 +33,17 @@ The chart wraps the upstream `openbao` chart 0.28.3 (OpenBao v2.5.4), a dependen
   server reads the fixture value (a hash, never the value) and round-trips the fixture transit key;
 - **the identity label** `spiffe.io/spire-managed-identity: "true"` on the server pods
   (`openbao.server.extraLabels`) and on both jobs' pods;
+- **its own pairs at the mesh layer**: the `zone-policy` release denies every mesh request by
+  default, so under a mesh (`mesh.mode` not `none`) the release renders two `AuthorizationPolicy`
+  resources in the management namespace, `allow-ztd-openbao-bootstrap-to-server` and
+  `allow-ztd-verify-openbao-to-server`, which select the server pods (`app.kubernetes.io/name:
+  openbao`, this release's instance, `component: server`) and admit
+  `<trustDomain>/ns/<management namespace>/sa/ztd-openbao-bootstrap` and
+  `…/sa/ztd-verify-openbao` on the API port 8200 only. No other identity reaches the server, and
+  the release needs no rule written elsewhere to install under the default deny (its
+  `--wait-for-jobs` waits for both jobs). Without a mesh (the chart's default `mesh.mode: none`,
+  the secrets baseline on kind's own CNI) nothing is rendered: there is no `AuthorizationPolicy`
+  CRD there. Nor with an external OpenBao, which is not in the zone's mesh;
 - **no node placement**: no pod of the release carries a node affinity or a node selector (below).
 
 Install it with `--wait --wait-for-jobs` into the management namespace the umbrella created. The
@@ -57,6 +68,8 @@ helm upgrade --install ztd-openbao deployment/helm/ztd-openbao -n ztd-mgmt \
 |---|---|---|
 | `managementNamespace` | `ztd-mgmt` | The management-plane namespace (zone fact `planes.management.namespace`); the bootstrap and the hook go there |
 | `cilium.enabled` | `true` | Open the bootstrap Job's API lane with a `CiliumNetworkPolicy` (zone fact `cni.cilium.enabled`); without Cilium the umbrella's `networkPolicy.kubeApi` lane must be open |
+| `mesh.mode` | `none` | The zone's mesh mode (zone fact `mesh.mode`); with any mode but `none` and the bundled server the release renders the allow rules of its own pairs |
+| `trustDomain` | `""` | The zone's trust domain (zone fact `zone.trustDomain`), the first segment of the principals its own pairs admit; required when `mesh.mode` is not `none` |
 | `openbao.global.enabled` | `false` | Every upstream piece off unless turned on by name, so external mode renders nothing upstream |
 | `openbao.global.namespace` | `ztd-mgmt` | Zone fact `planes.management.namespace`; must equal `managementNamespace`, the chart refuses to render otherwise |
 | `openbao.server.enabled` | `true` | The bundled server; `false` to verify an external OpenBao. Exclusive with `external.address` |

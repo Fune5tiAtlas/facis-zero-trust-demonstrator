@@ -7,7 +7,7 @@ description: >-
   first start. Wraps the upstream openbao chart with the bootstrap Job, the verification hook and
   the external mode.
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "2.5.4"
 keywords:
   - facis

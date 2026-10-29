@@ -98,7 +98,7 @@ STEPS=(
   "istiod|istio-system|istiod|$VALUES_DIR/istiod.yaml|meshConfig.trustDomain=zone.trustDomain|"
   "istio-cni|istio-system|istio-cni|$VALUES_DIR/istio-cni.yaml||"
   "zone-policy|istio-system|zone-policy||trustDomain=zone.trustDomain,planes.management.namespace=planes.management.namespace,planes.data.namespace=planes.data.namespace,pairs=allowMatrix+intraPlanePairs|wait-for-jobs"
-  "ztd-openbao|=planes.management.namespace|ztd-openbao||managementNamespace=planes.management.namespace,openbao.global.namespace=planes.management.namespace,openbao.server.dataStorage.storageClass=zone.storageClass,cilium.enabled=cni.cilium.enabled|wait-for-jobs"
+  "ztd-openbao|=planes.management.namespace|ztd-openbao||managementNamespace=planes.management.namespace,openbao.global.namespace=planes.management.namespace,openbao.server.dataStorage.storageClass=zone.storageClass,cilium.enabled=cni.cilium.enabled,trustDomain=zone.trustDomain,mesh.mode=mesh.mode|wait-for-jobs"
 )
 # A namespace written "=<zone key>" is that zone fact (the management namespace of ztd-openbao).
 
