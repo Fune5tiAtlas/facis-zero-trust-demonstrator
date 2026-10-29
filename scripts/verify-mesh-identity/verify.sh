@@ -11,7 +11,10 @@
 # unregistered workload cut off, traffic through the proxies, a SPIFFE ID of its own for every meshed
 # stand-in (one service account per stand-in, so a lane's pair and the callers refused on it differ
 # by identity), the default deny intact with the
-# chained CNI and both control planes inside it, the native-sidecar version rule, the identity-band
+# chained CNI and both control planes inside it, the mesh layer's default deny (a registered caller
+# without a pair, and an impostor with a lane's labels but its own identity, refused by the
+# destination's proxy and logged there with both SPIFFE IDs; the proof's own pairs in
+# fixtures/mesh-pairs.yaml), the native-sidecar version rule, the identity-band
 # checks, the registration inventory (every entry on the SPIRE server against the certificates in use
 # in the plane namespaces, by SPIFFE ID, both ways), the cluster's CNI left as found, and a teardown that leaves nothing behind (or, on a
 # participant cluster with the keep opt-in and every check passed, the record of what stays).
@@ -209,13 +212,16 @@ keep_zone=0; kept=0; written=0; cleaned=0; installed=0
 # interrupted before section 6 included), and the ServiceAccount of that fixture with them. So do the
 # per-node meshed stand-ins of fixtures/mesh-on-node.yaml, their Services and ServiceAccounts, by their label.
 # The stand-ins of fixtures/stand-ins.yaml go with their Services and their own ServiceAccounts, one per
-# stand-in that runs a proxy or fetches an SVID, all listed in that file.
+# stand-in that runs a proxy or fetches an SVID, all listed in that file. The proof's own pairs of
+# fixtures/mesh-pairs.yaml go by their label.
 delete_stand_ins() {
   sed -e "s/__DATA__/$DATA/g" -e "s/__MGMT__/$MGMT/g" fixtures/stand-ins.yaml \
     | kubectl --context "$CONTEXT" delete -f - --ignore-not-found --wait=true >/dev/null 2>&1
   kubectl --context "$CONTEXT" -n "$DATA" delete pod,service,serviceaccount -l app.kubernetes.io/name=mesh-on-node --ignore-not-found --wait=true >/dev/null 2>&1
   kubectl --context "$CONTEXT" -n "$SPIRE_NS" delete pod -l app.kubernetes.io/name=svid-on-node --ignore-not-found --wait=true >/dev/null 2>&1
   kubectl --context "$CONTEXT" -n "$SPIRE_NS" delete serviceaccount stand-in --ignore-not-found >/dev/null 2>&1
+  # The proof's own pairs (fixtures/mesh-pairs.yaml), by their label; nothing to remove without the CRD.
+  kubectl --context "$CONTEXT" -n "$DATA" delete authorizationpolicy -l app.kubernetes.io/name=verify-mesh-pairs --ignore-not-found >/dev/null 2>&1
 }
 # shellcheck disable=SC2317  # called from the EXIT trap only
 provider_cleanup() {
@@ -317,6 +323,16 @@ tcp() {
   case $rc in 7|28) echo "denied($rc)";; 1|6|126|127) echo "error($rc)";; *) echo connected;; esac
 }
 fingerprint() { openssl x509 -noout -fingerprint -sha256 -in "$1" | cut -d= -f2; }
+# denial_lines <ns> <pod>: the denial-log lines the pod's proxy has written so far (the access-log
+# provider denial-log of the istiod release, enabled for refused requests and connections by
+# zone-policy's Telemetry mesh-default), one compact JSON object per line; the proxy's own log lines
+# are not JSON objects with these keys and are dropped
+denial_lines() {
+  k -n "$1" logs "$2" -c istio-proxy 2>/dev/null | jq -cR 'fromjson? | select(type == "object" and has("source") and has("destination") and has("detail"))' 2>/dev/null
+}
+# new_denials <before-file> <ns> <pod>: the denial lines written since <before-file> was taken with
+# denial_lines (Envoy flushes its file log about once a second, so the caller waits a few seconds)
+new_denials() { denial_lines "$2" "$3" | tail -n +"$(( $(grep -c . "$1") + 1 ))"; }
 # metric <ns> <pod> <reporter>: istio_requests_total of the proxy for one reporter, summed
 metric() {
   k -n "$1" exec "$2" -c istio-proxy -- pilot-agent request GET stats/prometheus 2>/dev/null \
@@ -513,6 +529,7 @@ fi
 say "Cluster context \`$CONTEXT\`, zone file \`${ZONE_VALUES#"$REPO"/}\` (trust domain \`$TD\`), installed with \`scripts/install-zone/install.sh\`: the eight releases \`ztd\`, \`spire-crds\`, \`spire\`, \`istio-base\`, \`istiod\`, \`istio-cni\`, \`zone-policy\`, \`ztd-openbao\`. Commit \`$commit\`, tree dirty: $dirty. Versions in \`environment.json\`." ''
 say "Placement: no pin. No pod the proof creates is held to istiod's node. Three placements are made on purpose: the per-node stand-ins one per node with a SPIRE agent (\`svid-on-<node>\` in \`$SPIRE_NS\`, section 6; the meshed \`mesh-on-<node>\` in \`$DATA\`, section 10), and the callers of the two cross-node refusals (\`mgmt-caller\`, \`unregistered\`) on a node other than the peer's, preferring one that is not istiod's either (section 5); the scheduler places every other pod. No release of the zone is held to a node: no pod of \`ztd-openbao\` carries a node affinity or a node selector (section 5)." ''
 say 'Probe results: an HTTP code with the first line of the body when the call went through its proxies; `denied(28)` when a raw TCP connection timed out because the policy dropped the packets; `denied(56)` when the peer reset the connection; `error(<exit>)`, which fails a negative check, for any other failure (a name that does not resolve, an exec that failed).' ''
+say 'Every refusal names the layer that refused it. **Network layer**: `denied(28)` or `denied(56)`, the connection never reached a proxy (the default-deny NetworkPolicy or Cilium dropped or reset it), so no proxy logs it. **Mesh layer**: `403 RBAC: access denied`, the connection reached the destination proxy, which refused the caller'"'"'s identity under the mesh default deny of `zone-policy` and wrote one denial line with both SPIFFE IDs to its log (`kubectl logs <pod> -c istio-proxy`). **Handshake**: a caller without a SPIRE certificate is refused during the mutual TLS handshake (STRICT), before any identity is known, so no denial line names it.' ''
 
 # --------------------------------------------------------------------------------------------
 section "0. Preconditions"
@@ -608,6 +625,9 @@ section "2. install-order-idempotent: the zone from an empty cluster, twice"
 start=$(date +%s)
 "$INSTALL" install >"$work/install1.log" 2>&1; rc=$?
 check $rc "first installer run from an empty cluster returns 0, no manual step between the releases" "$(( $(date +%s) - start ))s"
+coupling=$(grep -m1 '^pairs coupling:' "$work/install1.log")
+grep -q '^pairs coupling: [0-9][0-9]* allow rules of zone-policy match the [0-9][0-9]* declared pairs' <<<"$coupling"
+check $? "the installer's pairs coupling held before anything was installed: zone-policy renders exactly one allow rule by identity per allow-matrix row and intra-plane pair of the umbrella" "${coupling:-no verdict in the log of the installer}"
 code "$(grep -E '^(  [0-9]/8|step|zone installed)' "$work/install1.log")"
 [ $rc -ne 0 ] && code "$(tail -30 "$work/install1.log")"
 for r in $RELEASES; do h get manifest "${r%%:*}" -n "${r#*:}" >"$work/manifest-1-${r%%:*}.yaml" 2>/dev/null; done
@@ -630,7 +650,13 @@ bao_state=$(k -n "$MGMT" get secret ztd-openbao-bootstrap -o jsonpath='{.data.st
 bao_log=$(k -n "$MGMT" logs job/ztd-verify-openbao -c verify 2>&1)
 grep -qx 'OpenBao verified' <<<"$bao_log"; check $? "ztd-openbao: the verification hook passed after the second run (initialised and unsealed, kv-v2 at secret/, transit at transit/, the fixture value read and the transit key round-tripped)" "$(tail -1 <<<"$bao_log")"
 code "$bao_log"
-code "$(k -n "$MGMT" get pods -o wide | sed 's/  */ /g')"
+# The eighth release under the mesh default deny: zone-policy (step 7) put the deny in place before it,
+# and the store's own pairs are what admit its jobs, so the step returning 0 (--wait-for-jobs) is the
+# proof that both of its pairs are served.
+aps=$(k get authorizationpolicy -A -o json 2>/dev/null | jq -r '.items[] | "\(.metadata.namespace)/\(.metadata.name)"' | sort)
+grep -qx "$ISTIO_NS/default-deny" <<<"$aps" && grep -qx "$MGMT/allow-ztd-openbao-bootstrap-to-server" <<<"$aps" && grep -qx "$MGMT/allow-ztd-verify-openbao-to-server" <<<"$aps" \
+  && grep -q '^step 8/8: ztd-openbao deployed' "$work/install1.log" && grep -q '^step 8/8: ztd-openbao deployed' "$work/install2.log"
+check $? "ztd-openbao installs under the mesh default deny: its --wait-for-jobs succeeded in both runs with $ISTIO_NS/default-deny in place, its bootstrap Job and verification hook admitted to the server by the release's own pairs" "$(paste -sd' ' <<<"${aps:-no AuthorizationPolicy}")"
 images_spire=$(k -n "$SPIRE_NS" get pods -o jsonpath='{.items[*].spec.containers[*].image} {.items[*].spec.initContainers[*].image}' | tr ' ' '\n' | grep . | sort -u | paste -sd, -)
 images_istio=$(k -n "$ISTIO_NS" get pods -o jsonpath='{.items[*].spec.containers[*].image} {.items[*].spec.initContainers[*].image}' | tr ' ' '\n' | grep . | sort -u | paste -sd, -)
 unpinned=$(tr ',' '\n' <<<"$images_spire,$images_istio" | grep -v '@sha256:[0-9a-f]\{64\}$' || true)
@@ -679,7 +705,7 @@ mesh_td=$(k -n "$ISTIO_NS" get cm istio -o jsonpath='{.data.mesh}' | awk '/^trus
 
 # --------------------------------------------------------------------------------------------
 section "5. Stand-in pods"
-say 'From `scripts/verify-mesh-identity/fixtures/stand-ins.yaml`: in the data plane a meshed peer, a labelled caller with a Workload API client on the CSI socket, an unlabelled meshed pod, an unlabelled pod without proxy with a Workload API client, the matrix pair `pdp-adapter` and the cross-plane caller `data-plain`; in the management plane `tsa-policy-engine`, `openbao-standin` (a management-plane destination without a lane in the allow matrix, named apart from the real store, the release `ztd-openbao`) and `mgmt-caller`; in both a proxy-less `probe` for raw TCP probes. Each stand-in that runs a proxy or fetches an SVID runs in a service account of its own, named after the pod (`peer`, `caller`, `unregistered`, `unregistered-svid`, `pdp-adapter`, `data-plain`, `tsa-policy-engine`, `openbao-standin`, `mgmt-caller`), so its SPIFFE ID is `spiffe://<trust domain>/ns/<namespace>/sa/<pod>` and no two share one; the two `probe` pods hold no identity and run in the default account of their namespace. Every object of the file carries the label `app.kubernetes.io/part-of: verify-mesh-identity`.' ''
+say 'From `scripts/verify-mesh-identity/fixtures/stand-ins.yaml`: in the data plane a meshed peer, a labelled caller with a Workload API client on the CSI socket, an unlabelled meshed pod, an unlabelled pod without proxy with a Workload API client, the matrix pair `pdp-adapter` and the cross-plane caller `data-plain`; in the management plane `tsa-policy-engine`, `openbao-standin` (a management-plane destination without a lane in the allow matrix, named apart from the real store, the release `ztd-openbao`) and `mgmt-caller`; in both a proxy-less `probe` for raw TCP probes; in the data plane also `pdp-impostor` (the labels of `pdp-adapter`, an account of its own) and `unpaired` (a registered neighbour of the peer without a pair), the callers the mesh layer refuses. Each stand-in that runs a proxy or fetches an SVID runs in a service account of its own, named after the pod (`peer`, `caller`, `unregistered`, `unregistered-svid`, `pdp-adapter`, `data-plain`, `tsa-policy-engine`, `openbao-standin`, `mgmt-caller`, `pdp-impostor`, `unpaired`), so its SPIFFE ID is `spiffe://<trust domain>/ns/<namespace>/sa/<pod>` and no two share one; the two `probe` pods hold no identity and run in the default account of their namespace. Every object of the file carries the label `app.kubernetes.io/part-of: verify-mesh-identity`.' ''
 sed -e "s/__DATA__/$DATA/g" -e "s/__MGMT__/$MGMT/g" fixtures/stand-ins.yaml >"$work/stand-ins.yaml"
 # The release ztd-openbao is held to no node, on every cluster: no pod of it (the server, the
 # bootstrap Job's, the verification Job's) carries a node affinity or a node selector, and the
@@ -718,6 +744,29 @@ for NODE in $SVID_NODES; do
 done
 say "In \`$SPIRE_NS\`, from \`scripts/verify-mesh-identity/fixtures/svid-on-node.yaml\`: one unmeshed stand-in per node with a SPIRE agent ($(paste -sd, - <<<"$SVID_NODES" | sed 's/,/, /g')), \`svid-on-<node>\`, each placed on its node by a required node affinity (section 6)." ''
 say "In \`$DATA\`, from \`scripts/verify-mesh-identity/fixtures/mesh-on-node.yaml\`: one meshed stand-in per node with a SPIRE agent, \`mesh-on-<node>\` with its Service and its own service account \`mesh-on-<node>\` (so each node's stand-in has its own SPIFFE ID), the identity label, each placed on its node by a required node affinity; each serves HTTP and calls the next node's (section 10)." ''
+# The proof's own pairs (fixtures/mesh-pairs.yaml), applied before any stand-in exists or is called:
+# caller -> peer, and each node's mesh-on-<node> to the next node's in the ring of section 10 (nodes in
+# name order). The matrix lane pdp-adapter -> tsa-policy-engine is the zone's own rule (zone-policy).
+python3 - fixtures/mesh-pairs.yaml "$work/mesh-pairs.yaml" "$DATA" "$TD" $SVID_NODES <<'PY'
+import sys, yaml
+src, out, data, td, nodes = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5:]
+text = open(src).read().replace("__DATA__", data).replace("__TD__", td)
+docs, ring = [], []
+for d in yaml.safe_load_all(text):
+    if not d:
+        continue
+    if "__TO__" in yaml.safe_dump(d):
+        ring.append(yaml.safe_dump(d))
+    else:
+        docs.append(d)
+for i, node in enumerate(nodes):
+    nxt = nodes[(i + 1) % len(nodes)]
+    for t in ring:
+        docs.append(yaml.safe_load(t.replace("__FROM__", node).replace("__TO__", nxt)))
+yaml.safe_dump_all(docs, open(out, "w"), sort_keys=False)
+PY
+k apply -f "$work/mesh-pairs.yaml" >/dev/null 2>"$work/mesh-pairs.err"; rc=$?
+check $rc "the proof's own pairs (fixtures/mesh-pairs.yaml) are applied before any stand-in is called: caller -> peer and each mesh-on-<node> to the next node's" "$(if [ $rc -eq 0 ]; then k -n "$DATA" get authorizationpolicy -l app.kubernetes.io/name=verify-mesh-pairs -o name | sed 's#.*/##' | paste -sd' ' -; else head -1 "$work/mesh-pairs.err"; fi)"
 k apply -f "$work/stand-ins-meshed.yaml" "${svid_files[@]}" "${mesh_files[@]}" >/dev/null
 # The callers of the cross-node refusals: once the peer is scheduled, mgmt-caller and unregistered are
 # placed by a required node affinity on a node with a SPIRE agent other than the peer's, preferring one
@@ -777,7 +826,7 @@ fi
 check $rc_create "with the capture validation (index ${idx:-none}) lifted, the three proxy-less stand-ins are created"
 diff <(jq -S .spec "$work/policy.json") <(k get validatingadmissionpolicy "$POLICY" -o json | jq -S .spec) >/dev/null && [ "$held" -ge 5 ]
 check $? "the policy is put back unchanged (its spec equals the one read before the lift) and refuses the three again, five times in a row a second apart (each API server replica takes up the change on its own)" "$(k get validatingadmissionpolicy "$POLICY" -o json | jq '.spec.validations | length') validations in force; refusals held $held of 5 in a row"
-k -n "$DATA" wait --for=condition=Ready pod/peer pod/caller pod/unregistered-svid pod/probe pod/pdp-adapter pod/data-plain --timeout=240s >/dev/null 2>&1; check $? "the labelled data-plane stand-ins are Ready"
+k -n "$DATA" wait --for=condition=Ready pod/peer pod/caller pod/unregistered-svid pod/probe pod/pdp-adapter pod/data-plain pod/pdp-impostor pod/unpaired --timeout=240s >/dev/null 2>&1; check $? "the labelled data-plane stand-ins are Ready"
 k -n "$MGMT" wait --for=condition=Ready pod/tsa-policy-engine pod/openbao-standin pod/mgmt-caller pod/probe --timeout=240s >/dev/null 2>&1; check $? "the management-plane stand-ins are Ready"
 # The per-node stand-ins are counted in section 6, node by node.
 [ ${#svid_pods[@]} -gt 0 ] && k -n "$SPIRE_NS" wait --for=condition=Ready "${svid_pods[@]}" --timeout=240s >/dev/null 2>&1
@@ -1088,10 +1137,14 @@ log=$(k -n "$DATA" logs unregistered -c istio-proxy --tail=200 2>/dev/null | gre
 [ -n "$log" ]; check $? "the SPIRE agent refuses its proxy over SDS" "$log"
 appstate=$(k -n "$DATA" get pod unregistered -o jsonpath='{.status.containerStatuses[?(@.name=="app")].state}')
 grep -q waiting <<<"$appstate"; check $? "its application container never starts: the native sidecar holds it until the proxy has a certificate" "$appstate"
+denial_lines "$DATA" peer >"$work/peer-denials-9"
 r=$(http "$DATA" unregistered istio-proxy "http://peer.$DATA.svc:8080/hostname")
 from=$(node_of "$DATA" unregistered); to=$(node_of "$DATA" peer)
 case $r in denied*) [ -n "$from" ] && [ -n "$to" ] && [ "$from" != "$to" ];; *) false;; esac
-check $? "a call from its network namespace, on another node than the peer's, to the meshed peer is refused: the peer accepts mTLS only (STRICT)" "unregistered on ${from:-no node} → peer on ${to:-no node}: $r"
+check $? "a call from its network namespace, on another node than the peer's, to the meshed peer is refused in the handshake: the peer accepts mTLS only (STRICT)" "unregistered on ${from:-no node} → peer on ${to:-no node}: $r"
+sleep 3
+hs=$(new_denials "$work/peer-denials-9" "$DATA" peer | jq -r 'select((.source // "") | contains("/sa/unregistered")) | .source')
+[ -z "$hs" ]; check $? "the handshake refusal is the handshake's, not the authorization layer's: the caller presented no identity, so the peer's proxy wrote no denial line naming it" "denial lines naming unregistered: ${hs:-none}"
 r=$(http "$DATA" caller app "http://peer.$DATA.svc:8080/hostname")
 [ "${r%% *}" = 200 ]; check $? "the labelled pod's call to the same peer succeeds" "→ $r"
 
@@ -1145,7 +1198,7 @@ say '' '### stand-in-identities' ''
 say "Each meshed stand-in of \`fixtures/stand-ins.yaml\` runs in a service account of its own, named after the pod, so that the stand-ins of a lane of the allow matrix and those refused on it are told apart by identity, not only by label. One check per stand-in: the workload certificate its proxy holds, read with \`istioctl proxy-config secret\` and checked as in \`mesh-identity-issued-by-spire\` (section 8), carries \`spiffe://$TD/ns/<namespace>/sa/<pod>\` and is issued by the SPIRE CA. Then the lane \`pdp-adapter-to-tsa\`: its caller \`pdp-adapter\` and the refused caller \`data-plain\` carry different SPIFFE IDs, and so do the management-plane stand-ins \`tsa-policy-engine\` (the lane's receiver), \`openbao-standin\` (a destination without a lane) and \`mgmt-caller\` (refused toward the data plane), one from another. An ID that is missing counts as no ID, never as a different one." ''
 # The SPIFFE ID read from each stand-in's proxy certificate, by <namespace>/<pod>
 declare -A standin_id=()
-for sp in "$DATA/peer" "$DATA/caller" "$DATA/pdp-adapter" "$DATA/data-plain" "$MGMT/tsa-policy-engine" "$MGMT/openbao-standin" "$MGMT/mgmt-caller"; do
+for sp in "$DATA/peer" "$DATA/caller" "$DATA/pdp-adapter" "$DATA/data-plain" "$DATA/pdp-impostor" "$DATA/unpaired" "$MGMT/tsa-policy-engine" "$MGMT/openbao-standin" "$MGMT/mgmt-caller"; do
   ns=${sp%%/*}; pod=${sp#*/}; want="spiffe://$TD/ns/$ns/sa/$pod"
   proxy_leaf "$ns" "$pod" "standin-$ns-$pod" >/dev/null
   uri=$(cert_uri "$work/standin-$ns-$pod-leaf.pem")
@@ -1154,9 +1207,9 @@ for sp in "$DATA/peer" "$DATA/caller" "$DATA/pdp-adapter" "$DATA/data-plain" "$M
   [ "$uri" = "$want" ] && issued_by_spire "$work/standin-$ns-$pod-leaf.pem"
   check $? "$pod ($ns): its proxy's certificate carries its own SPIFFE ID $want, from its own service account, and is issued by the SPIRE CA" "${uri:-no certificate}, ${iss:-no issuer}"
 done
-id_pdp=${standin_id[$DATA/pdp-adapter]}; id_plain=${standin_id[$DATA/data-plain]}
-[ -n "$id_pdp" ] && [ -n "$id_plain" ] && [ "$id_pdp" != "$id_plain" ]
-check $? "lane pdp-adapter-to-tsa: the lane's caller pdp-adapter and the refused caller data-plain carry different SPIFFE IDs" "pdp-adapter ${id_pdp:-no ID}, data-plain ${id_plain:-no ID}"
+id_pdp=${standin_id[$DATA/pdp-adapter]}; id_plain=${standin_id[$DATA/data-plain]}; id_imp=${standin_id[$DATA/pdp-impostor]}
+[ -n "$id_pdp" ] && [ -n "$id_plain" ] && [ -n "$id_imp" ] && [ "$id_pdp" != "$id_plain" ] && [ "$id_pdp" != "$id_imp" ] && [ "$id_plain" != "$id_imp" ]
+check $? "lane pdp-adapter-to-tsa: the lane's caller pdp-adapter, the refused caller data-plain and the impostor pdp-impostor (the lane's pod labels) carry three different SPIFFE IDs" "pdp-adapter ${id_pdp:-no ID}, data-plain ${id_plain:-no ID}, pdp-impostor ${id_imp:-no ID}"
 mgmt_ids=("${standin_id[$MGMT/tsa-policy-engine]}" "${standin_id[$MGMT/openbao-standin]}" "${standin_id[$MGMT/mgmt-caller]}")
 n_set=0; for i in "${mgmt_ids[@]}"; do [ -n "$i" ] && n_set=$((n_set+1)); done
 [ "$n_set" = 3 ] && [ "$(printf '%s\n' "${mgmt_ids[@]}" | sort -u | wc -l)" = 3 ]
@@ -1173,19 +1226,60 @@ for P in $(k -n "$ISTIO_NS" get pod -l k8s-app=istio-cni-node -o jsonpath='{.ite
 done
 [ "$excl" = false ]; check $? "Cilium still runs with cni-exclusive=false" "cni-exclusive=$excl"
 r=$(http "$DATA" data-plain app "http://openbao-standin.$MGMT.svc:8080/hostname")
-case $r in denied*) true;; *) false;; esac; check $? "data-plane pod → openbao-standin (management): DENIED at the network layer with the proxies in place" "→ $r"
+case $r in denied*) true;; *) false;; esac; check $? "data-plane pod → openbao-standin (management): DENIED at the network layer (no lane: the connection never reached a proxy) with the proxies in place" "→ $r"
+denial_lines "$MGMT" tsa-policy-engine >"$work/tsa-denials-plain"
 r=$(http "$DATA" data-plain app "http://tsa-policy-engine.$MGMT.svc:8080/hostname")
-case $r in denied*) true;; *) false;; esac; check $? "data-plane pod → tsa-policy-engine (management): DENIED" "→ $r"
+case $r in denied*) true;; *) false;; esac; check $? "data-plane pod → tsa-policy-engine (management): DENIED at the network layer (no lane for data-plain)" "→ $r"
+sleep 3
+plain=$(new_denials "$work/tsa-denials-plain" "$MGMT" tsa-policy-engine | jq -r 'select((.source // "") | endswith("/sa/data-plain")) | .source')
+[ -z "$plain" ]; check $? "data-plain → tsa-policy-engine is a network-layer denial without a mesh log: tsa-policy-engine's proxy wrote no denial line naming data-plain (the connection never reached it)" "denial lines naming data-plain: ${plain:-none}"
 r=$(http "$DATA" pdp-adapter app "http://tsa-policy-engine.$MGMT.svc:8080/hostname")
-[ "${r%% *}" = 200 ]; check $? "pdp-adapter → tsa-policy-engine: ALLOWED (matrix lane pdp-adapter-to-tsa), through the proxies" "→ $r"
+[ "${r%% *}" = 200 ]; check $? "pdp-adapter → tsa-policy-engine: ALLOWED at both layers (matrix lane pdp-adapter-to-tsa: its NetworkPolicy pair and its mesh rule allow-pdp-adapter-to-tsa admitting pdp-adapter's SPIFFE ID), through the proxies" "→ $r"
 r=$(http "$DATA" pdp-adapter app "http://openbao-standin.$MGMT.svc:8080/hostname")
-case $r in denied*) true;; *) false;; esac; check $? "pdp-adapter → openbao-standin: DENIED (a lane is one pair, not a licence)" "→ $r"
+case $r in denied*) true;; *) false;; esac; check $? "pdp-adapter → openbao-standin: DENIED at the network layer (a lane is one pair, not a licence)" "→ $r"
 r=$(http "$MGMT" mgmt-caller app "http://peer.$DATA.svc:8080/hostname")
 from=$(node_of "$MGMT" mgmt-caller); to=$(node_of "$DATA" peer)
 case $r in denied*) [ -n "$from" ] && [ -n "$to" ] && [ "$from" != "$to" ];; *) false;; esac
-check $? "management pod → data plane, from another node than the peer's: DENIED (the default deny is both directions, across nodes)" "mgmt-caller on ${from:-no node} → peer on ${to:-no node}: $r"
+check $? "management pod → data plane, from another node than the peer's: DENIED at the network layer (the default deny is both directions, across nodes)" "mgmt-caller on ${from:-no node} → peer on ${to:-no node}: $r"
 r=$(k -n "$DATA" exec probe -c app -- nslookup "openbao-standin.$MGMT.svc.cluster.local" 2>&1 | grep -A1 '^Name:' | tr '\n' ' ')
 [ -n "$r" ]; check $? "DNS bypass: names still resolve" "$r"
+say '' '### mesh-default-deny' ''
+say "The mesh layer's own refusals, where the network layer lets the connection through. \`zone-policy\` renders an empty ALLOW policy \`default-deny\` in \`$ISTIO_NS\`, so every meshed workload refuses what no pair admits; the pairs are allow rules by SPIFFE identity (the matrix lane's \`allow-pdp-adapter-to-tsa\`, the proof's own \`proof-caller-to-peer\`). Two registered callers are refused: \`pdp-impostor\`, which carries the lane's pod labels (so the lane's NetworkPolicy admits it) under an account of its own, toward the lane's destination; and \`unpaired\`, a neighbour of \`peer\` in \`$DATA\` without a pair (the network layer is open inside a plane namespace). Each refusal is \`403 RBAC: access denied\` from the destination's proxy and one JSON line in that proxy's log (\`kubectl logs <pod> -c istio-proxy\`) with the caller's SPIFFE ID (\`source\`), the destination's (\`destination\`) and the decision (\`detail\` \`rbac_access_denied_matched_policy[none]\`). A served request, and a request the application refuses itself with its own 403, leave no line: the log's filter is the authorization decision, not the status code." ''
+code "$(k get authorizationpolicy -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,ACTION:.spec.action --no-headers 2>&1 | sed 's/  */ /g')"
+# denial_for <file of new lines> <source account> <destination namespace> <destination account>: the
+# one line whose source and destination are those SPIFFE IDs and whose detail is the RBAC decision
+denial_for() { jq -c --arg s "spiffe://$TD/ns/$DATA/sa/$2" --arg d "spiffe://$TD/ns/$3/sa/$4" 'select(.source == $s and .destination == $d and ((.detail // "") | startswith("rbac_access_denied")))' "$1"; }
+denial_lines "$MGMT" tsa-policy-engine >"$work/tsa-denials-0"
+r=$(http "$DATA" pdp-impostor app "http://tsa-policy-engine.$MGMT.svc:8080/hostname")
+[ "$r" = "403 RBAC: access denied" ]
+check $? "pdp-impostor → tsa-policy-engine: the network layer admits it (the lane's pod labels) and the mesh layer refuses it (an identity the lane's rule does not name): 403 RBAC: access denied from the destination's proxy" "→ $r"
+r=$(http "$DATA" pdp-adapter app "http://tsa-policy-engine.$MGMT.svc:8080/hostname")
+[ "${r%% *}" = 200 ]; check $? "pdp-adapter → tsa-policy-engine, the lane's genuine caller, is still served" "→ $r"
+sleep 3
+new_denials "$work/tsa-denials-0" "$MGMT" tsa-policy-engine >"$work/tsa-denials-new"
+line=$(denial_for "$work/tsa-denials-new" pdp-impostor "$MGMT" tsa-policy-engine)
+[ "$(grep -c . <<<"$line")" = 1 ]
+check $? "tsa-policy-engine's proxy logged the impostor's refusal as one JSON line with both identities: source spiffe://$TD/ns/$DATA/sa/pdp-impostor, destination spiffe://$TD/ns/$MGMT/sa/tsa-policy-engine, detail rbac_access_denied" "${line:-no such line; new denial lines: $(paste -sd' ' "$work/tsa-denials-new" | cut -c1-300)}"
+served=$(jq -r --arg s "spiffe://$TD/ns/$DATA/sa/pdp-adapter" 'select(.source == $s) | .detail' "$work/tsa-denials-new")
+[ -z "$served" ]; check $? "the served request of pdp-adapter left no denial line" "denial lines naming pdp-adapter: ${served:-none}"
+denial_lines "$DATA" peer >"$work/peer-denials-0"
+r=$(http "$DATA" unpaired app "http://peer.$DATA.svc:8080/hostname")
+[ "$r" = "403 RBAC: access denied" ]
+check $? "unpaired → peer, inside the plane namespace: the network layer admits it (allow-intra-plane) and the mesh layer refuses it (no pair names unpaired): 403 RBAC: access denied" "→ $r"
+r=$(http "$DATA" caller app "http://peer.$DATA.svc:8080/hostname")
+[ "${r%% *}" = 200 ]; check $? "caller → peer is served through its pair proof-caller-to-peer" "→ $r"
+# An application's own 403: the request is admitted by the mesh and the peer answers 403 itself
+# (agnhost's /echo with a status code); the mesh served it, so the denial log must not name it.
+r=$(http "$DATA" caller app "http://peer.$DATA.svc:8080/echo?msg=refused-by-the-application&code=403")
+[ "${r%% *}" = 403 ] && [ "$r" != "403 RBAC: access denied" ]
+check $? "caller → peer answered by the application itself with its own 403 (served by the mesh)" "→ $r"
+sleep 3
+new_denials "$work/peer-denials-0" "$DATA" peer >"$work/peer-denials-new"
+line=$(denial_for "$work/peer-denials-new" unpaired "$DATA" peer)
+[ "$(grep -c . <<<"$line")" = 1 ]
+check $? "peer's proxy logged the refusal of unpaired as one JSON line with both identities (source …/sa/unpaired, destination …/sa/peer, detail rbac_access_denied)" "${line:-no such line; new denial lines: $(paste -sd' ' "$work/peer-denials-new" | cut -c1-300)}"
+served=$(jq -r --arg s "spiffe://$TD/ns/$DATA/sa/caller" 'select(.source == $s) | "\(.code) \(.detail)"' "$work/peer-denials-new")
+[ -z "$served" ]; check $? "neither the served request of caller nor the application's own 403 left a denial line on peer's proxy" "denial lines naming caller: ${served:-none}"
 
 # --------------------------------------------------------------------------------------------
 section "12. control-planes-under-default-deny"
@@ -1240,7 +1334,11 @@ say 'The registrations-reconciled check counts the labelled pods of every plane 
 k label ns kube-public ztd.facis.io/plane=data --overwrite >/dev/null
 k -n kube-public run declared-not-reconciled --image=docker.io/curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b --labels=spiffe.io/spire-managed-identity=true --command -- sleep 3600 >/dev/null
 k -n kube-public wait --for=condition=Ready pod/declared-not-reconciled --timeout=120s >/dev/null 2>&1
-printf 'trustDomain: %s\nchecks:\n  timeoutSeconds: 20\n' "$TD" >"$work/zp-values.yaml"
+# The installed release's own values (the pairs and plane namespaces the installer handed over
+# included), with only the check timeout shortened, so the step changes nothing else in the mesh.
+h get values zone-policy -n "$ISTIO_NS" -o json 2>/dev/null | jq '.checks.timeoutSeconds = 20' >"$work/zp-values.yaml" \
+  && jq -e '.trustDomain' "$work/zp-values.yaml" >/dev/null 2>&1 \
+  || printf 'trustDomain: %s\nchecks:\n  timeoutSeconds: 20\n' "$TD" >"$work/zp-values.yaml"
 k config view --minify --flatten --context "$CONTEXT" >"$work/kubeconfig"
 KUBECONFIG=$work/kubeconfig LIFECYCLE_RELEASE=zone-policy LIFECYCLE_NAMESPACE=$ISTIO_NS LIFECYCLE_CHART=$REPO/deployment/helm/zone-policy \
   LIFECYCLE_VALUES_FILE=$work/zp-values.yaml LIFECYCLE_TIMEOUT=3m "$REPO/scripts/lifecycle.sh" deploy >"$work/lifecycle.log" 2>&1
@@ -1668,7 +1766,8 @@ else
     && k -n "$SPIRE_NS" get pods -l app.kubernetes.io/name=svid-on-node -o name \
     && k -n "$SPIRE_NS" get serviceaccount stand-in --ignore-not-found -o name \
     && k -n kube-public get pod declared-not-reconciled --ignore-not-found -o name \
-    && k get namespace mesh-identity-outside --ignore-not-found -o name; } 2>&1 || echo "a read failed")
+    && k get namespace mesh-identity-outside --ignore-not-found -o name \
+    && k -n "$DATA" get authorizationpolicy -l app.kubernetes.io/name=verify-mesh-pairs -o name; } 2>&1 || echo "a read failed")
   for _ in $(seq 30); do
     entries=$(spire_server entry show -output json 2>/dev/null | jq -er --arg ids "$FIXTURE_IDS" '($ids | split("\n")) as $f | [.entries[] | select(.spiffe_id.path as $p | ($f | index($p)) != null or ($p | contains("/sa/mesh-on-"))) | "spiffe://\(.spiffe_id.trust_domain)\(.spiffe_id.path)"] | join(" ")') || entries="the entries could not be read"
     [ -z "$entries" ] && break; sleep 2
