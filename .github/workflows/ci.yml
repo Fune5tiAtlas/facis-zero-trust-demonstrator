@@ -322,7 +322,7 @@ jobs:
         run: |
           python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user pyyaml
           RENDER_DIR="$RUNNER_TEMP/render" \
-            scripts/install-zone/install.sh render spire-crds spire istio-base istiod istio-cni ztd-openbao
+            scripts/install-zone/install.sh render spire-crds spire istio-base istiod istio-cni zone-policy ztd-openbao
           RENDER_DIR="$RUNNER_TEMP/render-zone-a" ZONE_VALUES=deployment/helm/ztd/zones/zone-a.yaml \
             scripts/install-zone/install.sh render ztd-openbao
           python3 - "$RUNNER_TEMP/render/ztd-openbao.yaml" "$RUNNER_TEMP/render-zone-a/ztd-openbao.yaml" <<'PY'
@@ -366,6 +366,15 @@ jobs:
           if got != "TLSV1_3":
               sys.exit(f"istiod render: meshConfig.meshMTLS.minProtocolVersion is {got!r}, not 'TLSV1_3' (ADR 005)")
           print("istiod render: meshConfig.meshMTLS.minProtocolVersion is TLSV1_3")
+          # The denial log of the mesh authorization: the provider zone-policy's Telemetry enables,
+          # with the caller's and the destination's SPIFFE ID among its labels.
+          providers = {p.get("name"): p for p in (mesh or {}).get("extensionProviders") or []}
+          labels = (((providers.get("denial-log") or {}).get("envoyFileAccessLog") or {}).get("logFormat") or {}).get("labels") or {}
+          want = {"source": "%DOWNSTREAM_PEER_URI_SAN%", "destination": "%DOWNSTREAM_LOCAL_URI_SAN%"}
+          bad = {k: labels.get(k) for k, v in want.items() if labels.get(k) != v}
+          if "denial-log" not in providers or bad:
+              sys.exit(f"istiod render: no denial-log access-log provider with both identity labels ({bad or 'provider missing'})")
+          print("istiod render: the denial-log provider logs the source and destination SPIFFE IDs")
           PY
           for setting in revision=canary mode=ambient; do
             key=${setting%%=*}
