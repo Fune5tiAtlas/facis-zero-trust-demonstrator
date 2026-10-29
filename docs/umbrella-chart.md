@@ -29,7 +29,7 @@ the DNS bypass, and each rendered only when the zone enables it:
 | Lane | Rendered as | Why it exists |
 |---|---|---|
 | workloads → DNS | `allow-dns-egress`, the resolver pods' port (`networkPolicy.dns.ports`: 53, 8053 on the Gardener clusters) to the cluster resolver only | the declared DNS bypass |
-| pods within one plane namespace | `allow-intra-plane` | who may talk is decided on identity by the mesh layer, not on IP |
+| pods within one plane namespace | `allow-intra-plane` | who may talk is decided on identity by the mesh layer, not on IP: the mesh-wide default deny of `zone-policy` and the pairs of `intraPlanePairs` |
 | management → Kubernetes API (`kubeApi`) | `allow-kube-api-egress`: with Cilium a `CiliumNetworkPolicy` to the `kube-apiserver` entity on the `kubernetes` Service port 443 and on the zone's API port; without Cilium an `ipBlock` egress to the zone's endpoint | the SPIRE server, its controller-manager and istiod call the API; required wherever the mesh runs |
 | meshed plane namespaces → istiod (`meshControlPlane`) | `allow-mesh-control-plane-egress` in each namespace with the mesh label, `allow-mesh-control-plane-ingress` in `istio-system`, port 15012 | the sidecars fetch their configuration over xDS |
 | API server → webhooks (`controlPlaneWebhooks`) | `allow-control-plane-openings` in `istio-system` (istiod, 15017) and `spire-system` (controller-manager, 9443), a `CiliumNetworkPolicy` from the `kube-apiserver`, `host` and `remote-node` entities | injection and the admission of `PeerAuthentication` and `ClusterSPIFFEID` |
@@ -51,27 +51,40 @@ the whole node the API server runs on, the kubelet included. The evidence (secti
 open from the management plane only, on a kind cluster with Cilium chained as the zones run it.
 
 **The allow matrix, as data.** The lanes of the ZT-55 matrix are entries in `allowMatrix`, each
-with a source and a destination selector; the chart renders an egress rule in the source namespace
-and an ingress rule in the destination namespace for every lane. The selectors are the label
+with a source and a destination selector and the source's service account
+(`from.serviceAccount`, required when the source names a workload, refused for a whole-plane
+source); the chart renders an egress rule in the source namespace and an ingress rule in the
+destination namespace for every lane. The selectors and accounts are the label and identity
 contract with the component charts:
 
-| Lane | From (data plane) | To (management plane) |
-|---|---|---|
-| `pdp-adapter-to-tsa` | `app.kubernetes.io/name=pdp-adapter` | `tsa-policy-engine` |
-| `atls-gateway-to-cmcd` | `atls-gateway` | `cmcd` |
-| `atls-gateway-to-tcr` | `atls-gateway` | `tcr` |
-| `workloads-to-otel-collector` | every data-plane pod | `otel-collector`, ports 4317 and 4318 only |
-| `backend-to-verification-service` | `backend` | `verification-service` |
+| Lane | From (data plane) | Caller's service account | To (management plane) |
+|---|---|---|---|
+| `pdp-adapter-to-tsa` | `app.kubernetes.io/name=pdp-adapter` | `pdp-adapter` | `tsa-policy-engine` |
+| `atls-gateway-to-cmcd` | `atls-gateway` | `atls-gateway` | `cmcd` |
+| `atls-gateway-to-tcr` | `atls-gateway` | `atls-gateway` | `tcr` |
+| `workloads-to-otel-collector` | every data-plane pod | none: the whole plane (the namespace) | `otel-collector`, ports 4317 and 4318 only |
+| `backend-to-verification-service` | `backend` | `backend` | `verification-service` |
+
+`intraPlanePairs` takes entries of the same shape for a pair inside one plane namespace between
+components of different releases. The chart renders nothing for them, as `allow-intra-plane` already
+opens the namespace at L3/L4, and refuses one whose endpoints are not in one namespace. The list is
+empty; the component task that brings a same-plane caller adds its pair there.
 
 The identity provider's token endpoint is not a lane. No data-plane workload calls it: the
 participant backend obtains its authorization from the connector, and Keycloak serves the viewer's
 login and the pipeline ([Keycloak integration](keycloak.md#connector-boundary)). A permitted lane
 without a caller would only widen what the matrix exists to limit.
 
-The architecture names the mesh as the enforcing layer for these pairs. The network layer opens the
-L3/L4 lane; the mesh layer, installed later, decides on identity on top. Anything else from the data
-plane into the management plane is denied by both layers, which is the negative case the evidence
-script proves.
+Every row is enforced at both layers (`enforcedBy` documents the layer the architecture holds
+responsible, not a choice between them). The network layer opens the L3/L4 lane here. The mesh
+layer is rendered by the `zone-policy` release, which installs after Istio's CRDs: a mesh-wide
+default deny and, for every `allowMatrix` row and `intraPlanePairs` entry, an `AuthorizationPolicy`
+`allow-<name>` in the destination namespace that admits the caller by its SPIFFE identity
+(`<trust domain>/ns/<namespace>/sa/<serviceAccount>`), or the source namespace for a whole-plane
+source. `scripts/install-zone/install.sh` copies the rows from the zone values to `zone-policy` and
+refuses a zone whose mesh rules are not exactly one per row ([Workload
+identity](workload-identity.md#mesh-authorization)). Anything else from the data plane into the
+management plane is denied by both layers, which is the negative case the evidence script proves.
 
 ## The mesh mode is one label
 

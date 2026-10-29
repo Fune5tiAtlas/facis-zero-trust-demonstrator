@@ -10,11 +10,13 @@
 #   4 istio-base   istio-system  Istio's CRDs                                (upstream, pinned)
 #   5 istiod       istio-system  the mesh control plane, sidecar mode, SPIRE as certificate source
 #   6 istio-cni    istio-system  the Istio CNI plugin, chained behind the cluster's CNI
-#   7 zone-policy  istio-system  ClusterSPIFFEID, STRICT PeerAuthentication, identity-band checks
-#   8 ztd-openbao  ztd-mgmt      OpenBao, its bootstrap Job and verification hook (project chart
-#                                wrapping the upstream openbao chart, built from its Chart.lock,
-#                                pinned by digest); last, so its pods are created with a sidecar
-#                                and an SVID
+#   7 zone-policy  istio-system  ClusterSPIFFEID, STRICT PeerAuthentication, the mesh default deny,
+#                                one allow rule per allow-matrix row and intra-plane pair, the
+#                                denial log, identity-band checks
+#   8 ztd-openbao  ztd-mgmt      OpenBao, its bootstrap Job and verification hook, and the allow
+#                                rules of its own pairs (project chart wrapping the upstream openbao
+#                                chart, built from its Chart.lock, pinned by digest); last, so its
+#                                pods are created with a sidecar and an SVID
 #
 # Usage:
 #   scripts/install-zone/install.sh install          install or upgrade the zone (idempotent)
@@ -40,11 +42,17 @@
 # set: the umbrella would label the plane namespaces for an injector this installer never installs.
 # It also refuses, before it renders istiod or zone-policy, a zone-policy whose
 # proxySocketPolicy.proxyImage or statusPort differs from istiod's global.proxy.image or statusPort:
-# the admission policy would refuse every injected plane pod.
+# the admission policy would refuse every injected plane pod. And it refuses, once zone-policy is
+# rendered, a zone whose allow rules are not exactly one per row of the umbrella's allowMatrix and
+# intraPlanePairs, each with the row's namespaces, selector, principal (or source namespace for a
+# whole-plane source) and ports (pairs_coupling): the mesh layer must render what the network layer
+# declares, and nothing else.
 #
 # The umbrella reads the whole zone file. The other releases read their upstream values file under
 # deployment/helm/values/ (zone-policy and ztd-openbao: their chart defaults) merged with the zone
-# facts they need. The zone facts are read from the umbrella's defaults
+# facts they need, a scalar or a structured value (zone-policy's `pairs`: the merged allowMatrix rows
+# followed by the intraPlanePairs, in the pair shape of zone-policy), written into the generated
+# values file of the release, never with --set. The zone facts are read from the umbrella's defaults
 # (deployment/helm/ztd/values.yaml) with the zone file on top, so a fact the umbrella defaults (the
 # management namespace, the Cilium switch) needs no repeating; a fact the umbrella leaves empty
 # (zone.trustDomain, zone.name, zone.storageClass) and the zone file does not state stops the run
@@ -80,7 +88,8 @@ ISTIO_ARCHIVE_SHA256=cb4af2e8a099acfc51368c1d15d4deab8321ae628554d4ee5c74f62ebe7
 
 # ---- The steps: release, namespace, chart, values file, zone facts (<values key>=<zone key>,...),
 # ---- extra lifecycle settings. "zone" as values file means the zone file itself; no values file
-# ---- means the chart's defaults.
+# ---- means the chart's defaults. A zone key written "<key>+<key>" is the concatenation of those
+# ---- lists in the pair shape of zone-policy (merged_values); an empty list is a fact, not a gap.
 STEPS=(
   "ztd|ztd-system|umbrella|zone||"
   "spire-crds|spire-system|spire-crds|$VALUES_DIR/spire-crds.yaml||"
@@ -88,7 +97,7 @@ STEPS=(
   "istio-base|istio-system|istio-base|$VALUES_DIR/istio-base.yaml||"
   "istiod|istio-system|istiod|$VALUES_DIR/istiod.yaml|meshConfig.trustDomain=zone.trustDomain|"
   "istio-cni|istio-system|istio-cni|$VALUES_DIR/istio-cni.yaml||"
-  "zone-policy|istio-system|zone-policy||trustDomain=zone.trustDomain|wait-for-jobs"
+  "zone-policy|istio-system|zone-policy||trustDomain=zone.trustDomain,planes.management.namespace=planes.management.namespace,planes.data.namespace=planes.data.namespace,pairs=allowMatrix+intraPlanePairs|wait-for-jobs"
   "ztd-openbao|=planes.management.namespace|ztd-openbao||managementNamespace=planes.management.namespace,openbao.global.namespace=planes.management.namespace,openbao.server.dataStorage.storageClass=zone.storageClass,cilium.enabled=cni.cilium.enabled|wait-for-jobs"
 )
 # A namespace written "=<zone key>" is that zone fact (the management namespace of ztd-openbao).
@@ -287,13 +296,35 @@ chart_path() {
 # merged_values <release> <values> <facts> <out>: the values file with the zone facts set, each read
 # from the zone document (the umbrella's defaults with the zone file on top); refuses when a fact is
 # empty there, so a fact the umbrella leaves empty (zone.trustDomain, zone.name, zone.storageClass)
-# must be stated by the zone file. Paths travel as arguments, never inside the source.
+# must be stated by the zone file. A fact "<key>+<key>" (zone-policy's pairs) is the concatenation of
+# those lists of rows, each turned into zone-policy's pair shape: the caller's plane or namespace
+# with its serviceAccount, or wholePlane when its podSelector is {} (the row's selector, enforcedBy
+# and the destination's serviceAccount stay in the umbrella); the destination's plane or namespace,
+# podSelector and ports. Paths travel as arguments, never inside the source.
 merged_values() {
   if [ "$2" = zone ]; then cp "$ZONE_VALUES" "$4"; return; fi
   zone_py "$@" <<'PY'
 release, values_file, facts, out = ARGS
 values = (yaml.safe_load(open(values_file)) if values_file else None) or {}
 doc = zone_doc()
+def as_pairs(rows, source):
+    pairs = []
+    for row in rows:
+        f, t = row.get("from") or {}, row.get("to") or {}
+        src = {k: f[k] for k in ("plane", "namespace") if f.get(k)}
+        if f.get("podSelector"):
+            if not f.get("serviceAccount"):
+                sys.exit(f"install-zone: {source} row {row.get('name')}: from.podSelector names a workload "
+                         "but from.serviceAccount is not set, so the mesh rule could not name its caller")
+            src["serviceAccount"] = f["serviceAccount"]
+        else:
+            src["wholePlane"] = True
+        dst = {k: t[k] for k in ("plane", "namespace", "podSelector") if t.get(k)}
+        if t.get("ports"):
+            dst["ports"] = [dict({"port": p["port"]}, **({"protocol": p["protocol"]} if p.get("protocol") else {}))
+                            for p in t["ports"]]
+        pairs.append({"name": row.get("name"), "from": src, "to": dst})
+    return pairs
 def put(target, v):
     node = values
     keys = target.split(".")
@@ -303,6 +334,14 @@ def put(target, v):
 missing = []
 for pair in filter(None, facts.split(",")):
     target, source = pair.split("=")
+    if "+" in source:
+        lists = [(key, fact(doc, key)) for key in source.split("+")]
+        absent = [key for key, v in lists if not isinstance(v, list)]
+        if absent:
+            missing.append(" and ".join(absent) + f" (lists, for {target})")
+            continue
+        put(target, [p for key, v in lists for p in as_pairs(v, key)])
+        continue
     v = fact(doc, source)
     if v is None or str(v).strip() == "":
         missing.append(f"{source} (for {target})")
@@ -347,6 +386,56 @@ if bad:
 PY
 }
 
+# pairs_coupling <zone-policy manifest>: the allow rules zone-policy rendered must be exactly one per
+# row of the umbrella's allowMatrix and intraPlanePairs (read from the zone document, not from the
+# values the installer handed over, so a wrong copy is caught too): AuthorizationPolicy allow-<name>
+# in the destination's namespace, selecting the row's to.podSelector, admitting the principal
+# <trust domain>/ns/<source namespace>/sa/<from.serviceAccount> (or the source namespace when the
+# row's from.podSelector is {}), on the row's ports, and nothing else in its rule. Refused otherwise,
+# naming each row that differs; CI runs it with every render of zone-policy.
+pairs_coupling() {
+  zone_py "$1" <<'PY' || exit 1
+manifest = ARGS[0]
+doc = zone_doc()
+td = fact(doc, "zone.trustDomain")
+planes = doc.get("planes") or {}
+def ns(e):
+    return e.get("namespace") or (planes.get(e.get("plane")) or {}).get("namespace")
+rows = [("allowMatrix", r) for r in (doc.get("allowMatrix") or [])] + \
+       [("intraPlanePairs", r) for r in (doc.get("intraPlanePairs") or [])]
+want = {}
+for where, r in rows:
+    f, t = r.get("from") or {}, r.get("to") or {}
+    source = ({"namespaces": [ns(f)]} if not f.get("podSelector")
+              else {"principals": [f"{td}/ns/{ns(f)}/sa/{f.get('serviceAccount')}"]})
+    rule = {"from": [{"source": source}]}
+    if t.get("ports"):
+        rule["to"] = [{"operation": {"ports": [str(p["port"]) for p in t["ports"]]}}]
+    want["allow-" + str(r.get("name"))] = (where, {"namespace": ns(t), "selector": {"matchLabels": t.get("podSelector") or {}},
+                                                  "action": "ALLOW", "rules": [rule]})
+got = {}
+for d in yaml.safe_load_all(open(manifest)):
+    if d and d.get("kind") == "AuthorizationPolicy" and d["metadata"]["name"].startswith("allow-"):
+        spec = d.get("spec") or {}
+        got[d["metadata"]["name"]] = {"namespace": d["metadata"].get("namespace"), "selector": spec.get("selector"),
+                                      "action": spec.get("action", "ALLOW"), "rules": spec.get("rules")}
+bad = []
+for name, (where, w) in want.items():
+    if name not in got:
+        bad.append(f"{where} row {name[6:]}: no AuthorizationPolicy {name} rendered")
+    elif got[name] != w:
+        bad.append(f"{where} row {name[6:]}: {name} renders {got[name]}, the row asks for {w}")
+bad += [f"{name}: rendered by zone-policy but no allowMatrix row or intraPlanePairs entry declares it"
+        for name in sorted(set(got) - set(want))]
+if bad:
+    sys.exit("install-zone: the mesh allow rules of zone-policy do not match the umbrella's pairs: "
+             + "; ".join(bad))
+matrix = sum(1 for w, _ in rows if w == "allowMatrix")
+print(f"pairs coupling: {len(got)} allow rules of zone-policy match the {len(want)} declared pairs "
+      f"({matrix} allowMatrix rows, {len(want) - matrix} intraPlanePairs)")
+PY
+}
+
 render() {
   local want=("$@") step release ns chart values facts extra path out name names=""
   zone_file
@@ -375,6 +464,8 @@ render() {
       die "release $release does not render"
     fi
     say "rendered $release ($(chart_label "$chart")) into $ns: $(grep -c '^kind:' "${out:-$work/$release.manifest.yaml}") objects"
+    # The mesh layer's rows are checked against the network layer's whenever zone-policy is rendered.
+    if [ "$release" = zone-policy ]; then pairs_coupling "${out:-$work/$release.manifest.yaml}"; fi
   done
 }
 
@@ -429,8 +520,10 @@ install() {
   zone_file
   zone_mesh
   preflight
-  # Every release is checked to render, with its zone facts, before the first one is installed.
-  render >/dev/null
+  # Every release is checked to render, with its zone facts, before the first one is installed; the
+  # verdict of the pairs coupling is kept in the log.
+  render >"$work/render.log"
+  grep '^pairs coupling:' "$work/render.log" || true
   plan
   local umbrella_ns
   umbrella_ns=$(IFS='|' read -r _ ns _ <<<"${STEPS[0]}"; echo "$ns")

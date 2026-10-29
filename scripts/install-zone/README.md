@@ -13,7 +13,7 @@ on failure), each waiting on the previous:
 | 4 | `istio-base` | `istio-system` | `base` 1.31.1, Istio release archive | `deployment/helm/values/istio-base.yaml` |
 | 5 | `istiod` | `istio-system` | `istiod` 1.31.1 | `deployment/helm/values/istiod.yaml` + zone facts |
 | 6 | `istio-cni` | `istio-system` | `cni` 1.31.1 | `deployment/helm/values/istio-cni.yaml` |
-| 7 | `zone-policy` | `istio-system` | `deployment/helm/zone-policy` | chart defaults + zone facts; also waits for its Jobs |
+| 7 | `zone-policy` | `istio-system` | `deployment/helm/zone-policy` | chart defaults + zone facts (the trust domain, the plane namespaces and the pairs of the umbrella's `allowMatrix` and `intraPlanePairs`); also waits for its Jobs |
 | 8 | `ztd-openbao` | the management namespace (`ztd-mgmt`) | `deployment/helm/ztd-openbao`, its `openbao` 0.28.3 dependency built from `Chart.lock` | chart defaults + zone facts; also waits for its Jobs |
 
 The umbrella creates every namespace the later releases install into; the lifecycle step never
@@ -47,8 +47,9 @@ scripts/install-zone/install.sh install
 | `RENDER_DIR` | unset | with `render`, write each release's manifest there |
 | `INSTALL_ZONE_CACHE` | `~/.cache/ztd-install-zone` | where the pinned charts and the built OpenBao dependency are kept |
 
-- **`install`** first renders all eight releases with their zone facts, so a missing fact stops the
-  run before anything is installed; then installs them in order. It stops at the first release
+- **`install`** first renders all eight releases with their zone facts, so a missing fact or a
+  failed coupling (below) stops the run before anything is installed, and prints the pairs
+  coupling's verdict; then installs them in order. It stops at the first release
   that does not reach a ready state, exits non-zero and names the release and the lifecycle step's
   error; the failed release is rolled back. It exits 0 only when every pod in the plane and
   control-plane namespaces is Ready (finished Job pods aside).
@@ -135,12 +136,43 @@ by the zone file:
 | `spire` | `global.spire.persistence.storageClass` | `zone.storageClass` |
 | `istiod` | `meshConfig.trustDomain` | `zone.trustDomain` |
 | `zone-policy` | `trustDomain` | `zone.trustDomain` |
+| `zone-policy` | `planes.management.namespace`, `planes.data.namespace` | `planes.management.namespace`, `planes.data.namespace` |
+| `zone-policy` | `pairs` | `allowMatrix` followed by `intraPlanePairs`, each row in the pair shape of `zone-policy` (below) |
 | `ztd-openbao` | `managementNamespace`, `openbao.global.namespace` (and its release namespace) | `planes.management.namespace` |
 | `ztd-openbao` | `openbao.server.dataStorage.storageClass` | `zone.storageClass` |
 | `ztd-openbao` | `cilium.enabled` | `cni.cilium.enabled` |
 
 A release whose zone fact is missing does not render, and the message names the fact and the
-release.
+release. Every fact is written into the release's generated values file, never passed with
+`--set`, so a structured fact keeps its shape. `pairs` is the one structured fact: the rows of the
+merged `allowMatrix` and then of `intraPlanePairs` (an empty list is a fact, not a gap), each turned
+into the pair `zone-policy` renders: the caller's plane or namespace with its `serviceAccount`, or
+`wholePlane: true` when the row's `from.podSelector` is `{}`, and the destination's plane or
+namespace, `podSelector` and ports. The row's own selector on the caller, its `enforcedBy` and the
+destination's `serviceAccount` stay in the umbrella, where the network policy and the documentation
+read them. A row whose caller names a workload without a `serviceAccount` stops the render.
+
+## The two couplings
+
+Two checks refuse a zone whose releases would disagree, before anything is installed; `install`
+runs them through its first `render`, and CI runs them with every render and against copies of the
+tree that plant a mismatch:
+
+- **The proxy coupling** (`mesh_coupling`): `zone-policy`'s `proxySocketPolicy.proxyImage` and
+  `statusPort` must equal `istiod`'s `global.proxy.image` and `statusPort`, or the admission policy
+  would refuse every injected plane pod. Checked before `istiod` or `zone-policy` renders.
+- **The pairs coupling** (`pairs_coupling`): once `zone-policy` is rendered, its `allow-<name>`
+  `AuthorizationPolicy` resources must be exactly one per `allowMatrix` row and `intraPlanePairs`
+  entry of the zone document, each in the destination's namespace, selecting the row's
+  `to.podSelector`, admitting `<trust domain>/ns/<source namespace>/sa/<from.serviceAccount>` (or
+  the source namespace for a whole-plane source) on the row's ports and nothing else; no other
+  `allow-*` rule may be rendered. The expectation is computed from the umbrella's rows, not from
+  the values handed over, so a wrong copy is caught as well as a wrong template. A mismatch stops
+  the run and names each row; the verdict is a line of `render`'s output (and of `install`'s log):
+
+  ```text
+  pairs coupling: 5 allow rules of zone-policy match the 5 declared pairs (5 allowMatrix rows, 0 intraPlanePairs)
+  ```
 
 ## Pins
 

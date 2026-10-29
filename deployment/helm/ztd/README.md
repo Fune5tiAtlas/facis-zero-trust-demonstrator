@@ -64,7 +64,8 @@ declared derogation of the preferred stack first (`docs/workload-identity.md`).
 | `networkPolicy.controlPlaneWebhooks.*` | off; entities `kube-apiserver`, `host`, `remote-node`; no `fromEndpoints`; istiod 15017, controller-manager 9443 | Declared opening: the API server → the admission webhooks of both control planes (Cilium, by entity) |
 | `networkPolicy.controlPlaneWebhooks.fromEndpoints` | `[]` | Cilium endpoint selectors of the provider's pod that relays the API server's calls to in-cluster webhooks (Gardener: `vpn-shoot` in `kube-system`), admitted on the same webhook ports; a zone fact, never an address |
 | `networkPolicy.identityServer.*` | off; SPIRE server (`app.kubernetes.io/name: server`) in `spire-system`, 8081, entities `host`, `remote-node` | Declared opening: the host-networked SPIRE agents → the SPIRE server (Cilium, by entity) |
-| `allowMatrix` | the lanes of architecture §6 | Data-plane → management-plane lanes, as data (see below) |
+| `allowMatrix` | the lanes of architecture §6 | Data-plane → management-plane lanes, as data, each with the caller's `serviceAccount` (see below) |
+| `intraPlanePairs` | `[]` | Pairs inside one plane namespace between components of different releases, enforced at the mesh layer only (see below) |
 | `verification.enabled` | `true` | Post-install job that reads the layout back and fails the release if it is wrong |
 | `verification.image` | `curlimages/curl` by digest | Image of the verification job |
 | `openbao.*`, `openbaoBootstrap`, `openbaoExternal` | unset | Refused by the schema: the chart installs no OpenBao (below), and no zone file places the release `ztd-openbao` on a node |
@@ -99,9 +100,28 @@ Each `allowMatrix` entry names a source (`from`) and a destination (`to`), each 
 explicit namespace) with a pod selector and optional ports, and renders two NetworkPolicies: an
 egress rule in the source namespace and an ingress rule in the destination namespace. The
 selectors are the label contract with the component charts (`app.kubernetes.io/name`), so a
-component that lands under another name changes the matrix, not the templates. `enforcedBy`
-records which layer the architecture holds responsible; the network lane is opened either way and
-the mesh layer decides on identity on top.
+component that lands under another name changes the matrix, not the templates.
+
+Every row is enforced at both layers. The source names the service account its pods run under,
+`from.serviceAccount`, the last segment of its SPIFFE ID: required when `from.podSelector` names a
+workload, refused when it is `{}` (the whole source plane). `scripts/install-zone/install.sh`
+copies the rows to the `zone-policy` release, which renders for each an `AuthorizationPolicy`
+`allow-<name>` in the destination namespace admitting
+`<trust domain>/ns/<source namespace>/sa/<from.serviceAccount>` (or the source namespace for a
+whole-plane source) on the row's ports, under a mesh-wide default deny
+([zone-policy](../zone-policy/README.md#mesh-authorization)); the installer refuses a zone whose two
+renders disagree. A pod with the row's labels but another service account passes the network lane
+and is refused by the mesh. `to.serviceAccount` names the destination's account, documentation
+only. `enforcedBy` records which layer the architecture holds responsible; both layers enforce the
+row either way.
+
+`intraPlanePairs` has the same entry shape (no `enforcedBy`) for a pair inside one plane
+namespace between components of different releases. The network layer is already open inside a
+plane namespace (`allow-intra-plane`), so this chart renders nothing for it and only refuses an
+entry whose two endpoints are not in one namespace; the installer copies the entries to
+`zone-policy` after the matrix rows, where each becomes an allow rule by identity. Empty today: the
+component task that brings a same-plane caller adds its pair here. A release whose own pods call
+one another (the secret store's jobs and its server) declares those pairs in its own chart.
 
 ## Hook-weight scheme
 
