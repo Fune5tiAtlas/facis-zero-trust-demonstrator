@@ -173,7 +173,10 @@ selector: every pod with `spiffe.io/spire-managed-identity: "true"` in a plane n
 `spiffe://<trust domain>/ns/<namespace>/sa/<service account>`. The registration is a regular
 resource that the controller-manager reconciles into entries, never a hook job; the jobs that check
 the server, the trust bundle and the entries sit in the `identity` band of the hook-weight scheme
-and fail the release when identity is not there. Details: [Workload identity](../workload-identity.md).
+and fail the release when identity is not there. The same release puts the mesh default deny in
+place, with one allow rule by SPIFFE identity per allow-matrix row and the denial log; the installer
+fills the rows from the zone values ([Mesh authorization](../workload-identity.md#mesh-authorization)).
+Details: [Workload identity](../workload-identity.md).
 
 The zone facts this step needs, in the zone file `deployment/helm/ztd/zones/<zone>.yaml`:
 

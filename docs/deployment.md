@@ -31,7 +31,7 @@ ZONE_VALUES=deployment/helm/ztd/zones/<zone>.yaml KUBE_CONTEXT=<context> \
 | 4 | `istio-base` | `istio-system` | Istio's CRDs (upstream chart) |
 | 5 | `istiod` | `istio-system` | the mesh control plane, sidecar mode, SPIRE as the certificate source (upstream chart) |
 | 6 | `istio-cni` | `istio-system` | the Istio CNI plugin, chained behind Cilium (upstream chart) |
-| 7 | `zone-policy` | `istio-system` | the workload registration, mesh-wide STRICT mTLS, the identity-band checks |
+| 7 | `zone-policy` | `istio-system` | the workload registration, mesh-wide STRICT mTLS, the mesh default deny and the allow rules of the declared pairs by identity, the denial log, the identity-band checks |
 | 8 | `ztd-openbao` | `ztd-mgmt` | OpenBao, its bootstrap Job and its verification hook (project chart wrapping the upstream chart); last, so its pods are created with a sidecar and an SVID ([Secrets](secrets.md)) |
 
 The umbrella lays the zone down first: the management and data planes as distinct namespaces,
