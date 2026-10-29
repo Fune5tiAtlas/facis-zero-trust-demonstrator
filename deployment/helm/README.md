@@ -15,7 +15,7 @@ documents its values in its own README.
 | Lifecycle fixture (test data, never released) | `features/fixtures/charts/lifecycle-fixture` | in use by the acceptance scenarios | [README](../../features/fixtures/charts/lifecycle-fixture/README.md) |
 | ORCE | — | planned; until then ORCE is installed from `deployment/orce-minimal/` | — |
 | Umbrella chart for a zone | `deployment/helm/ztd` | in use on kind; design in [docs/umbrella-chart.md](../../docs/umbrella-chart.md) | [ztd/README.md](ztd/README.md) |
-| Zone policy | `deployment/helm/zone-policy` | in use on kind | the workloads' registration with SPIRE, mesh-wide STRICT mTLS, the identity-band checks |
+| Zone policy | `deployment/helm/zone-policy` | in use on kind | the workloads' registration with SPIRE, mesh-wide STRICT mTLS, the mesh default deny with one allow rule per declared pair by identity and the denial log, the identity-band checks |
 | Secret store (OpenBao) | `deployment/helm/ztd-openbao` | in use on kind; the eighth release of a zone | [ztd-openbao/README.md](ztd-openbao/README.md): `managementNamespace`, `cilium.enabled`, `openbao.*` (upstream chart 0.28.3, locked), `bootstrap.image`, `external.address`, `external.verifyTokenSecret` |
 | Upstream SPIRE and Istio charts (values only) | `deployment/helm/values` | in use on kind | [values/README.md](values/README.md) |
 

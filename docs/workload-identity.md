@@ -451,6 +451,76 @@ ephemeral container that targets `istio-proxy`, or `shareProcessNamespace`, lets
 (as root, or as UID 1337) reach the proxy's process; refusing those belongs to the same Pod Security
 follow-up.
 
+## Mesh authorization
+
+STRICT peer authentication makes every mesh connection carry a SPIRE identity; mesh authorization
+decides which identity may reach which workload (ZT-25, ZT-49, ZT-62). It is the mesh layer of the
+plane separation ([Architecture §6](architecture.md#allow-matrix-data-plane-management-plane)), on
+top of the network layer's NetworkPolicies, and it names identities only: no path, method, host or
+address (no L7 rule is set here).
+
+**The default deny.** The `zone-policy` release renders the `AuthorizationPolicy` `default-deny`
+with an empty spec in the mesh root namespace, `istio-system`. It is an ALLOW policy without rules:
+it matches nothing, and a workload with an ALLOW policy in force refuses every request no ALLOW
+policy matches, so every meshed workload of the zone refuses what no pair admits, with
+`403 RBAC: access denied` (Istio's "allow-nothing"). It is not a DENY policy, because Istio
+evaluates DENY before ALLOW and a DENY that matched everything would refuse the pairs as well. In
+the root namespace it covers every namespace of the mesh, so a plane namespace a component task adds
+is covered without a resource of its own. The SPIRE and Istio control planes and the Kubernetes API
+are not meshed and are not concerned; neither are the identity-band checks, which call only the API.
+
+**Declaring a pair.** A pair is admitted by one `AuthorizationPolicy` `allow-<name>` in the
+destination's namespace that selects the destination by its pod labels and admits the caller by its
+SPIFFE principal, `<trust domain>/ns/<namespace>/sa/<service account>` (the SPIFFE ID without its
+scheme), or, for a source that is a whole plane, by its namespace, on the destination's ports when
+the pair names any. Pairs are declared in three places:
+
+| Where | For | Rendered by |
+|---|---|---|
+| a row of the umbrella's `allowMatrix`, with the caller's `from.serviceAccount` (none for a whole-plane source, `from.podSelector: {}`) | a data-plane workload → a management-plane destination | the same row renders the NetworkPolicy pair in the umbrella; `scripts/install-zone/install.sh` copies the rows into `zone-policy`'s `pairs`, and its one pair template renders the mesh rule |
+| an entry of the umbrella's `intraPlanePairs` (same shape) | two components of different releases in one plane namespace, which the network layer already lets through (`allow-intra-plane`) | `zone-policy`, the same template, after the matrix rows; nothing at the network layer. Empty today |
+| the release's own chart | the pods of one release calling one another | that release: `ztd-openbao` admits its bootstrap Job (`…/sa/ztd-openbao-bootstrap`) and verification hook (`…/sa/ztd-verify-openbao`) to its server on port 8200 ([Secrets](secrets.md)) |
+
+A row is written once, in the zone values, and both layers render it. **The coupling check** keeps
+them equal: once `zone-policy` is rendered, the installer refuses the zone unless its `allow-*`
+rules are exactly one per `allowMatrix` row and `intraPlanePairs` entry, each with the row's
+namespaces, selector, principal or source namespace and ports, and none besides
+(`pairs_coupling`, next to the proxy coupling `mesh_coupling`); CI runs it with every render and
+against a copy of the tree that drops a rule. A pod that carries a row's labels under another
+service account passes the network lane and is refused here. A pod without a proxy inside a plane
+namespace is not a way around the mesh: the admission policy refuses it in a namespace with the
+injection label ([the capture rule](#the-capture-rule)), and STRICT refuses its plaintext.
+
+**The denial log.** The `istiod` release defines an access-log provider, `denial-log`
+(`meshConfig.extensionProviders`: an Envoy file access log to the proxy's stdout, one JSON object
+per line), and `zone-policy` renders the mesh-wide `Telemetry` `mesh-default` in `istio-system`,
+which enables it for refusals only: its filter is the authorization decision,
+`response.code_details.startsWith("rbac_access_denied") || connection.termination_details.startsWith("rbac_access_denied")`
+(the RBAC filter's detail for an HTTP request, the termination detail for a TCP connection), never
+the status code, so a served request and an application's own 403 are not logged. The destination's
+proxy is the one place that holds both identities, its own certificate and the caller's, so the line
+is read there:
+
+```bash
+kubectl -n <namespace> logs <pod> -c istio-proxy | grep rbac_access_denied
+```
+
+| Label | Envoy operator | Content |
+|---|---|---|
+| `source` | `%DOWNSTREAM_PEER_URI_SAN%` | the caller's SPIFFE ID |
+| `destination` | `%DOWNSTREAM_LOCAL_URI_SAN%` | the refusing workload's SPIFFE ID |
+| `authority` | `%REQ(:authority)%` | the host the caller asked for |
+| `code` | `%RESPONSE_CODE%` | `403` for HTTP, `0` for a refused TCP connection |
+| `detail` | `%RESPONSE_CODE_DETAILS%` | for an HTTP request, `rbac_access_denied_matched_policy[none]`: no ALLOW policy matched |
+| `termination` | `%CONNECTION_TERMINATION_DETAILS%` | for a TCP connection (a port the pair does not name, served as TCP), the same decision; `detail` is then empty |
+| `flags`, `time` | `%RESPONSE_FLAGS%`, `%START_TIME%` | Envoy's response flags and the request's start |
+
+No body and no other header is logged. A workload refused during the mutual TLS handshake (one
+without a SPIRE entry, whose proxy has no certificate) presents no identity: STRICT refuses it
+before authorization, so no denial line names it. The line is evidence in Envoy's format, not an
+IF-01 event; its form as a security-state event is pending the observability work
+([IF-04](api-docs.md#if-04-observability-and-evidence)).
+
 ## Telemetry
 
 The `spire` release switches on the Prometheus endpoint of the server and of the agents. The ports
@@ -513,7 +583,7 @@ record). A run shows:
 | Check | Proves |
 |---|---|
 | routing check (preconditions) | the pod network keeps a pod's address between nodes: tunnel routing, or native routing with masquerading off or with every node's pod range inside `ipv4-native-routing-cidr`; when it fails, or `cilium-config` cannot be read, the run stops before anything is uninstalled or installed |
-| `install-order-idempotent` | the eight releases install in order with no manual step, every pod is Ready, and a second run leaves every release's manifest identical |
+| `install-order-idempotent` | the eight releases install in order with no manual step, every pod is Ready, and a second run leaves every release's manifest identical; the pairs coupling held, and the secret store installs under the mesh default deny through its own pairs |
 | `svid-over-csi-socket` | a labelled pod gets, over the mounted socket, the SVID of its service account in the zone's trust domain, chained to the SPIRE CA; an unlabelled pod gets no entry and no SVID |
 | `native-sidecar-version` | the server is 1.33 or later and the proxy is an init container with `restartPolicy: Always` |
 | `mesh-identity-issued-by-spire` | the proxy's certificate has `O = SPIRE`, the SPIRE CA as issuer and the SVID's URI SAN, and its `ROOTCA` bundle is the SPIRE CA; under the capture rule (`capture-at-injector-defaults`), a pod in a plane namespace with an excluded application port, capture mode `NONE`, a moved status port, a proxy-config override, an injection opt-out, a swapped proxy image or a pod-supplied `istio-proxy` is refused at admission, an ordinary pod is admitted carrying the injector's status-port exclusion and `REDIRECT`, and the istiod and `istio-cni` pods, which opt out of injection, are admitted in `istio-system` |
@@ -522,7 +592,8 @@ record). A run shows:
 | `mesh-on-every-node` | on every node with a SPIRE agent, a meshed stand-in of its own is Ready and its proxy holds a SPIRE-issued certificate for that stand-in's own SPIFFE ID, one check per node |
 | `cross-node-calls` | every node's meshed stand-in calls the next node's across a node boundary; the receiver sees the caller's own SPIFFE ID and both proxies count the request as mTLS, one check per call |
 | `stand-in-identities` | every meshed stand-in runs in a service account of its own, named after the pod, and its proxy holds a SPIRE-issued certificate for `spiffe://<trust domain>/ns/<namespace>/sa/<pod>`; the matrix lane's caller `pdp-adapter` and the refused caller `data-plain` carry different SPIFFE IDs, and so do the management-plane stand-ins one from another |
-| `default-deny-with-chained-cni` | the Istio plugin runs after Cilium, `cni-exclusive=false`, and the umbrella's cross-plane denial (from a node other than the peer's) and matrix lane hold with the proxies in place |
+| `default-deny-with-chained-cni` | the Istio plugin runs after Cilium, `cni-exclusive=false`, and the umbrella's cross-plane denial (from a node other than the peer's) and matrix lane hold with the proxies in place, the lane served through its mesh rule; every refusal is recorded with the layer that refused it (network, mesh or handshake) |
+| `mesh-default-deny` | under the mesh default deny, an impostor with the matrix lane's pod labels but its own service account, and a registered neighbour in the peer's namespace without a pair, pass the network layer and are refused by the destination's proxy with `RBAC: access denied`, each refusal logged there as one line with both SPIFFE IDs; the lane's caller and the proof's own pair are served, and neither they nor an application's own 403 leave a line |
 | `control-planes-under-default-deny` | only the declared openings exist in the two namespaces, the agents and the proxies are served, and a stand-in pod's probes on every other port are denied |
 | `registration-inventory` | every entry on the SPIRE server, by SPIFFE ID, next to the pod that holds it and the certificate in use with that ID; no entry outside a plane namespace or not created by the registration rule, and every certificate in use has an entry of its own pod in a plane namespace ([declared workloads](#declared-workloads-and-the-registration-inventory)) |
 
