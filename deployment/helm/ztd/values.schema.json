@@ -131,14 +131,29 @@
     },
     "allowMatrix": {
       "type": "array",
+      "description": "The data plane -> management plane rows: a network-policy lane here, an allow rule by SPIFFE identity in zone-policy.",
       "items": {
         "type": "object",
         "required": ["name", "from", "to"],
         "properties": {
           "name": { "type": "string", "pattern": "^[a-z0-9-]+$" },
-          "from": { "$ref": "#/$defs/endpoint" },
+          "from": { "allOf": [{ "$ref": "#/$defs/endpoint" }, { "$ref": "#/$defs/sourceAccount" }] },
           "to": { "$ref": "#/$defs/endpoint" },
           "enforcedBy": { "type": "string", "enum": ["mesh", "networkPolicy", "both"] }
+        }
+      }
+    },
+    "intraPlanePairs": {
+      "type": "array",
+      "description": "Pairs inside one plane namespace between components of different releases: an allow rule by SPIFFE identity in zone-policy, nothing at the network layer (open inside a plane namespace).",
+      "items": {
+        "type": "object",
+        "required": ["name", "from", "to"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+          "from": { "allOf": [{ "$ref": "#/$defs/endpoint" }, { "$ref": "#/$defs/sourceAccount" }] },
+          "to": { "$ref": "#/$defs/endpoint" }
         }
       }
     },
@@ -195,6 +210,10 @@
         "plane": { "type": "string", "enum": ["management", "data"] },
         "namespace": { "$ref": "#/$defs/namespaceName" },
         "podSelector": { "type": "object" },
+        "serviceAccount": {
+          "$ref": "#/$defs/namespaceName",
+          "description": "The service account the endpoint's pods run under, the last segment of their SPIFFE ID. Required on a source that names a workload; documentation on a destination."
+        },
         "ports": {
           "type": "array",
           "items": {
@@ -208,6 +227,12 @@
         }
       },
       "anyOf": [{ "required": ["plane"] }, { "required": ["namespace"] }]
+    },
+    "sourceAccount": {
+      "description": "A source that names a workload (a non-empty podSelector) names its service account, which the mesh rule admits by SPIFFE identity; a whole-plane source (podSelector {} or absent) names none, as the mesh rule admits its namespace.",
+      "if": { "properties": { "podSelector": { "maxProperties": 0 } } },
+      "then": { "not": { "required": ["serviceAccount"] } },
+      "else": { "required": ["serviceAccount"] }
     }
   }
 }
