@@ -157,7 +157,15 @@ TD=$(yaml_get "$ZONE_VALUES" zone trustDomain)
 SPIRE_NS=spire-system; ISTIO_NS=istio-system
 images_spire=""; images_istio=""; images_proxy=""
 RELEASES="ztd:ztd-system spire-crds:$SPIRE_NS spire:$SPIRE_NS istio-base:$ISTIO_NS istiod:$ISTIO_NS istio-cni:$ISTIO_NS zone-policy:$ISTIO_NS ztd-openbao:$MGMT"
-SA_ID="spiffe://$TD/ns/$DATA/sa/stand-in"
+# The caller's own SPIFFE ID: every stand-in that runs a proxy or fetches an SVID has a service
+# account of its own, named after the pod (fixtures/stand-ins.yaml).
+SA_ID="spiffe://$TD/ns/$DATA/sa/caller"
+# FIXTURE_IDS: the SPIFFE ID paths (/ns/<namespace>/sa/<account>) of the proof's own service accounts:
+# those of fixtures/stand-ins.yaml and the shared one of fixtures/svid-on-node.yaml, one per line
+# (the per-node meshed stand-ins' are matched by their prefix /sa/mesh-on-)
+FIXTURE_IDS=$(sed -e "s/__DATA__/$DATA/g" -e "s/__MGMT__/$MGMT/g" fixtures/stand-ins.yaml | python3 -c 'import sys,yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d["kind"] == "ServiceAccount": print("/ns/%s/sa/%s" % (d["metadata"]["namespace"], d["metadata"]["name"]))'; echo "/ns/$SPIRE_NS/sa/stand-in")
 # The admission policy of zone-policy. The proxy status port its capture rule lets the injector
 # exclude is read from the installed release in section 8, not from the chart's defaults.
 POLICY=proxy-takes-spire-socket
@@ -198,6 +206,8 @@ keep_zone=0; kept=0; written=0; cleaned=0; installed=0
 # fixtures/svid-on-node.yaml go too, by their label (whatever nodes they were rendered for, a run
 # interrupted before section 6 included), and the ServiceAccount of that fixture with them. So do the
 # per-node meshed stand-ins of fixtures/mesh-on-node.yaml, their Services and ServiceAccounts, by their label.
+# The stand-ins of fixtures/stand-ins.yaml go with their Services and their own ServiceAccounts, one per
+# stand-in that runs a proxy or fetches an SVID, all listed in that file.
 delete_stand_ins() {
   sed -e "s/__DATA__/$DATA/g" -e "s/__MGMT__/$MGMT/g" fixtures/stand-ins.yaml \
     | kubectl --context "$CONTEXT" delete -f - --ignore-not-found --wait=true >/dev/null 2>&1
@@ -667,7 +677,7 @@ mesh_td=$(k -n "$ISTIO_NS" get cm istio -o jsonpath='{.data.mesh}' | awk '/^trus
 
 # --------------------------------------------------------------------------------------------
 section "5. Stand-in pods"
-say 'From `scripts/verify-mesh-identity/fixtures/stand-ins.yaml`: in the data plane a meshed peer, a labelled caller with a Workload API client on the CSI socket, an unlabelled meshed pod, an unlabelled pod without proxy with a Workload API client, the matrix pair `pdp-adapter` and the cross-plane caller `data-plain`; in the management plane `tsa-policy-engine`, `openbao-standin` (a management-plane destination without a lane in the allow matrix, named apart from the real store, the release `ztd-openbao`) and `mgmt-caller`; in both a proxy-less `probe` for raw TCP probes. All in the service account `stand-in` unless noted.' ''
+say 'From `scripts/verify-mesh-identity/fixtures/stand-ins.yaml`: in the data plane a meshed peer, a labelled caller with a Workload API client on the CSI socket, an unlabelled meshed pod, an unlabelled pod without proxy with a Workload API client, the matrix pair `pdp-adapter` and the cross-plane caller `data-plain`; in the management plane `tsa-policy-engine`, `openbao-standin` (a management-plane destination without a lane in the allow matrix, named apart from the real store, the release `ztd-openbao`) and `mgmt-caller`; in both a proxy-less `probe` for raw TCP probes. Each stand-in that runs a proxy or fetches an SVID runs in a service account of its own, named after the pod (`peer`, `caller`, `unregistered`, `unregistered-svid`, `pdp-adapter`, `data-plain`, `tsa-policy-engine`, `openbao-standin`, `mgmt-caller`), so its SPIFFE ID is `spiffe://<trust domain>/ns/<namespace>/sa/<pod>` and no two share one; the two `probe` pods hold no identity and run in the default account of their namespace. Every object of the file carries the label `app.kubernetes.io/part-of: verify-mesh-identity`.' ''
 sed -e "s/__DATA__/$DATA/g" -e "s/__MGMT__/$MGMT/g" fixtures/stand-ins.yaml >"$work/stand-ins.yaml"
 # The release ztd-openbao is held to no node, on every cluster: no pod of it (the server, the
 # bootstrap Job's, the verification Job's) carries a node affinity or a node selector, and the
@@ -1087,7 +1097,8 @@ r=$(http "$DATA" caller app "http://peer.$DATA.svc:8080/hostname")
 section "10. traffic-through-the-proxies"
 src0=$(metric "$DATA" caller source); dst0=$(metric "$DATA" peer destination)
 xfcc=$(k -n "$DATA" exec caller -c app -- curl -sS -m 15 "http://peer.$DATA.svc:8080/header?key=X-Forwarded-Client-Cert" 2>&1)
-grep -qF "URI=$SA_ID" <<<"$xfcc"; check $? "the peer sees the caller's SPIFFE identity in X-Forwarded-Client-Cert" "$xfcc"
+xfcc_id=$(grep -o 'URI=[^;,]*' <<<"$xfcc" | head -1 | sed 's/^URI=//')
+[ "$xfcc_id" = "$SA_ID" ]; check $? "the peer sees the caller's own SPIFFE identity in X-Forwarded-Client-Cert ($SA_ID, the caller's own service account; any other ID fails)" "$xfcc"
 sleep 3
 src1=$(metric "$DATA" caller source); dst1=$(metric "$DATA" peer destination)
 [ "$src1" -gt "$src0" ] && [ "$dst1" -gt "$dst0" ]; check $? "both proxies counted the request (istio_requests_total)" "caller (reporter=source) $src0 → $src1, peer (reporter=destination) $dst0 → $dst1"
@@ -1224,7 +1235,7 @@ st=$(h status zone-policy -n "$ISTIO_NS" -o json | jq -r .info.status)
 # --------------------------------------------------------------------------------------------
 section "14. registration-inventory"
 say "A declared workload is a pod that runs in a plane namespace (one with the label \`ztd.facis.io/plane\`) and holds a SPIFFE certificate. The inventory is the set of registration entries on the SPIRE server. Both are read here from the live zone and compared by SPIFFE ID, in both directions; nothing is declared by a written list or by what the charts render. The entries are read once (\`spire-server entry show\`), then the pods once: every pod of a plane namespace, and every pod of any other namespace that has an \`istio-proxy\` container or a \`csi.spiffe.io\` volume, so that a certificate outside a plane cannot hide. The certificate in use is read from a meshed pod's proxy (\`istioctl proxy-config secret\`, its \`default\` secret) and from an unmeshed pod's Workload API client over the mounted socket (\`spire-agent api fetch x509\`); a pod with neither is not observable from outside. A reader that ran and failed (the read errors or times out) is a failed check of its own, never taken for a pod without a certificate, unless the pod, looked up again by name and uid, no longer exists (deleted after the listing: its entry is then one without a certificate in use, the pod is gone) or is terminating and the reader's container no longer runs (recorded as not running); a reader whose container is not running reads nothing, as nothing is in use. A terminating pod is read like any other while its containers run (they keep running through its grace period)." ''
-say "Outcomes of an entry: **matched** (its pod runs in a plane namespace with the identity label and the certificate read from it carries the entry's ID and chains to the SPIRE CA); **entry without a certificate in use** (the pod is gone, or holds no certificate the proof can read; recorded, not failed); **entry outside a plane namespace** (failed); **entry not created by the registration rule** (failed: no \`k8s:pod-uid\` selector or a selector the rule does not write, a field the rule leaves unset (admin, downstream, DNS names, federation, hint, store, TTLs, expiry), a pod without the identity label, a parent other than the SPIRE agent of the pod's node, or an ID other than \`spiffe://$TD/ns/<namespace>/sa/<service account>\` of that pod; an entry whose namespace cannot be told is reported here, not as outside a plane). Then every certificate read: one that no entry of its own pod lists (**certificate without an entry**), one in a pod outside a plane namespace (**certificate outside a plane namespace**) or one that does not chain to the SPIRE CA fails, its issuer printed. Rows of the proof's own pods (service account \`stand-in\`, or a pod of \`fixtures/stand-ins.yaml\`) are marked \`fixture\`." ''
+say "Outcomes of an entry: **matched** (its pod runs in a plane namespace with the identity label and the certificate read from it carries the entry's ID and chains to the SPIRE CA); **entry without a certificate in use** (the pod is gone, or holds no certificate the proof can read; recorded, not failed); **entry outside a plane namespace** (failed); **entry not created by the registration rule** (failed: no \`k8s:pod-uid\` selector or a selector the rule does not write, a field the rule leaves unset (admin, downstream, DNS names, federation, hint, store, TTLs, expiry), a pod without the identity label, a parent other than the SPIRE agent of the pod's node, or an ID other than \`spiffe://$TD/ns/<namespace>/sa/<service account>\` of that pod; an entry whose namespace cannot be told is reported here, not as outside a plane). Then every certificate read: one that no entry of its own pod lists (**certificate without an entry**), one in a pod outside a plane namespace (**certificate outside a plane namespace**) or one that does not chain to the SPIRE CA fails, its issuer printed. Rows of the proof's own pods (the label \`app.kubernetes.io/part-of: verify-mesh-identity\` that every fixture carries, or a pod of \`fixtures/stand-ins.yaml\`) are marked \`fixture\`." ''
 inv=$work/inventory; rm -rf "$inv"; mkdir -p "$inv"
 spire_server entry show -output json >"$inv/entries.json" 2>"$inv/entries.err"; inv_rc=$?
 spire_server bundle show >"$inv/bundle.pem" 2>/dev/null
@@ -1328,8 +1339,9 @@ template = lambda ns, s: f"spiffe://{td}/ns/{ns}/sa/{s}"
 UNSET = ("admin", "downstream", "dns_names", "federates_with", "hint", "store_svid", "x509_svid_ttl", "jwt_svid_ttl", "expires_at")
 agent_parent = lambda parent: parent.startswith("/spire/agent/k8s_psat/") and parent.rsplit("/", 1)[-1] in node_uid.values()
 gone = lambda p: p is None or p["status"].get("phase") in ("Succeeded", "Failed")
+part_of = lambda p: (p["metadata"].get("labels") or {}).get("app.kubernetes.io/part-of") == "verify-mesh-identity"
 def fixture(key, p):
-    return "fixture" if key in fixtures or (p is not None and sa(p) == "stand-in") else ""
+    return "fixture" if key in fixtures or (p is not None and part_of(p)) else ""
 yn = lambda b: "yes" if b else "no"
 out = []
 say = out.append
@@ -1635,7 +1647,7 @@ else
     && k -n kube-public get pod declared-not-reconciled --ignore-not-found -o name \
     && k get namespace mesh-identity-outside --ignore-not-found -o name; } 2>&1 || echo "a read failed")
   for _ in $(seq 30); do
-    entries=$(spire_server entry show -output json 2>/dev/null | jq -er '[.entries[] | select(.spiffe_id.path | endswith("/sa/stand-in") or contains("/sa/mesh-on-")) | "spiffe://\(.spiffe_id.trust_domain)\(.spiffe_id.path)"] | join(" ")') || entries="the entries could not be read"
+    entries=$(spire_server entry show -output json 2>/dev/null | jq -er --arg ids "$FIXTURE_IDS" '($ids | split("\n")) as $f | [.entries[] | select(.spiffe_id.path as $p | ($f | index($p)) != null or ($p | contains("/sa/mesh-on-"))) | "spiffe://\(.spiffe_id.trust_domain)\(.spiffe_id.path)"] | join(" ")') || entries="the entries could not be read"
     [ -z "$entries" ] && break; sleep 2
   done
   # The certificates in use by the proxies of the plane namespaces (section 14's reader): none may
@@ -1654,7 +1666,7 @@ else
       if [ -z "$ns" ] || [ "$up" != running ]; then continue; fi
       proxy_cert "$ns" "$pod" "$work/left-cert.pem"
       case $? in
-        0) u=$(cert_uri "$work/left-cert.pem"); [[ $u == */sa/stand-in || $u == */sa/mesh-on-* ]] && certs_left="$certs_left $ns/$pod=$u";;
+        0) u=$(cert_uri "$work/left-cert.pem"); { [ -n "$u" ] && grep -qxF -- "/${u#spiffe://*/}" <<<"$FIXTURE_IDS"; } || [[ $u == */sa/mesh-on-* ]] && certs_left="$certs_left $ns/$pod=$u";;
         1) ;;
         *) pod_gone "$ns" "$pod" "$uid" || reader_ended "$ns" "$pod" "$uid" istio-proxy || certs_left="$certs_left $ns/$pod=unread($(cat "$work/left-cert.pem.err" 2>/dev/null))";;
       esac
