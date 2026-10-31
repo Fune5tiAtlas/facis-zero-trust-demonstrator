@@ -211,18 +211,12 @@ var pendingSteps = []string{
 	"^the deployed endpoints$",
 	"^TLS 1\\.3 and an older TLS version are attempted$",
 	"^TLS 1\\.3 succeeds where authorized and the older protocol version is rejected\\.$",
-	"^the deployed release and CI/CD logs$",
-	"^secret storage and log output are inspected$",
-	"^required credentials are held in Kubernetes Secrets and no plaintext secret value is present in logs\\.$",
 	"^a successful release deployment$",
 	"^the Kubernetes resources are inspected$",
 	"^the required namespace, ingress, service and deployment objects exist and are ready\\.$",
 	"^the target deployment$",
 	"^dependency health/connectivity checks are executed$",
 	"^the required Keycloak and trust endpoints are reachable and their expected interfaces respond\\.$",
-	"^a release candidate$",
-	"^its Helm chart enters the CI quality gate$",
-	"^helm lint and helm dry-run both pass before the release can be promoted\\.$",
 }
 
 func registerPending(ctx *godog.ScenarioContext) {

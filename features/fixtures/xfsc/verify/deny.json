@@ -1,0 +1,29 @@
+{
+  "fixture": true,
+  "operation": "verify",
+  "case": "deny",
+  "input": {
+    "presentation": "present/allow",
+    "status": "status/deny"
+  },
+  "output": {
+    "outcome": {
+      "iss": "https://verifier.zone-b.example",
+      "outcome_id": "00000000-0000-4000-8000-000000000102",
+      "client_id": "participant-reader",
+      "challenge": "fx-challenge-0123456789ab",
+      "audience": "https://zone-b.example/resource",
+      "claims": {
+        "role": "participant"
+      },
+      "credential_refs": [
+        "urn:uuid:00000000-0000-4000-8000-00000000002a"
+      ],
+      "verified_at": "2026-10-08T12:00:00Z",
+      "expires_at": "2026-10-08T12:02:00Z",
+      "status": "revoked",
+      "reason_code": "CRED-REVOKED"
+    }
+  },
+  "expect": "IF-03 outcome, status revoked, CRED-REVOKED; the grant is refused with CRED-OUTCOME-NOT-VERIFIED."
+}

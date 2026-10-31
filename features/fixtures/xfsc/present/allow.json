@@ -1,0 +1,50 @@
+{
+  "fixture": true,
+  "operation": "present",
+  "case": "allow",
+  "input": {
+    "challenge": "fx-challenge-0123456789ab",
+    "audience": "https://zone-b.example/resource"
+  },
+  "output": {
+    "presentation": {
+      "@context": [
+        "https://www.w3.org/ns/credentials/v2"
+      ],
+      "type": [
+        "VerifiablePresentation"
+      ],
+      "holder": "https://backend.zone-a.example/participant-reader",
+      "verifiableCredential": [
+        {
+          "@context": [
+            "https://www.w3.org/ns/credentials/v2"
+          ],
+          "id": "urn:uuid:00000000-0000-4000-8000-00000000002a",
+          "type": [
+            "VerifiableCredential",
+            "ParticipantCredential"
+          ],
+          "issuer": "https://issuer.zone-b.example",
+          "validFrom": "2026-10-01T00:00:00Z",
+          "validUntil": "2027-01-31T00:00:00Z",
+          "credentialSubject": {
+            "id": "https://backend.zone-a.example/participant-reader",
+            "role": "participant",
+            "entitlement": "read"
+          },
+          "credentialStatus": {
+            "id": "https://issuer.zone-b.example/status/1#42",
+            "type": "BitstringStatusListEntry",
+            "statusPurpose": "revocation",
+            "statusListIndex": "42",
+            "statusListCredential": "https://issuer.zone-b.example/status/1"
+          }
+        }
+      ],
+      "challenge": "fx-challenge-0123456789ab",
+      "audience": "https://zone-b.example/resource"
+    }
+  },
+  "expect": "Forwarded to verification; outcome as verify/allow."
+}
