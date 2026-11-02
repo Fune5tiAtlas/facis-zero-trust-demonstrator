@@ -119,7 +119,10 @@ added, each only when the zone file enables it, and nothing else opens toward `s
 `istio-system`. They are declared openings of the network baseline, entries of the
 cluster-administration class of the connector bypass list, listed beside the DNS bypass in the
 [architecture](architecture.md#declared-openings-of-the-network-baseline); they are not rows of the
-allow matrix.
+allow matrix. The first is the one whose source is pods — every pod of every plane namespace with
+the mesh label, `ztd-mgmt` among them — and so a path from the data plane into the management
+plane the allow matrix does not yet dispose; the architecture declares it and what is left to a
+follow-up.
 
 | Opening | Source | Destination | Port | Rendered as |
 |---|---|---|---|---|
