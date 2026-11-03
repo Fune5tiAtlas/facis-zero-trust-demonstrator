@@ -4,7 +4,9 @@ intraPlanePairs, copied by scripts/install-zone). Each is an AuthorizationPolicy
 destination's namespace that selects the destination by its pod labels and admits the caller by its
 SPIFFE principal (<trust domain>/ns/<namespace>/sa/<service account>), or every workload of the
 source namespace when the source is a whole plane, on the destination's ports when the pair names
-any. Identities only: no path, method, host or address, so no rule here is an L7 rule.
+any. Identities only: no path, method, host or address, so no rule here is an L7 rule. Each rule
+carries its pair's L7 owner (l7Owner, default sidecar) as the annotation ztd.facis.io/l7-owner: the
+place of record of the path's single L7 decision point, the destination's sidecar.
 */ -}}
 {{- $seen := dict }}
 {{- range .Values.pairs }}
@@ -24,6 +26,7 @@ metadata:
     {{- include "zone-policy.labels" $ | nindent 4 }}
   annotations:
     ztd.facis.io/pair: {{ .name }}
+    ztd.facis.io/l7-owner: {{ .l7Owner | default "sidecar" | quote }}
 spec:
   selector:
     matchLabels:

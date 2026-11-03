@@ -75,6 +75,14 @@ participant backend obtains its authorization from the connector, and Keycloak s
 login and the pipeline ([Keycloak integration](keycloak.md#connector-boundary)). A permitted lane
 without a caller would only widen what the matrix exists to limit.
 
+Every row records its single L7 enforcement owner in `l7Owner`, `sidecar` (the destination's Envoy
+sidecar) or `none`, required by the schema; the five shipped rows are `sidecar`. `cilium` is not a
+value: under the mesh-wide STRICT mTLS Cilium sees only ciphertext on these paths, and the
+`zone-policy` release refuses Cilium L7 rules in plane namespaces (`l7-owner-is-the-mesh`). Both
+NetworkPolicies of a row and its mesh rule `allow-<name>` carry the owner as the annotation
+`ztd.facis.io/l7-owner`, written `none` when `mesh.mode` is `none` or the parked `ambient`, which has
+no per-pod proxy and deploys no waypoint ([Architecture](architecture.md#allow-matrix-data-plane-management-plane)).
+
 Every row is enforced at both layers (`enforcedBy` documents the layer the architecture holds
 responsible, not a choice between them). The network layer opens the L3/L4 lane here. The mesh
 layer is rendered by the `zone-policy` release, which installs after Istio's CRDs: a mesh-wide

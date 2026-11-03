@@ -116,7 +116,12 @@
           "description": "The rule is allow-<name>, a Kubernetes name of at most 63 characters."
         },
         "from": { "$ref": "#/$defs/pairSource" },
-        "to": { "$ref": "#/$defs/pairDestination" }
+        "to": { "$ref": "#/$defs/pairDestination" },
+        "l7Owner": {
+          "type": "string",
+          "enum": ["sidecar", "none"],
+          "description": "The single L7 enforcement owner of the pair's path (the umbrella's allowMatrix row's l7Owner, copied by scripts/install-zone), rendered as the annotation ztd.facis.io/l7-owner of allow-<name>. Default sidecar: an intra-plane pair joins two injected pods of one plane namespace."
+        }
       }
     },
     "pairSource": {

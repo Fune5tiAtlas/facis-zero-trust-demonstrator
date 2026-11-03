@@ -300,7 +300,9 @@ chart_path() {
 # those lists of rows, each turned into zone-policy's pair shape: the caller's plane or namespace
 # with its serviceAccount, or wholePlane when its podSelector is {} (the row's selector, enforcedBy
 # and the destination's serviceAccount stay in the umbrella); the destination's plane or namespace,
-# podSelector and ports. Paths travel as arguments, never inside the source.
+# podSelector and ports; and the row's l7Owner when it has one (every allowMatrix row; an
+# intraPlanePairs entry has none and zone-policy defaults it to sidecar). Paths travel as arguments,
+# never inside the source.
 merged_values() {
   if [ "$2" = zone ]; then cp "$ZONE_VALUES" "$4"; return; fi
   zone_py "$@" <<'PY'
@@ -323,7 +325,10 @@ def as_pairs(rows, source):
         if t.get("ports"):
             dst["ports"] = [dict({"port": p["port"]}, **({"protocol": p["protocol"]} if p.get("protocol") else {}))
                             for p in t["ports"]]
-        pairs.append({"name": row.get("name"), "from": src, "to": dst})
+        pair = {"name": row.get("name"), "from": src, "to": dst}
+        if row.get("l7Owner"):
+            pair["l7Owner"] = row["l7Owner"]
+        pairs.append(pair)
     return pairs
 def put(target, v):
     node = values

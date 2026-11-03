@@ -134,12 +134,17 @@
       "description": "The data plane -> management plane rows: a network-policy lane here, an allow rule by SPIFFE identity in zone-policy.",
       "items": {
         "type": "object",
-        "required": ["name", "from", "to"],
+        "required": ["name", "from", "to", "l7Owner"],
         "properties": {
           "name": { "type": "string", "pattern": "^[a-z0-9-]+$" },
           "from": { "allOf": [{ "$ref": "#/$defs/endpoint" }, { "$ref": "#/$defs/sourceAccount" }] },
           "to": { "$ref": "#/$defs/endpoint" },
-          "enforcedBy": { "type": "string", "enum": ["mesh", "networkPolicy", "both"] }
+          "enforcedBy": { "type": "string", "enum": ["mesh", "networkPolicy", "both"] },
+          "l7Owner": {
+            "type": "string",
+            "enum": ["sidecar", "none"],
+            "description": "The single L7 enforcement owner of the row's path: sidecar (the destination's Envoy sidecar) or none (no component takes an L7 decision). Never cilium: under the mesh-wide STRICT mTLS Cilium sees only ciphertext on the path."
+          }
         }
       }
     },
