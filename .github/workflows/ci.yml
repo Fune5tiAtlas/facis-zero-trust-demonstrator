@@ -317,6 +317,18 @@ jobs:
           scripts/ci/check-policy-addresses.sh
           scripts/ci/check-policy-addresses_test.sh
 
+      # One L7 owner per path (SRS 2.3.3, Table 4; ADR-0009): no CiliumNetworkPolicy or
+      # CiliumClusterwideNetworkPolicy the umbrella, zone-policy and ztd-openbao render with each
+      # shipped zone file and the CI zone file carries an http, kafka, l7 or l7proto rule, and every
+      # rendered allow-matrix policy (the NetworkPolicy pairs and the mesh allow rules) carries its
+      # owner annotation ztd.facis.io/l7-owner; the test plants an L7 rule and removes an owner and
+      # expects both reported. Same render path as the address check, rendering only.
+      - name: Check that no Cilium policy takes an L7 decision
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user pyyaml
+          scripts/ci/check-policy-l7-owner.sh
+          scripts/ci/check-policy-l7-owner_test.sh
+
       # A zone is eight releases (scripts/install-zone/install.sh): three project charts linted above
       # (the umbrella, zone-policy and ztd-openbao, the last wrapping the upstream openbao chart from
       # its Chart.lock) and five upstream charts, SPIRE's and Istio's, pinned by version and digest in

@@ -28,6 +28,8 @@ set -uo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 umbrella=$root/deployment/helm/ztd
+# shellcheck source=scripts/ci/render-zones.sh
+. "$root/scripts/ci/render-zones.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -127,40 +129,20 @@ fi
 case ${1:-} in -*) echo "unknown option: $1" >&2; exit 2;; esac
 
 zones=("$@")
-if [ ${#zones[@]} -eq 0 ]; then
-  for z in "$umbrella"/zones/*.yaml; do
-    case $(basename "$z") in *.example.yaml) continue;; esac
-    zones+=("$z")
-  done
-  zones+=("$umbrella/ci/values.yaml")
-fi
+[ ${#zones[@]} -gt 0 ] || mapfile -t zones < <(default_zones "$umbrella")
 
 failures=0
 for zone in "${zones[@]}"; do
   label=${zone#"$root"/}
   [ -f "$zone" ] || { echo "FAIL $label: no such zone file"; failures=$((failures + 1)); continue; }
-  dir=$work/$(printf '%s' "$label" | tr '/' '_')
-  mkdir -p "$dir"
-  if ! helm template ztd "$umbrella" -n ztd-system -f "$zone" >"$dir/ztd.yaml" 2>"$dir/ztd.err"; then
-    echo "FAIL $label: the umbrella does not render: $(grep -v '^$' "$dir/ztd.err" | head -3 | tr '\n' ' ')"
+  if ! render_zone "$root" "$zone" "$work/$(printf '%s' "$label" | tr '/' '_')"; then
+    echo "FAIL $label: $render_error"
     failures=$((failures + 1)); continue
   fi
-  files=("$dir/ztd.yaml"); releases=ztd
-  mode=$(python3 -c 'import sys,yaml
-z = yaml.safe_load(open(sys.argv[1])) or {}
-print((z.get("mesh") or {}).get("mode") or "sidecar")' "$zone")
-  if [ "$mode" = sidecar ]; then
-    if ! ZONE_VALUES=$zone RENDER_DIR=$dir/mesh "$root/scripts/install-zone/install.sh" render zone-policy ztd-openbao \
-        >"$dir/mesh.log" 2>&1; then
-      echo "FAIL $label: zone-policy or ztd-openbao does not render: $(grep -v '^$' "$dir/mesh.log" | tail -3 | tr '\n' ' ')"
-      failures=$((failures + 1)); continue
-    fi
-    files+=("$dir/mesh/zone-policy.yaml" "$dir/mesh/ztd-openbao.yaml"); releases="ztd, zone-policy, ztd-openbao"
-  fi
-  out=$(scan "$label" "${files[@]}"); rc=$?
+  out=$(scan "$label" "${render_files[@]}"); rc=$?
   grep '^FAIL' <<<"$out"
   if [ $rc -eq 0 ]; then
-    echo "$label (mesh.mode $mode): $(tail -1 <<<"$out") rendered by $releases, no address"
+    echo "$label (mesh.mode $render_mode): $(tail -1 <<<"$out") rendered by $render_releases, no address"
   else
     failures=$((failures + 1))
   fi
