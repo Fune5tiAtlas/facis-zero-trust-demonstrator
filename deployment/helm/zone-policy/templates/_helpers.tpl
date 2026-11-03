@@ -34,3 +34,17 @@ it, the SPIFFE ID without its scheme: <trustDomain>/ns/<namespace>/sa/<serviceAc
 {{- define "zone-policy.principal" -}}
 {{- printf "%s/ns/%s/sa/%s" .root.Values.trustDomain .namespace .serviceAccount -}}
 {{- end }}
+
+{{/*
+zone-policy.ciliumL7Rule: CEL, true when a Cilium policy (object) carries the L7 rule kind given as
+the context (http, kafka, l7 or l7proto) in any toPorts[].rules of any direction (ingress, egress,
+ingressDeny, egressDeny) of its spec or of any entry of its specs list. Every optional field is
+guarded with has(), so a policy without toPorts or rules is not matched.
+*/}}
+{{- define "zone-policy.ciliumL7Rule" -}}
+{{- $kind := . -}}
+variables.specs.exists(s,
+{{- range $i, $d := list "ingress" "egress" "ingressDeny" "egressDeny" }}
+  {{ if $i }}|| {{ end }}(has(s.{{ $d }}) && s.{{ $d }}.exists(r, has(r.toPorts) && r.toPorts.exists(p, has(p.rules) && has(p.rules.{{ $kind }}))))
+{{- end }})
+{{- end }}

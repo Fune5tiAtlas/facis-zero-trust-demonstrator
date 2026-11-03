@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "zone-policy chart values",
   "type": "object",
-  "required": ["trustDomain", "spire", "mesh", "registration", "peerAuthentication", "proxySocketPolicy", "checks", "pairs", "planes", "denialLog"],
+  "required": ["trustDomain", "spire", "mesh", "registration", "peerAuthentication", "proxySocketPolicy", "l7OwnerPolicy", "checks", "pairs", "planes", "denialLog"],
   "properties": {
     "trustDomain": {
       "type": "string",
@@ -67,6 +67,21 @@
           "type": "string",
           "pattern": "^[^\\s'/]+/[^\\s']+@sha256:[0-9a-f]{64}$",
           "description": "The injected proxy's whole image reference, pinned by digest; must equal the istiod release's global.proxy.image."
+        }
+      }
+    },
+    "l7OwnerPolicy": {
+      "type": "object",
+      "description": "The admission policy that refuses Cilium L7 rules in plane namespaces and cluster-wide: the mesh's sidecar is the L7 owner of those paths.",
+      "required": ["enabled", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 51,
+          "description": "Name of the policy and of its namespaced binding; the cluster-wide binding is <name>-clusterwide."
         }
       }
     },
