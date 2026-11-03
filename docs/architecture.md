@@ -125,9 +125,12 @@ row as uncovered until it exists.
 | any data-plane workload → SPIRE server | SPIRE control plane | **DENY** | NetworkPolicy: DENY; mesh: DENY | none | `@ZT-55 @BDD-ZT-055` |
 | anything else data → management: any management-plane destination without its own row, including a bound service without a row of its own (estserver) and other management components (for example ArgoCD, OpenBao, Harbor, admin APIs), except istiod's xDS port (a declared opening, no row yet) | any management-plane destination not listed above | **DENY** | NetworkPolicy: DENY; mesh: DENY | none | `@ZT-55 @BDD-ZT-055` |
 
-Both layers hold every row: the network layer admits a pod by its labels, the mesh layer by its
-identity, so a pod that carries a row's labels under another service account passes the network
-lane and is refused by the mesh. Inside a plane namespace the network layer is open
+Both layers hold every permitted row: the network layer admits a pod by its labels, the mesh layer
+by its identity, so a pod that carries a row's labels under another service account passes the
+network lane and is refused by the mesh. A denied row whose destination runs without a mesh proxy
+(the SPIRE server, and istiod on its ports other than xDS) rests on the network layer alone: the
+SPIRE and Istio control planes are not meshed
+([Workload identity](workload-identity.md#mesh-authorization)). Inside a plane namespace the network layer is open
 (`allow-intra-plane`) and the mesh layer decides alone: a same-plane pair between releases is an
 entry of the umbrella's `intraPlanePairs` (none today), and a release whose own pods call one
 another declares those pairs in its own chart (`ztd-openbao`: its bootstrap Job and verification
