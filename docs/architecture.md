@@ -95,18 +95,31 @@ AuthorizationPolicy disposition, and nothing else. A permitted row is permitted 
 layers; a denied row is denied at both.
 
 On the path of every permitted row the **mesh's L7 proxy** is the single L7 enforcement owner, and
-the NetworkPolicy layer is held to L3/L4 for that path. Which proxy that is follows the zone's
-`mesh.mode`: the workload's sidecar proxy under sidecar mode, the current baseline
-([ADR-0009](adr/0009-service-mesh-mode-istio-sidecar-with-cilium.md)), and the waypoint under
-ambient mode. A zone whose `mesh.mode` is `none` has no mesh layer and so no L7 proxy;
-it does not meet ZT-55's rule that both layers enforce the separation, and is outside this matrix.
-Two L7 decision points on one path would make the fail-closed behaviour ZT-55 depends on
-non-deterministic, so each path has exactly one, in either mode. The place of record for the
-assignment is the mesh configuration, per path: the umbrella's `allowMatrix` row, which the
-`zone-policy` release renders as the path's `AuthorizationPolicy` `allow-<row>` and which the
-installer's coupling check keeps equal to the NetworkPolicy pair rendered from the same row. This
-matrix reflects that record and does not replace it. If the mesh configuration changes the owner
-of a path, this column changes with it.
+the NetworkPolicy layer is held to L3/L4 for that path. Under sidecar mode, the current baseline
+([ADR-0009](adr/0009-service-mesh-mode-istio-sidecar-with-cilium.md)), that proxy is the
+destination's Envoy sidecar. Ambient mode is parked: the excursion that keeps it renderable deploys
+no waypoint, so no proxy owns L7 there and the record reads `none`; a return to ambient brings its
+waypoints and their owner value in its own change. A zone whose `mesh.mode` is `none` has no mesh
+layer and so no L7 proxy; it does not meet ZT-55's rule that both layers enforce the separation, and
+is outside this matrix. Two L7 decision points on one path would make the fail-closed behaviour
+ZT-55 depends on non-deterministic (SRS 2.3.3, Table 4: L7 policies must not be enforced by Istio
+and Cilium simultaneously), so each path has exactly one.
+
+The place of record for the assignment is the mesh configuration, per path: the field `l7Owner` of
+the path's row in the umbrella's `allowMatrix` (`sidecar` or `none`, required by the chart's schema;
+`sidecar` on every row below). Both layers' policies of the row carry it as the annotation
+`ztd.facis.io/l7-owner`: the NetworkPolicy pair the umbrella renders and the `AuthorizationPolicy`
+`allow-<row>` the `zone-policy` release renders from the same row, which the installer's coupling
+check keeps equal to the pair. The annotation reads `none` in a zone whose `mesh.mode` is `none` or
+the parked `ambient`. The other layer is held to L3/L4 at admission: the `zone-policy` rule
+`l7-owner-is-the-mesh` refuses any Cilium policy in a plane namespace, and any cluster-wide one,
+that carries an HTTP, Kafka or generic L7 rule, whoever applies it; the pipeline fails on any such
+rule in the charts' own renderings and on any rendered allow-matrix policy without its owner
+(`scripts/ci/check-policy-l7-owner.sh`). This matrix reflects that record and does not replace it:
+`scripts/check-plane-separation.sh` fails when a row below names the mesh's proxy as owner and the
+row of the same name records another owner, or does not exist. If the mesh configuration changes
+the owner of a path, this column changes with it. The paths outside this matrix and their owners
+are listed under [L7 owner of the paths outside the matrix](#l7-owner-of-the-paths-outside-the-matrix).
 
 The test column names the scenario tag that proves each row, in the form the acceptance harness
 requires: the requirement row and its acceptance test identifier
@@ -275,6 +288,20 @@ plays in the matrix.
   unreachable at both layers. The closure has one declared gap, which that test leaves out:
   istiod's xDS port, reached under the opening described under
   [Declared openings](#declared-openings-of-the-network-baseline), which no row disposes yet.
+
+### L7 owner of the paths outside the matrix
+
+The zone's other paths have an owner too, so that no path is left to two decision points. Only the
+intra-plane lane is mesh traffic; the others reach a destination that runs without a mesh proxy, or
+are not mTLS traffic, so nothing takes an L7 decision on them (`none`) and Cilium is held to L3/L4
+there as everywhere in the plane namespaces.
+
+| Path | L7 owner | Why |
+|---|---|---|
+| intra-plane lane: two meshed pods of one plane namespace (`allow-intra-plane`; the umbrella's `intraPlanePairs`, the secret store's own `allow-ztd-openbao-bootstrap-to-server` and `allow-ztd-verify-openbao-to-server`) | `sidecar` | mesh traffic under STRICT mTLS; the destination's sidecar decides alone, its rule carries `ztd.facis.io/l7-owner: sidecar` |
+| control-plane openings: `meshControlPlane` (istiod xDS), `controlPlaneWebhooks`, `identityServer` ([Declared openings](#declared-openings-of-the-network-baseline)) | `none` | istiod and the SPIRE server run without a proxy, the webhook callers and the SPIRE agents are not meshed: the network layer imposes the restriction at L3/L4 |
+| the API lane (`kubeApi`) | `none` | the API server is outside the mesh; a Cilium L3/L4 policy to the `kube-apiserver` entity |
+| workloads → DNS ([Supporting services](#supporting-services-outside-the-management-plane)) | `none` | plaintext DNS to a resolver without a proxy; `allow-dns-egress` carries `ztd.facis.io/l7-owner: none`, and a DNS-aware Cilium rule stays admitted (ZT-26 bypass) |
 
 ### Supporting services (outside the management plane)
 
