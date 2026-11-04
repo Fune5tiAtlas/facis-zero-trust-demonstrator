@@ -1,0 +1,165 @@
+# Cilium policies for the L7 owner rule of zone-policy (l7-owner-is-the-mesh), one document per case,
+# used by scripts/verify-mesh-identity/verify.sh (section cilium-l7-refused-in-planes) and by the
+# admission test of the rule against a bare API server. Nothing here is consumed by a zone. __DATA__ is
+# replaced with the data-plane namespace, __OUTSIDE__ with a namespace that does not carry the plane
+# label. Each document carries the annotations verify.ztd.facis.io/case (its name) and
+# verify.ztd.facis.io/expect: refused (by the rule, or by the CRD schema for a field it does not
+# define) or admitted. The case update-adds-http is an update of no-to-ports (same name): it is
+# applied after that one is admitted. Every object carries app.kubernetes.io/part-of:
+# verify-mesh-identity, by which the proof removes what it created.
+# The selectors match nothing the zone runs (app.kubernetes.io/name: verify-cilium-l7), so an
+# admitted case changes no traffic for the short time it exists.
+#
+# An http rule in spec: refused.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: verify-l7-http
+  namespace: __DATA__
+  labels: { app.kubernetes.io/part-of: verify-mesh-identity }
+  annotations: { verify.ztd.facis.io/case: http-in-spec, verify.ztd.facis.io/expect: refused }
+spec:
+  endpointSelector: { matchLabels: { app.kubernetes.io/name: verify-cilium-l7 } }
+  ingress:
+    - toPorts:
+        - ports: [{ port: "8080", protocol: TCP }]
+          rules:
+            http: [{ method: GET, path: /hostname }]
+---
+# A kafka rule in the second entry of the specs list: refused (by the rule on 1.19 CRDs, which define
+# kafka; by the schema on 1.20 CRDs, which do not).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: verify-l7-kafka-specs
+  namespace: __DATA__
+  labels: { app.kubernetes.io/part-of: verify-mesh-identity }
+  annotations: { verify.ztd.facis.io/case: kafka-in-specs, verify.ztd.facis.io/expect: refused }
+specs:
+  - endpointSelector: { matchLabels: { app.kubernetes.io/name: verify-cilium-l7 } }
+    egress:
+      - toPorts:
+          - ports: [{ port: "53", protocol: UDP }]
+            rules:
+              dns: [{ matchPattern: "*" }]
+  - endpointSelector: { matchLabels: { app.kubernetes.io/name: verify-cilium-l7 } }
+    ingress:
+      - toPorts:
+          - ports: [{ port: "9092", protocol: TCP }]
+            rules:
+              kafka: [{ topic: verify }]
+---
+# Cilium's generic L7 parser (l7proto with l7 key-value rules): refused.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: verify-l7-l7proto
+  namespace: __DATA__
+  labels: { app.kubernetes.io/part-of: verify-mesh-identity }
+  annotations: { verify.ztd.facis.io/case: l7proto, verify.ztd.facis.io/expect: refused }
+spec:
+  endpointSelector: { matchLabels: { app.kubernetes.io/name: verify-cilium-l7 } }
+  ingress:
+    - toPorts:
+        - ports: [{ port: "9000", protocol: TCP }]
+          rules:
+            l7proto: r2d2
+            l7: [{ cmd: READ }]
+---
+# An http rule under egressDeny, where neither CRD version defines rules: refused (by the schema
+# under strict field validation; pruned before admission otherwise, so nothing L7 is stored).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: verify-l7-egress-deny
+  namespace: __DATA__
+  labels: { app.kubernetes.io/part-of: verify-mesh-identity }
+  annotations: { verify.ztd.facis.io/case: egress-deny-http, verify.ztd.facis.io/expect: refused }
+spec:
+  endpointSelector: { matchLabels: { app.kubernetes.io/name: verify-cilium-l7 } }
+  egressDeny:
+    - toPorts:
+        - ports: [{ port: "8080", protocol: TCP }]
+          rules:
+            http: [{ method: POST }]
+---
+# DNS rules only (a DNS-aware egress to the cluster resolver): admitted.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: verify-l7-dns
+  namespace: __DATA__
+  labels: { app.kubernetes.io/part-of: verify-mesh-identity }
+  annotations: { verify.ztd.facis.io/case: dns-only, verify.ztd.facis.io/expect: admitted }
+spec:
+  endpointSelector: { matchLabels: { app.kubernetes.io/name: verify-cilium-l7 } }
+  egress:
+    - toEndpoints:
+        - matchLabels: { k8s:io.kubernetes.pod.namespace: kube-system, k8s:k8s-app: kube-dns }
+      toPorts:
+        - ports: [{ port: "53", protocol: ANY }]
+          rules:
+            dns: [{ matchPattern: "*" }]
+---
+# L3/L4 only, no toPorts: admitted.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: verify-l7-l4
+  namespace: __DATA__
+  labels: { app.kubernetes.io/part-of: verify-mesh-identity }
+  annotations: { verify.ztd.facis.io/case: no-to-ports, verify.ztd.facis.io/expect: admitted }
+spec:
+  endpointSelector: { matchLabels: { app.kubernetes.io/name: verify-cilium-l7 } }
+  ingress:
+    - fromEndpoints:
+        - matchLabels: { app.kubernetes.io/name: verify-cilium-l7 }
+---
+# The admitted no-to-ports policy, updated to add an http rule: the update is refused.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: verify-l7-l4
+  namespace: __DATA__
+  labels: { app.kubernetes.io/part-of: verify-mesh-identity }
+  annotations: { verify.ztd.facis.io/case: update-adds-http, verify.ztd.facis.io/expect: refused }
+spec:
+  endpointSelector: { matchLabels: { app.kubernetes.io/name: verify-cilium-l7 } }
+  ingress:
+    - fromEndpoints:
+        - matchLabels: { app.kubernetes.io/name: verify-cilium-l7 }
+      toPorts:
+        - ports: [{ port: "8080", protocol: TCP }]
+          rules:
+            http: [{ method: GET }]
+---
+# A cluster-wide policy with an http rule: refused, whatever pods it selects.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: verify-l7-clusterwide-http
+  labels: { app.kubernetes.io/part-of: verify-mesh-identity }
+  annotations: { verify.ztd.facis.io/case: clusterwide-http, verify.ztd.facis.io/expect: refused }
+spec:
+  endpointSelector: { matchLabels: { app.kubernetes.io/name: verify-cilium-l7 } }
+  ingress:
+    - toPorts:
+        - ports: [{ port: "8080", protocol: TCP }]
+          rules:
+            http: [{ method: GET }]
+---
+# An http rule in a namespace without the plane label: the zone's rule does not refuse it.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: verify-l7-outside
+  namespace: __OUTSIDE__
+  labels: { app.kubernetes.io/part-of: verify-mesh-identity }
+  annotations: { verify.ztd.facis.io/case: http-outside-planes, verify.ztd.facis.io/expect: admitted }
+spec:
+  endpointSelector: { matchLabels: { app.kubernetes.io/name: verify-cilium-l7 } }
+  ingress:
+    - toPorts:
+        - ports: [{ port: "8080", protocol: TCP }]
+          rules:
+            http: [{ method: GET }]

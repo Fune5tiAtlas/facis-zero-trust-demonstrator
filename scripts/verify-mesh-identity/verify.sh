@@ -11,7 +11,9 @@
 # unregistered workload cut off, traffic through the proxies, a SPIFFE ID of its own for every meshed
 # stand-in (one service account per stand-in, so a lane's pair and the callers refused on it differ
 # by identity), the default deny intact with the
-# chained CNI and both control planes inside it, the mesh layer's default deny (a registered caller
+# chained CNI and both control planes inside it, Cilium held to L3/L4 in the plane namespaces (a
+# CiliumNetworkPolicy with an http rule and a cluster-wide one refused by zone-policy's rule
+# l7-owner-is-the-mesh, a DNS-aware one admitted; fixtures/cilium-l7.yaml), the mesh layer's default deny (a registered caller
 # without a pair, and an impostor with a lane's labels but its own identity, refused by the
 # destination's proxy and logged there with both SPIFFE IDs; the proof's own pairs in
 # fixtures/mesh-pairs.yaml), the native-sidecar version rule, the identity-band
@@ -97,6 +99,8 @@ fi
 cd "$(dirname "$0")" || exit 125
 REPO=$(git rev-parse --show-toplevel)
 CHART=$REPO/deployment/helm/ztd
+# The per-node reading of the CNI chain, shared with scripts/verify-cni-chaining-upgrade.
+. lib/cni-chain.sh
 CONTEXT=${KUBE_CONTEXT:-kind-ztd}
 # yaml_get <file> <key>... : one value out of a YAML file; the path travels as an argument, never inside the source
 yaml_get() { python3 -c 'import sys,yaml
@@ -222,6 +226,9 @@ delete_stand_ins() {
   kubectl --context "$CONTEXT" -n "$SPIRE_NS" delete serviceaccount stand-in --ignore-not-found >/dev/null 2>&1
   # The proof's own pairs (fixtures/mesh-pairs.yaml), by their label; nothing to remove without the CRD.
   kubectl --context "$CONTEXT" -n "$DATA" delete authorizationpolicy -l app.kubernetes.io/name=verify-mesh-pairs --ignore-not-found >/dev/null 2>&1
+  # The Cilium policies of the L7 owner section (fixtures/cilium-l7.yaml), by their label.
+  kubectl --context "$CONTEXT" -n "$DATA" delete ciliumnetworkpolicy -l app.kubernetes.io/part-of=verify-mesh-identity --ignore-not-found >/dev/null 2>&1
+  kubectl --context "$CONTEXT" delete ciliumclusterwidenetworkpolicy -l app.kubernetes.io/part-of=verify-mesh-identity --ignore-not-found >/dev/null 2>&1
 }
 # shellcheck disable=SC2317  # called from the EXIT trap only
 provider_cleanup() {
@@ -1218,12 +1225,9 @@ rm -f "$work"/standin-*
 
 # --------------------------------------------------------------------------------------------
 section "11. default-deny-with-chained-cni"
-for P in $(k -n "$ISTIO_NS" get pod -l k8s-app=istio-cni-node -o jsonpath='{.items[*].metadata.name}'); do
-  NODE=$(k -n "$ISTIO_NS" get pod "$P" -o jsonpath='{.spec.nodeName}')
-  conf=$(k -n "$ISTIO_NS" exec "$P" -- sh -c 'ls /host/etc/cni/net.d/*.conflist | head -1')
-  plugins=$(k -n "$ISTIO_NS" exec "$P" -- cat "$conf" | jq -r '[.plugins[].type] | join(" → ")')
-  [[ "$plugins" == cilium-cni*istio-cni* ]]; check $? "the CNI configuration of node $NODE lists the Istio plugin after Cilium" "${conf#/host}: $plugins"
-done
+while IFS=$'\t' read -r NODE conf plugins; do
+  cni_chain_ok "$plugins"; check $? "the CNI configuration of node $NODE lists the Istio plugin after Cilium" "$conf: $plugins"
+done < <(cni_chain "$CONTEXT" "$ISTIO_NS")
 [ "$excl" = false ]; check $? "Cilium still runs with cni-exclusive=false" "cni-exclusive=$excl"
 r=$(http "$DATA" data-plain app "http://openbao-standin.$MGMT.svc:8080/hostname")
 case $r in denied*) true;; *) false;; esac; check $? "data-plane pod → openbao-standin (management): DENIED at the network layer (no lane: the connection never reached a proxy) with the proxies in place" "→ $r"
@@ -1280,6 +1284,26 @@ line=$(denial_for "$work/peer-denials-new" unpaired "$DATA" peer)
 check $? "peer's proxy logged the refusal of unpaired as one JSON line with both identities (source …/sa/unpaired, destination …/sa/peer, detail rbac_access_denied)" "${line:-no such line; new denial lines: $(paste -sd' ' "$work/peer-denials-new" | cut -c1-300)}"
 served=$(jq -r --arg s "spiffe://$TD/ns/$DATA/sa/caller" 'select(.source == $s) | "\(.code) \(.detail)"' "$work/peer-denials-new")
 [ -z "$served" ]; check $? "neither the served request of caller nor the application's own 403 left a denial line on peer's proxy" "denial lines naming caller: ${served:-none}"
+
+say '' '### cilium-l7-refused-in-planes' ''
+say "One L7 owner per path: the mesh's sidecar owns L7 on every path between plane namespaces (\`ztd.facis.io/l7-owner\` on the allow-matrix policies), so \`zone-policy\`'s admission rule \`l7-owner-is-the-mesh\` refuses a Cilium policy with an L7 rule in a plane namespace, and a cluster-wide one, whoever applies it; a DNS-aware rule is admitted (plaintext DNS, outside the mesh). Created here, as real requests to the API server, from \`scripts/verify-mesh-identity/fixtures/cilium-l7.yaml\` (selectors that match no pod of the zone): a CiliumNetworkPolicy with an \`http\` rule in \`$DATA\`, a CiliumClusterwideNetworkPolicy with an \`http\` rule, and a CiliumNetworkPolicy with only a \`dns\` egress rule in \`$DATA\`, which is then deleted." ''
+# l7_case <case>: the fixture document of that case, with the plane namespace filled in
+l7_case() { sed -e "s/__DATA__/$DATA/g" -e "s/__OUTSIDE__/default/g" fixtures/cilium-l7.yaml | python3 -c 'import sys,yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d["metadata"]["annotations"]["verify.ztd.facis.io/case"] == sys.argv[1]: print(yaml.safe_dump(d))' "$1"; }
+out=$(l7_case http-in-spec | k create -f - 2>&1); rc=$?
+[ $rc -ne 0 ] && grep -q 'l7-owner-is-the-mesh' <<<"$out" && grep -q 'rules.http' <<<"$out"
+check $? "a CiliumNetworkPolicy with an http rule in $DATA is refused by l7-owner-is-the-mesh, naming the field" "$(grep -o 'denied request: .*' <<<"$out" | head -1 | cut -c1-420 || head -c 300 <<<"$out")"
+out=$(l7_case clusterwide-http | k create -f - 2>&1); rc=$?
+[ $rc -ne 0 ] && grep -q 'l7-owner-is-the-mesh' <<<"$out"
+check $? "a CiliumClusterwideNetworkPolicy with an http rule is refused by l7-owner-is-the-mesh" "$(grep -o 'ValidatingAdmissionPolicy .* denied request' <<<"$out" | head -1 || head -c 300 <<<"$out")"
+out=$(l7_case dns-only | k create -f - 2>&1); rc=$?
+[ $rc -eq 0 ]; check $? "a CiliumNetworkPolicy with only a dns egress rule in $DATA is admitted" "$(head -c 300 <<<"$out")"
+out=$(k -n "$DATA" delete ciliumnetworkpolicy verify-l7-dns --wait=true 2>&1); rc=$?
+[ $rc -eq 0 ]; check $? "the admitted DNS policy is deleted" "$out"
+left=$( { k -n "$DATA" get ciliumnetworkpolicy -l app.kubernetes.io/part-of=verify-mesh-identity -o name \
+  && k get ciliumclusterwidenetworkpolicy -l app.kubernetes.io/part-of=verify-mesh-identity -o name; } 2>&1 || echo "a read failed")
+[ -z "$left" ]; check $? "no Cilium policy of the section is left behind" "left: ${left:-none}"
 
 # --------------------------------------------------------------------------------------------
 section "12. control-planes-under-default-deny"
@@ -1767,7 +1791,9 @@ else
     && k -n "$SPIRE_NS" get serviceaccount stand-in --ignore-not-found -o name \
     && k -n kube-public get pod declared-not-reconciled --ignore-not-found -o name \
     && k get namespace mesh-identity-outside --ignore-not-found -o name \
-    && k -n "$DATA" get authorizationpolicy -l app.kubernetes.io/name=verify-mesh-pairs -o name; } 2>&1 || echo "a read failed")
+    && k -n "$DATA" get authorizationpolicy -l app.kubernetes.io/name=verify-mesh-pairs -o name \
+    && k -n "$DATA" get ciliumnetworkpolicy -l app.kubernetes.io/part-of=verify-mesh-identity -o name \
+    && k get ciliumclusterwidenetworkpolicy -l app.kubernetes.io/part-of=verify-mesh-identity -o name; } 2>&1 || echo "a read failed")
   for _ in $(seq 30); do
     entries=$(spire_server entry show -output json 2>/dev/null | jq -er --arg ids "$FIXTURE_IDS" '($ids | split("\n")) as $f | [.entries[] | select(.spiffe_id.path as $p | ($f | index($p)) != null or ($p | contains("/sa/mesh-on-"))) | "spiffe://\(.spiffe_id.trust_domain)\(.spiffe_id.path)"] | join(" ")') || entries="the entries could not be read"
     [ -z "$entries" ] && break; sleep 2
@@ -1798,7 +1824,7 @@ else
   fi
   rm -f "$work/left-cert.pem" "$work/left-cert.pem.err"; certs_left=${certs_left# }
   [ -z "$left" ] && [ -z "$entries" ] && [ -z "$certs_left" ]
-  check $? "nothing of the proof's fixtures stays in the zone: no stand-in pod, Service or ServiceAccount in either plane, no per-node meshed stand-in, its Service or its ServiceAccount, no per-node SVID stand-in and no stand-in ServiceAccount in $SPIRE_NS, no kube-public pod, no scratch namespace, no SPIRE entry for a stand-in identity, and no proxy of a plane namespace holding a certificate for one, the per-node meshed stand-ins' included (every running proxy read)" "left: $(tr '\n' ' ' <<<"${left:-none}"); stand-in entries: ${entries:-none}; stand-in certificates: ${certs_left:-none}"
+  check $? "nothing of the proof's fixtures stays in the zone: no stand-in pod, Service or ServiceAccount in either plane, no per-node meshed stand-in, its Service or its ServiceAccount, no per-node SVID stand-in and no stand-in ServiceAccount in $SPIRE_NS, no kube-public pod, no scratch namespace, no Cilium policy of the L7 owner section, no SPIRE entry for a stand-in identity, and no proxy of a plane namespace holding a certificate for one, the per-node meshed stand-ins' included (every running proxy read)" "left: $(tr '\n' ' ' <<<"${left:-none}"); stand-in entries: ${entries:-none}; stand-in certificates: ${certs_left:-none}"
   code "$(k -n "$SPIRE_NS" get pods -o wide | sed 's/  */ /g')"
   server_td=$(k -n "$SPIRE_NS" get cm spire-server -o jsonpath='{.data.server\.conf}' | jq -r .server.trust_domain)
   td_note="final"; [[ $server_td == *.trust.invalid ]] && td_note="interim"
