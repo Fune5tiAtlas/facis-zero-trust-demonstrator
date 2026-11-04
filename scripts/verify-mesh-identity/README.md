@@ -41,6 +41,11 @@ it is what it was before.
   `.trust.invalid`, that it is interim.
 - **0. Preconditions**: the cluster's Kubernetes version against the zone file's
   `zone.kubernetesVersion`, the cluster's Cilium (image and version, `cni-exclusive=false`), the
+  Cilium version the zone file records (`cni.cilium.version`) against the tag of the `cilium`
+  DaemonSet's image without digest and leading `v` (`cilium-version`: on a difference the check
+  fails naming both and says to update the recorded version and to read section 11 as the re-check
+  of the CNI chain; not compared, and said so, when the zone file sets `cni.cilium.enabled: false`;
+  both values also in `environment.json`, `cluster.ciliumVersion` and `zone.ciliumVersion`), the
   routing check and the inotify limit on every node. The routing check reads `cilium-config` and
   each node's pod range: it fails when the routing mode is `native`, masquerading is on
   (`enable-ipv4-masquerade` or `enable-bpf-masquerade`) and a node's pod range lies outside
@@ -123,7 +128,8 @@ it is what it was before.
   is gone to the reader, its entry one without a certificate in use. Rows of the proof's own pods (the
   label `app.kubernetes.io/part-of: verify-mesh-identity` that every fixture carries, or a pod of
   `fixtures/stand-ins.yaml`) are marked `fixture`.
-- **15.** the render guards.
+- **15.** the render guards, among them the refusal of a zone file with Cilium and without
+  `cni.cilium.version`, and of a version that is not bare `major.minor.patch` (`v1.19.6`).
 - **16. Teardown** (kind, a participant cluster without the keep opt-in, or any failed check; 17
   when a check of the record of what remains failed):
   nothing of the zone left behind, then the cluster's CNI read again, unchanged.
@@ -244,9 +250,11 @@ caller without an identity, which STRICT refuses before authorization, so it doe
 uncommitted changes); a run is never refused for the state of the tree. `date` and `finished` are
 the UTC start and end. `host.kind` is the operator's machine; `tools` and `charts` the versions
 used; `images` the images found running. `cluster` is the cluster as found: the context, `kind`
-(`kind` or `provider`), the provider, the Kubernetes server version, the nodes and the CNI image; on
-kind also `kindNodeImage` and `tools.kind`. `zone` names the zone file, its name and trust domain,
-`trustDomainInterim`, `kept` and, when not kept, `notKept`. `result.failures` is the failed-check
+(`kind` or `provider`), the provider, the Kubernetes server version, the nodes, the CNI image and
+`ciliumVersion`, the version read off that image; on kind also `kindNodeImage` and `tools.kind`.
+`zone` names the zone file, its name and trust domain, `ciliumVersion` (the zone file's
+`cni.cilium.version`, empty without Cilium), `trustDomainInterim`, `kept` and, when not kept,
+`notKept`. `result.failures` is the failed-check
 count, also the exit status. For example:
 
 ```bash

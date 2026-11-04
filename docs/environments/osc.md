@@ -68,14 +68,18 @@ and checks at its end that the DaemonSet and its ConfigMap are unchanged by the 
 
 **After a provider upgrade of Cilium.** ADR-0001 and ADR-0009 require the CNI chaining order to be
 checked again after every Cilium upgrade. Nothing in the repository can observe or trigger the
-provider's upgrades here, so when the image tag above changes, re-run the mesh identity proof
-(`scripts/verify-mesh-identity/verify.sh`, see [the mesh-identity proof](#proving-steps-2-to-4-the-mesh-identity-proof)): its section
-`default-deny-with-chained-cni` reads every node's CNI configuration through the Istio CNI agent and
-fails unless the Istio plugin comes after Cilium, with `cni-exclusive=false`. The upgrade itself is
-proven on kind by `scripts/verify-cni-chaining-upgrade/verify.sh`, from this zones' version to the
-repository's pin ([CI/CD](../ci-cd.md#cilium-upgrades)). Here the re-check follows an upgrade once it
-is noticed, not every upgrade at the moment it happens: a narrower reading of the ADRs' "after every
-Cilium upgrade", for the reason above.
+provider's upgrades here, so each zone file records the Cilium version the zone is verified against
+(`cni.cilium.version`, `1.19.6` in `zone-a.yaml` and `zone-b.yaml`), and the mesh identity proof
+(`scripts/verify-mesh-identity/verify.sh`, see [the mesh-identity proof](#proving-steps-2-to-4-the-mesh-identity-proof))
+compares it with the tag of the `cilium` DaemonSet's image in its preconditions: after a provider
+upgrade the proof's next run fails, naming the recorded and the running version. Then update
+`cni.cilium.version` in the zone file to the running version and re-run the proof: its section
+`default-deny-with-chained-cni` is the re-check, reading every node's CNI configuration through the
+Istio CNI agent and failing unless the Istio plugin comes after Cilium, with `cni-exclusive=false`.
+The upgrade itself is proven on kind by `scripts/verify-cni-chaining-upgrade/verify.sh`, from this
+zones' version to the repository's pin ([CI/CD](../ci-cd.md#cilium-upgrades)). Here the upgrade is
+detected at the proof's next run, not at the moment it happens: a narrower reading of the ADRs'
+"after every Cilium upgrade", for the reason above.
 
 Facts read off both clusters on 10 October 2026:
 

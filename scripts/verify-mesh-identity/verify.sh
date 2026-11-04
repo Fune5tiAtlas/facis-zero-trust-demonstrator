@@ -104,6 +104,9 @@ CHART=$REPO/deployment/helm/ztd
 . lib/cni-chain.sh
 # The cases of zone-policy's L7 owner rule, sent to the API server (section cilium-l7-refused-in-planes).
 . lib/cilium-l7.sh
+# The zone file's cni.cilium.version against the running Cilium (section 0). This proof only: the
+# upgrade proof starts below the CI zone file's version on purpose.
+. lib/cilium-version.sh
 CONTEXT=${KUBE_CONTEXT:-kind-ztd}
 # yaml_get <file> <key>... : one value out of a YAML file; the path travels as an argument, never inside the source
 yaml_get() { python3 -c 'import sys,yaml
@@ -556,6 +559,16 @@ sys.exit(0 if (major, minor) >= (1, 33) else 1)
 PY2
 cni=$(k -n kube-system get ds cilium -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)
 [ -n "$cni" ]; check $? "Cilium is the CNI" "$cni"
+# The Cilium version the zone file records (cni.cilium.version) against the DaemonSet's image tag: a
+# provider upgrade of Cilium is detected here, at the next run.
+cilium_recorded=$(cilium_zone_version "$CHART/values.yaml" "$ZONE_VALUES"); rc=$?
+cilium_running=$(cilium_image_version "$cni")
+if [ $rc -eq 0 ] && [ -z "$cilium_recorded" ]; then
+  say "- Cilium version: not compared, the zone file does not enable Cilium (cni.cilium.enabled: false)"
+else
+  detail=$(cilium_version_matches "$cilium_recorded" "$cni"); rc2=$?
+  [ $rc -eq 0 ] && [ $rc2 -eq 0 ]; check $? "cilium-version: the zone file's cni.cilium.version equals the version of the Cilium the cluster runs (the DaemonSet's image tag)" "$detail"
+fi
 excl=$(k -n kube-system get cm cilium-config -o jsonpath='{.data.cni-exclusive}' 2>/dev/null)
 [ "$excl" = "false" ]; check $? "cni-exclusive=false (the Istio CNI plugin can chain)" "cni-exclusive=$excl"
 # The cluster's CNI as found, read again at the end: the run reads it and never writes it.
@@ -1678,6 +1691,16 @@ out=$(ZONE_VALUES=$work/no-td.yaml "$INSTALL" render istiod 2>&1); rc=$?
 out=$(helm template ztd "$CHART" -f "$work/no-td.yaml" 2>&1); rc=$?
 [ $rc -ne 0 ] && grep -q "/zone/trustDomain" <<<"$out"; check $? "the umbrella refuses a meshed zone without a trust domain, on the schema" "$(grep -o "at '/zone/trustDomain'.*" <<<"$out" | head -1)"
 helm template ztd "$CHART" -f "$CHART/zones/ionos.yaml" >/dev/null 2>&1; check $? "the umbrella renders zones/ionos.yaml (mesh none) without a trust domain"
+python3 - "$ZONE_VALUES" "$work/no-cilium-version.yaml" <<'PY'
+import sys, yaml
+z = yaml.safe_load(open(sys.argv[1])); c = z.setdefault("cni", {}).setdefault("cilium", {})
+c["enabled"] = True; c.pop("version", None)
+yaml.safe_dump(z, open(sys.argv[2], "w"))
+PY
+out=$(helm template ztd "$CHART" -f "$work/no-cilium-version.yaml" 2>&1); rc=$?
+[ $rc -ne 0 ] && grep -q "at '/cni/cilium': missing property 'version'" <<<"$out"; check $? "the umbrella refuses a zone with Cilium and no cni.cilium.version, on the schema" "$(grep -o "at '/cni/cilium'.*" <<<"$out" | head -1)"
+out=$(helm template ztd "$CHART" -f "$ZONE_VALUES" --set-string cni.cilium.version=v1.19.6 2>&1); rc=$?
+[ $rc -ne 0 ] && grep -q "at '/cni/cilium/version'" <<<"$out"; check $? "the umbrella refuses a cni.cilium.version that is not bare major.minor.patch (v1.19.6), on the schema" "$(grep -o "at '/cni/cilium/version'.*" <<<"$out" | head -1)"
 out=$(helm template ztd "$CHART" -f "$ZONE_VALUES" --set zone.kubernetesVersion=v1.32.0 2>&1); rc=$?
 [ $rc -ne 0 ] && grep -q 'native sidecar' <<<"$out"; check $? "the umbrella refuses sidecar mode below Kubernetes 1.33" "$(grep -o 'mesh.mode sidecar needs.*' <<<"$out")"
 out=$(helm template ztd "$CHART" -f "$ZONE_VALUES" --set cni.cilium.enabled=false 2>&1); rc=$?
@@ -1884,15 +1907,16 @@ write_environment() {
     --arg kind "$kind_version" --arg kubectl "$(kubectl version --client -o json 2>/dev/null | jq -r .clientVersion.gitVersion)" \
     --arg helm "$(ver helm version --short)" --arg istioctl "$(istioctl version --remote=false 2>/dev/null | sed 's/^client version: //' | head -1)" \
     --arg cilium "$(cilium version --client 2>/dev/null | head -1)" --arg server "$server" --arg cni "$cni" --arg nodeImage "$node_image" \
+    --arg ciliumRunning "$cilium_running" --arg ciliumRecorded "$cilium_recorded" \
     --arg spire "$(sed -n 's/^SPIRE_VERSION=\([^ ]*\).*/\1/p' "$INSTALL")" --arg spireCrds "$(sed -n 's/^SPIRE_CRDS_VERSION=\(.*\)/\1/p' "$INSTALL")" \
     --arg istio "$(sed -n 's/^ISTIO_VERSION=\(.*\)/\1/p' "$INSTALL")" \
     --arg imgSpire "$images_spire" --arg imgIstio "$images_istio" --arg imgProxy "$images_proxy" \
     --argjson failures "$failures" '{
       commit: $commit, dirty: $dirty, date: $date, finished: $finished,
       host: { kind: $host },
-      cluster: ({ context: $context, kind: $clusterKind, provider: $provider, kubernetes: $server, nodes: $nodes, cni: $cni }
+      cluster: ({ context: $context, kind: $clusterKind, provider: $provider, kubernetes: $server, nodes: $nodes, cni: $cni, ciliumVersion: $ciliumRunning }
         + (if $clusterKind == "kind" then { kindNodeImage: $nodeImage } else {} end)),
-      zone: ({ file: $zone, name: $zoneName, trustDomain: $td, trustDomainInterim: $interim, kept: $kept }
+      zone: ({ file: $zone, name: $zoneName, trustDomain: $td, trustDomainInterim: $interim, kept: $kept, ciliumVersion: $ciliumRecorded }
         + (if $kept then {} else { notKept: $notKept } end)),
       tools: ((if $clusterKind == "kind" then { kind: $kind } else {} end) + { kubectl: $kubectl, helm: $helm, istioctl: $istioctl, cilium: $cilium }),
       charts: { "spire-crds": $spireCrds, spire: $spire, "istio-base": $istio, istiod: $istio, "istio-cni": $istio },

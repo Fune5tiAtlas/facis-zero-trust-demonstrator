@@ -116,8 +116,10 @@ which must hold a SPIRE-issued certificate for its own SPIFFE ID and be served o
 ([the proof](https://github.com/eclipse-xfsc/facis-zero-trust-demonstrator/tree/main/scripts/verify-cni-chaining-upgrade)).
 Run it, and keep its run directory with the change, whenever the pinned Cilium version
 (`CILIUM_CRDS_VERSION` in `scripts/tools/pins.env`, the default of `scripts/dev/kind-cilium-up.sh`) or
-the zones' version changes. On the participant clusters the provider upgrades Cilium; there the chain
-section of the mesh identity proof is the re-check after an upgrade
+the zones' version changes. On the participant clusters the provider upgrades Cilium; there the mesh
+identity proof detects the upgrade at its next run, failing when the running Cilium differs from the
+zone file's `cni.cilium.version`, and its chain section is the re-check after the recorded version is
+updated
 ([OSC environment](environments/osc.md#1-cni-verify-the-providers-cilium)).
 
 ## Image signing

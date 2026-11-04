@@ -56,6 +56,7 @@ declared derogation of the preferred stack first (`docs/workload-identity.md`).
 | `mesh.mode` | `sidecar` | `sidecar` (the ADR-0009 baseline), `ambient` (parked) or `none`; sets the namespace label. Sidecar mode refuses a `zone.kubernetesVersion` below 1.33 (native sidecars) |
 | `mesh.revision` | `""` | Sidecar mode: pin an Istio revision (`istio.io/rev`) instead of the default injector |
 | `cni.cilium.enabled` | `true` | Render the Cilium-specific pieces: the entity openings and the API lane, and the host-probe exception of the parked ambient mode. Required with a mesh |
+| `cni.cilium.version` | none; required where `cni.cilium.enabled` is true | The Cilium version the zone is verified against, bare `major.minor.patch` (the `cilium` DaemonSet's image tag without the leading `v`: `1.19.6` on the participant clusters, `1.20.2` on kind). `scripts/verify-mesh-identity` fails when the running Cilium differs |
 | `networkPolicy.defaultDeny` | `true` | Default deny, ingress and egress, in every plane namespace |
 | `networkPolicy.dns.*` | kube-dns in `kube-system`, port 53 | The declared DNS bypass, the resolver pods' port only (`ports`: the kube-dns Service's targetPort, 8053 on the Gardener clusters of zone A and zone B) |
 | `networkPolicy.intraPlane` | `true` | Pods within one plane namespace may reach each other at L3/L4 |

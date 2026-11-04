@@ -17,6 +17,14 @@ zone:
   trustDomain: kind.facis-ztd.local
 mesh:
   mode: sidecar
+# The Cilium that scripts/dev/kind-cilium-up.sh installs (CILIUM_VERSION, the repository's pin), read
+# as on a zone: the tag of the cilium DaemonSet's image without the leading v. The mesh identity
+# proof compares it with the running Cilium. scripts/verify-cni-chaining-upgrade installs this file
+# on a cluster that starts at the zones' version and does not run that comparison.
+cni:
+  cilium:
+    enabled: true
+    version: 1.20.2
 # The control planes of the identity path and of the mesh: management-plane namespaces under the
 # default deny, without the mesh label (no sidecar for SPIRE or istiod).
 planes:

@@ -56,7 +56,21 @@
     },
     "cni": {
       "type": "object",
-      "properties": { "cilium": { "type": "object", "properties": { "enabled": { "type": "boolean" } } } }
+      "properties": {
+        "cilium": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "version": {
+              "type": "string",
+              "description": "The Cilium version the zone is verified against, bare major.minor.patch as read off the cilium DaemonSet's image tag; required whenever cni.cilium.enabled is true. The mesh identity proof fails when the running Cilium differs.",
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+            }
+          },
+          "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+          "then": { "required": ["version"] }
+        }
+      }
     },
     "networkPolicy": {
       "type": "object",

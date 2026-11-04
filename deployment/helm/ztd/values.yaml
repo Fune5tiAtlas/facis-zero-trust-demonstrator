@@ -75,6 +75,10 @@ mesh:
 cni:
   cilium:
     enabled: true
+    # version: no default. The Cilium version the zone is verified against, bare major.minor.patch
+    # (the cilium DaemonSet's image tag without the leading v), recorded in the zone file and required
+    # whenever enabled is true (values.schema.json); scripts/verify-mesh-identity compares it with the
+    # running Cilium.
 
 # --------------------------------------------------------------------------------------------
 # Network-layer baseline: default DENY in both directions in every plane namespace. The only

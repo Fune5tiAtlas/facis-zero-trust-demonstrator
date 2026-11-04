@@ -22,6 +22,15 @@ carries no OpenBao key, and the schema refuses any under `openbao`.
 The chart has no defaults for the zone record on purpose. `zone.kubernetesVersion`,
 `zone.storageClass` and `zone.loadBalancer.type` are facts about the cluster, and the chart
 refuses to render until the file states them, so a zone is never installed on assumed values.
+A zone that enables Cilium (`cni.cilium.enabled: true`, the chart's default) also states
+`cni.cilium.version`, the Cilium version it is verified against: the tag of the `cilium`
+DaemonSet's image without the leading `v` (`1.19.6`), bare `major.minor.patch` like
+`zone.kubernetesVersion`; the schema refuses the file without it or with any other form (`v1.19.6`).
+The mesh identity proof (`scripts/verify-mesh-identity`) compares it with the Cilium the cluster
+runs and fails on a difference, so a provider upgrade of Cilium is detected at the proof's next run.
+After such an upgrade, record the new version here and re-run the proof: its section
+`default-deny-with-chained-cni` is the re-check of the CNI chain. The kind zone file
+(`../ci/values.yaml`) records the version `scripts/dev/kind-cilium-up.sh` installs (`1.20.2`).
 Where the mesh runs (`mesh.mode` other than `none`) the file must also state:
 
 - `zone.trustDomain`: the zone's SPIFFE trust domain, a name under the DNS zone delegated to the
@@ -48,7 +57,7 @@ trust domain.
 
 `zone-a.yaml` and `zone-b.yaml` record the two participant clusters on the Open Sovereign Cloud
 (contexts `zerotrust-a` and `zerotrust-b`): Kubernetes `v1.34.7`, StorageClass `default`,
-`loadBalancer.type: cloud` (not yet exercised), Cilium 1.19.6 installed by the provider with
+`loadBalancer.type: cloud` (not yet exercised), Cilium 1.19.6 (`cni.cilium.version`) installed by the provider with
 `cni-exclusive=false` and tunnel routing (VXLAN), the mesh in sidecar mode, the two control-plane namespaces and the three
 openings, and the API lane on port 443 by entity, with no address in the file. Two facts of the
 provider's platform are recorded with them: CoreDNS listens on 8053 (`networkPolicy.dns.ports`),

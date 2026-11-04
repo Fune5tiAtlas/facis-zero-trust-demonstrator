@@ -22,7 +22,9 @@ and leaves the caller's current context as found. Never run by CI.
 1. **The cluster and the zone.** `scripts/dev/kind-cilium-up.sh` creates the cluster (one control plane,
    two workers) with Cilium at `FROM_CILIUM_VERSION`, the zones' version (1.19.6), chained with
    `cni.exclusive=false`. `scripts/install-zone/install.sh` installs the zone with
-   `deployment/helm/ztd/ci/values.yaml`, and three stand-ins of
+   `deployment/helm/ztd/ci/values.yaml`, whose `cni.cilium.version` records the repository's pin
+   (1.20.2), not `FROM`: this proof does not compare the recorded version with the running Cilium
+   (the mesh identity proof does), and three stand-ins of
    `scripts/verify-mesh-identity/fixtures/stand-ins.yaml` are applied: `pdp-adapter` and `data-plain` in
    the data plane, `tsa-policy-engine` in the management plane.
 2. **Before the upgrade.** On every node, the CNI configuration read through the node's Istio CNI agent

@@ -196,7 +196,12 @@ the zone file states them, so a zone is never installed on assumed values. Where
 zone file also states `zone.trustDomain`, the zone's SPIFFE trust domain (the DNS zone delegated to
 the trust zone; [Workload identity](workload-identity.md#the-trust-domain)), and enables the API
 lane; the schema refuses a meshed zone without either. In sidecar mode the chart also refuses a
-`zone.kubernetesVersion` below 1.33, because native sidecar containers need it. The zone files live in
+`zone.kubernetesVersion` below 1.33, because native sidecar containers need it. A zone that enables
+Cilium also states `cni.cilium.version`, the Cilium version it is verified against (the tag of the
+`cilium` DaemonSet's image without the leading `v`, bare `major.minor.patch`); the schema refuses a
+zone with Cilium and without it, or with another form such as `v1.19.6`. The mesh identity proof
+compares it with the running Cilium and fails on a difference, naming both, so that an upgrade of
+Cilium by the provider is detected at the proof's next run. The zone files live in
 `deployment/helm/ztd/zones/`; the CI chart job and the local kind cluster use
 `deployment/helm/ztd/ci/values.yaml`, filled the same way with what that cluster is.
 

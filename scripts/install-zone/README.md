@@ -121,7 +121,8 @@ ambient) against copies of the kind zone file.
 
 The umbrella reads the whole file (`deployment/helm/ztd/zones/README.md`). Where the mesh runs, it
 must also state `zone.trustDomain` (a name under the DNS zone delegated to the trust framework, one per zone), the API lane
-(`networkPolicy.kubeApi.enabled: true` with its port), `cni.cilium.enabled: true`, a
+(`networkPolicy.kubeApi.enabled: true` with its port), `cni.cilium.enabled: true` with
+`cni.cilium.version` (the Cilium version the zone is verified against), a
 `zone.kubernetesVersion` of 1.33 or later, the control-plane namespaces in `planes.extra` and the
 openings. The other releases read these zone facts from the umbrella's defaults
 (`deployment/helm/ztd/values.yaml`) with the zone file deep-merged on top, the zone file winning, so a
