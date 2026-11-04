@@ -104,6 +104,22 @@ The gate and the secrets baseline (TDR-BDD-08) run on a disposable cluster in `r
 decides both rows with a sheet of its own; the pull-request sheet and the client-target sheets list
 them as not run.
 
+## Cilium upgrades
+
+The mesh relies on the Istio CNI plugin chained after Cilium on every node, and ADR-0001 and ADR-0009
+require that order to be checked again after every Cilium upgrade. The pipeline only renders, so the
+check is a proof run on a disposable kind cluster: `scripts/verify-cni-chaining-upgrade/verify.sh`
+installs the zone over Cilium at the zones' version, upgrades Cilium with `helm upgrade --reset-then-reuse-values` (the release's own values over the new chart's defaults),
+and checks before and after the upgrade the chain on every node, `cni-exclusive=false`, an allow-matrix
+lane served through the proxies and the default deny; after the upgrade also a pod created after it,
+which must hold a SPIRE-issued certificate for its own SPIFFE ID and be served on its lane
+([the proof](https://github.com/eclipse-xfsc/facis-zero-trust-demonstrator/tree/main/scripts/verify-cni-chaining-upgrade)).
+Run it, and keep its run directory with the change, whenever the pinned Cilium version
+(`CILIUM_CRDS_VERSION` in `scripts/tools/pins.env`, the default of `scripts/dev/kind-cilium-up.sh`) or
+the zones' version changes. On the participant clusters the provider upgrades Cilium; there the chain
+section of the mesh identity proof is the re-check after an upgrade
+([OSC environment](environments/osc.md#1-cni-verify-the-providers-cilium)).
+
 ## Image signing
 
 The candidate job of `release.yml` builds every image under `deployment/docker/` for `linux/amd64`,

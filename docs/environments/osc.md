@@ -66,6 +66,17 @@ outside `ipv4-native-routing-cidr` would reach the other nodes' pods with the no
 instead; the proof's routing check fails on that, naming the nodes. The proof reads the same values
 and checks at its end that the DaemonSet and its ConfigMap are unchanged by the run.
 
+**After a provider upgrade of Cilium.** ADR-0001 and ADR-0009 require the CNI chaining order to be
+checked again after every Cilium upgrade. Nothing in the repository can observe or trigger the
+provider's upgrades here, so when the image tag above changes, re-run the mesh identity proof
+(`scripts/verify-mesh-identity/verify.sh`, see [the mesh-identity proof](#proving-steps-2-to-4-the-mesh-identity-proof)): its section
+`default-deny-with-chained-cni` reads every node's CNI configuration through the Istio CNI agent and
+fails unless the Istio plugin comes after Cilium, with `cni-exclusive=false`. The upgrade itself is
+proven on kind by `scripts/verify-cni-chaining-upgrade/verify.sh`, from this zones' version to the
+repository's pin ([CI/CD](../ci-cd.md#cilium-upgrades)). Here the re-check follows an upgrade once it
+is noticed, not every upgrade at the moment it happens: a narrower reading of the ADRs' "after every
+Cilium upgrade", for the reason above.
+
 Facts read off both clusters on 10 October 2026:
 
 | Fact | zone A (`zerotrust-a`) and zone B (`zerotrust-b`) | Read with |

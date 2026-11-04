@@ -11,9 +11,11 @@ Bash is the language for scripts under `scripts/` per the Technical Development 
 | `dev/kind-cilium-up.sh` | the local kind cluster with Cilium chained (`cni.exclusive=false`) |
 | `verify-umbrella/verify.sh` | evidence for the umbrella chart alone on kind |
 | `verify-mesh-identity/verify.sh` | evidence that the mesh identities are SPIRE's, the whole zone on kind |
+| `verify-cni-chaining-upgrade/verify.sh` | evidence that the CNI chain (Istio after Cilium) survives a Cilium upgrade, from the zones' version to the pin, on a disposable kind cluster |
 | `mesh-mode/check-upstream-state.sh` | the upstream-state record behind ADR-0009 and its reopen check |
 | `ci/check-charts.sh` | the chart quality gate: lint, render and (release) server dry-run of every chart; `ci/check-charts_test.sh` its cases |
 | `ci/check-policy-addresses.sh` | no address in a policy: renders the umbrella, `zone-policy` and `ztd-openbao` with every shipped zone file and the CI zone file and fails on any `ipBlock`, CIDR rule or address literal in a NetworkPolicy, CiliumNetworkPolicy or AuthorizationPolicy; `ci/check-policy-addresses_test.sh` its cases |
+| `ci/check-policy-l7-owner.sh` | one L7 owner per path: the same renderings, failing on any Cilium policy with an `http`, `kafka`, `l7` or `l7proto` rule and on any allow-matrix policy without its `ztd.facis.io/l7-owner`; `ci/check-policy-l7-owner_test.sh` its cases (the shared render path is `ci/render-zones.sh`) |
 
 ## Guard policy-hook proofs (`verify-policy-hook/`)
 
