@@ -13,7 +13,7 @@
 # library of its release day until the next Helm release, and the image scan fails on every
 # standard-library CVE fixed in between. Here a Go fix is a change of this one pin. The stage
 # runs on the build host's platform and cross-compiles for linux/amd64.
-FROM --platform=$BUILDPLATFORM golang:1.27.2@sha256:5bc7f572bbaa98885a3a1fd9c0aa76b59e3e14e8628bfc316bbfd0c701e4818c AS helm
+FROM --platform=$BUILDPLATFORM golang:1.27@sha256:f24164268fc1e741bbdc0066dbadcf1c8426c5a8489f0729c02c3905a53032fd AS helm
 
 ARG HELM_VERSION=v4.3.0
 ARG HELM_COMMIT=bec5b06ed841fe5269972d864d5177944fd5970f
