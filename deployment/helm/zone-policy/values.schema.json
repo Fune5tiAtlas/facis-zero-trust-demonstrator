@@ -72,7 +72,7 @@
     },
     "l7OwnerPolicy": {
       "type": "object",
-      "description": "The admission policy that refuses Cilium L7 rules in plane namespaces and cluster-wide: the mesh's sidecar is the L7 owner of those paths.",
+      "description": "The admission policy that refuses, in plane namespaces and cluster-wide, Cilium policies that send traffic to Cilium's L7 proxy and Cilium Envoy configurations: the mesh's sidecar is the L7 owner of those paths.",
       "required": ["enabled", "name"],
       "additionalProperties": false,
       "properties": {

@@ -121,7 +121,7 @@ ADR-0009, point 2). It takes `sidecar` (the destination's Envoy sidecar, the val
 rows) or `none` (no component decides at L7); the schema refuses a row without it and any other
 value. `cilium` is not a value: every row joins two injected plane namespaces under the mesh-wide
 STRICT `PeerAuthentication`, so Cilium sees only mTLS ciphertext on the path, and the `zone-policy`
-release refuses Cilium L7 rules in plane namespaces
+release refuses, in plane namespaces, Cilium policies that send traffic to Cilium's L7 proxy and Cilium Envoy configurations
 ([zone-policy](../zone-policy/README.md#the-l7-owner-rule)). Both NetworkPolicies of a row carry the
 owner as the annotation `ztd.facis.io/l7-owner`: the row's value under `mesh.mode: sidecar`, `none`
 under `none` and the parked `ambient` (no per-pod proxy, and ambient deploys no waypoint). The

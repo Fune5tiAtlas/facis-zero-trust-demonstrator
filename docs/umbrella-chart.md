@@ -78,7 +78,7 @@ without a caller would only widen what the matrix exists to limit.
 Every row records its single L7 enforcement owner in `l7Owner`, `sidecar` (the destination's Envoy
 sidecar) or `none`, required by the schema; the five shipped rows are `sidecar`. `cilium` is not a
 value: under the mesh-wide STRICT mTLS Cilium sees only ciphertext on these paths, and the
-`zone-policy` release refuses Cilium L7 rules in plane namespaces (`l7-owner-is-the-mesh`). Both
+`zone-policy` release refuses, in plane namespaces, Cilium policies that send traffic to Cilium's L7 proxy and Cilium Envoy configurations (`l7-owner-is-the-mesh`). Both
 NetworkPolicies of a row and its mesh rule `allow-<name>` carry the owner as the annotation
 `ztd.facis.io/l7-owner`, written `none` when `mesh.mode` is `none` or the parked `ambient`, which has
 no per-pod proxy and deploys no waypoint ([Architecture](architecture.md#allow-matrix-data-plane-management-plane)).

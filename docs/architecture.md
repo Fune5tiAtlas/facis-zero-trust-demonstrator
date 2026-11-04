@@ -113,8 +113,10 @@ the path's row in the umbrella's `allowMatrix` (`sidecar` or `none`, required by
 check keeps equal to the pair. The annotation reads `none` in a zone whose `mesh.mode` is `none` or
 the parked `ambient`. The other layer is held to L3/L4 at admission: the `zone-policy` rule
 `l7-owner-is-the-mesh` refuses any Cilium policy in a plane namespace, and any cluster-wide one,
-that carries an HTTP, Kafka or generic L7 rule, whoever applies it; the pipeline fails on any such
-rule in the charts' own renderings and on any rendered allow-matrix policy without its owner
+that sends traffic to Cilium's L7 proxy (an HTTP, Kafka or generic L7 rule, a custom Envoy listener,
+an SNI allow-list, TLS termination or origination), and any Cilium Envoy configuration in a plane
+namespace or cluster-wide, whoever applies it; the pipeline fails on any such object in the charts'
+own renderings and on any rendered allow-matrix policy without its owner
 (`scripts/ci/check-policy-l7-owner.sh`). This matrix reflects that record and does not replace it:
 `scripts/check-plane-separation.sh` fails when a row below names the mesh's proxy as owner and the
 row of the same name records another owner, or does not exist. If the mesh configuration changes

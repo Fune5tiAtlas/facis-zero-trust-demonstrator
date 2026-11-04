@@ -27,8 +27,10 @@ namespace):
   The same policy holds **the capture rule** and **the proxy rule** (see below).
 - **`ValidatingAdmissionPolicy` `l7-owner-is-the-mesh`** and its two bindings (see
   [The L7 owner rule](#the-l7-owner-rule)): a Cilium policy in a plane namespace, or any cluster-wide
-  one, may not carry an HTTP, Kafka or generic L7 rule, so the mesh's sidecar stays the single L7
-  owner of every path between plane namespaces. DNS rules are admitted.
+  one, may not carry a port field that sends traffic to Cilium's L7 proxy (an HTTP, Kafka or generic
+  L7 rule, a custom Envoy listener, an SNI allow-list, TLS termination or origination), and no
+  Cilium Envoy configuration may be created in a plane namespace or cluster-wide, so the mesh's
+  sidecar stays the single L7 owner of every path between plane namespaces. DNS rules are admitted.
 - **The mesh authorization** (see [Mesh authorization](#mesh-authorization)): the
   `AuthorizationPolicy` `default-deny` with an empty spec in `istio-system`, one
   `AuthorizationPolicy` `allow-<name>` per declared pair by SPIFFE identity, and the `Telemetry`
@@ -239,48 +241,78 @@ two proxy images or two status ports differ, and CI runs that check with every r
 On every path between plane namespaces the L7 enforcement owner is the mesh: the destination's Envoy
 sidecar, recorded per path as the annotation `ztd.facis.io/l7-owner` on the umbrella's NetworkPolicy
 pair and on the rule `allow-<name>` of this chart (the umbrella's `allowMatrix` field `l7Owner`). SRS
-2.3.3 (Table 4) forbids the mesh and Cilium to enforce L7 policy on the same traffic, and a
-`CiliumNetworkPolicy` with HTTP rules, applied by hand or by another release, would be a second L7
-decision point on a meshed path. The `ValidatingAdmissionPolicy` `l7-owner-is-the-mesh`
+2.3.3 (Table 4) forbids the mesh and Cilium to enforce L7 policy on the same traffic. Anything that
+sends a meshed path's traffic to Cilium's own Envoy proxy, a `CiliumNetworkPolicy` with HTTP rules
+or a `CiliumEnvoyConfig`, applied by hand or by another release, would be a second L7 decision point
+on it. The `ValidatingAdmissionPolicy` `l7-owner-is-the-mesh`
 (`templates/validatingadmissionpolicy-l7-owner.yaml`, values `l7OwnerPolicy`) refuses it at the API
 server, with `failurePolicy: Fail`:
 
-- **What it refuses.** On `CREATE` and `UPDATE`, a policy whose `spec`, or any entry of whose `specs`
-  list, carries under `ingress`, `egress`, `ingressDeny` or `egressDeny` a `toPorts[].rules.http`,
-  `rules.kafka`, `rules.l7` or `rules.l7proto`. These are the L7 rule kinds of the Cilium CRDs: 1.19,
-  the zones' version, defines all four (and `dns`); 1.20, the pinned `CILIUM_CRDS_VERSION`, defines
-  `http` (and `dns`) only, so there the others are refused by the CRD schema before the rule sees
-  them. The refusal message names the field found and the sidecar as the L7 owner. An update that
-  adds such a rule to an admitted policy is refused the same way.
+- **What it refuses, in a network policy.** On `CREATE` and `UPDATE`, a policy whose `spec`, or any
+  entry of whose `specs` list, carries under `ingress`, `egress`, `ingressDeny` or `egressDeny` a
+  `toPorts[]` field that sends the port's traffic to Cilium's L7 proxy, read from the Cilium CRDs
+  (`PortRule`):
+  - `rules.http`, `rules.kafka`, `rules.l7` or `rules.l7proto`, the L7 rule kinds. 1.19, the zones'
+    version, defines all four (and `dns`); 1.20, the pinned `CILIUM_CRDS_VERSION`, defines `http`
+    (and `dns`) only, so there the others are refused by the CRD schema before the rule sees them;
+  - `listener`, a redirect to a custom Envoy listener of a `CiliumEnvoyConfig`;
+  - `serverNames`, an allow-list of TLS SNI values decided by the proxy (Istio's mTLS sends its SNI in
+    the clear, so this is a decision on a meshed path);
+  - `terminatingTLS` and `originatingTLS`, TLS terminated or originated by the proxy.
+
+  The four last are in both versions. The deny directions carry only `ports` in either version (the
+  schema refuses or prunes anything else); the rule checks them all the same. The refusal message
+  names the field found and the sidecar as the L7 owner. An update that adds such a field to an
+  admitted policy is refused the same way.
+- **What it refuses, in an Envoy configuration.** Every `CiliumEnvoyConfig` in a plane namespace and
+  every `CiliumClusterwideEnvoyConfig`, on `CREATE` and `UPDATE`, whatever it holds: its `services`
+  send a Service's traffic to Cilium's Envoy without any network policy, and its listeners are what a
+  policy's `listener` points to. A `CiliumEnvoyConfig` in another namespace is not refused. Its
+  `services[]` are forced into its own namespace, so it cannot redirect a plane Service, but its
+  `backendServices[]` may name one (their namespace only defaults to the configuration's), and it is
+  admitted; so is the configuration of Cilium's Ingress in shared mode, which lives in Cilium's own
+  namespace. That traffic starts outside the planes and reaches plane pods in plaintext from Cilium's
+  Envoy, where the plane's default-deny NetworkPolicy and the destination sidecar's STRICT mTLS still
+  refuse it: it is not a second L7 decision on a path between planes. A provider feature that
+  creates an Envoy configuration in a plane namespace (Cilium's Ingress or Gateway API there) is
+  refused, which is the point; none is expected on a zone, and the listing below shows it before
+  installing.
 - **Why DNS is admitted.** `rules.dns` is not matched. DNS goes to the cluster resolver in plaintext,
   outside the mesh, on a path whose L7 owner is `none` (the DNS lane `allow-dns-egress` carries
   `ztd.facis.io/l7-owner: none`), so a DNS-aware rule adds no second decision point on a meshed path,
   and ZT-26 keeps that bypass open.
-- **Two bindings.** `l7-owner-is-the-mesh` matches `ciliumnetworkpolicies` in the namespaces that
-  carry the plane label (`registration.planeLabel`), like the proxy policy; a policy with an HTTP rule
-  in any other namespace is not refused. `l7-owner-is-the-mesh-clusterwide` matches every
-  `ciliumclusterwidenetworkpolicies`: a cluster-wide policy has no namespace and can select plane pods
-  through its `endpointSelector`, and the zone has no legitimate cluster-wide L7 rule. A future one
-  would need a declared exception. Each binding names its one resource, since a `namespaceSelector`
-  never excludes a cluster-scoped object.
+- **Two bindings.** `l7-owner-is-the-mesh` matches `ciliumnetworkpolicies` and `ciliumenvoyconfigs`
+  in the namespaces that carry the plane label (`registration.planeLabel`), like the proxy policy; a
+  policy with an HTTP rule in any other namespace is not refused. The binding follows the label: a
+  namespace from which the label is removed leaves this rule (and the proxy policy), so who may
+  label namespaces is part of the trust in it. The umbrella's verification hook fails the release,
+  after each install or upgrade, when a plane namespace lacks its label; between releases nothing
+  watches it. `l7-owner-is-the-mesh-clusterwide` matches every
+  `ciliumclusterwidenetworkpolicies` and `ciliumclusterwideenvoyconfigs`: a cluster-wide object has
+  no namespace, can select plane pods through its `endpointSelector` or name plane Services, and the
+  zone has no legitimate cluster-wide L7 configuration. A future one would need a declared exception.
+  Each binding names its resources, since a `namespaceSelector` never excludes a cluster-scoped
+  object.
 - **Existing objects.** An admission policy does not act on what is stored, only on its updates.
-  Before installing or upgrading to this chart on a zone, list the Cilium policies that already carry
-  an L7 rule; the zones have none:
+  Before installing or upgrading to this chart on a zone, list the Cilium policies that already send
+  traffic to the proxy, and the Envoy configurations; none is expected:
 
   ```bash
   kubectl get cnp,ccnp -A -o json | jq -r '.items[]
     | . as $p | [($p.spec // empty), ($p.specs // [])[]][]
-    | [.ingress, .egress, .ingressDeny, .egressDeny][]?[]?.toPorts[]?.rules // empty
-    | select(has("http") or has("kafka") or has("l7") or has("l7proto"))
+    | [.ingress, .egress, .ingressDeny, .egressDeny][]?[]?.toPorts[]? // empty
+    | select((.rules // {} | has("http") or has("kafka") or has("l7") or has("l7proto"))
+        or has("listener") or has("serverNames") or has("terminatingTLS") or has("originatingTLS"))
     | "\($p.kind) \($p.metadata.namespace // "<cluster>")/\($p.metadata.name)"' | sort -u
+  kubectl get ciliumenvoyconfigs,ciliumclusterwideenvoyconfigs -A
   ```
 
-The charts themselves render no Cilium L7 rule: `scripts/ci/check-policy-l7-owner.sh` fails the
-pipeline on any Cilium policy rendered with one, and on any rendered allow-matrix policy without its
-owner annotation. The mesh identity proof creates both kinds of policy in a plane namespace and
-records the refusal and the admission (`scripts/verify-mesh-identity/README.md`,
-`cilium-l7-refused-in-planes`). Rollback: uninstall or roll back this release; the `l7Owner` record is
-inert without the rule.
+The charts themselves render none of these: `scripts/ci/check-policy-l7-owner.sh` fails the
+pipeline on any Cilium policy rendered with such a field, on any Cilium Envoy configuration rendered
+in any namespace, and on any rendered allow-matrix policy without its owner annotation. The mesh
+identity proof sends every case of its fixture to the API server and records each refusal and
+admission (`scripts/verify-mesh-identity/README.md`, `cilium-l7-refused-in-planes`). Rollback:
+uninstall or roll back this release; the `l7Owner` record is inert without the rule.
 
 ## Values
 

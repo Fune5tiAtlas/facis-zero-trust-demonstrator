@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Cases for check-policy-l7-owner.sh: an http rule planted in a rendered Cilium policy fails the check,
 # naming the policy, its namespace and the rule kind; a kafka rule in the second entry of a specs list
-# too; an allow-matrix policy whose owner annotation is removed fails, naming the policy, its namespace
+# too; each port field that sends traffic to Cilium's L7 proxy without a rule (listener, serverNames,
+# terminatingTLS, originatingTLS), and an Envoy configuration of Cilium, fail too; an allow-matrix policy whose owner annotation is removed fails, naming the policy, its namespace
 # and its kind, at both layers (a NetworkPolicy of the umbrella and an AuthorizationPolicy of
 # zone-policy); a dns rule passes; the clean renderings and the committed zone files pass. Every input is
 # written to a temporary directory.
@@ -88,8 +89,40 @@ yaml.safe_dump({"apiVersion": "cilium.io/v2", "kind": "CiliumNetworkPolicy",
                 "spec": {"endpointSelector": {}, "egress": [{"toPorts": [{"ports": [{"port": "53", "protocol": "ANY"}], "rules": {"dns": [{"matchPattern": "*"}]}}]}]}},
                open(sys.argv[1], "w"))
 PY
-expect "a dns rule passes" 0 'planted: 1 Cilium policies, 0 allow-matrix policies, no Cilium L7 rule' \
+expect "a dns rule passes" 0 "planted: 1 Cilium objects, 0 allow-matrix policies, none sends traffic to Cilium's L7 proxy" \
   --manifest planted "$work/dns/extra.yaml"
+
+# 3b. Each port field that sends traffic to Cilium's proxy without an L7 rule, one per policy, and an
+# Envoy configuration of Cilium, namespaced and cluster-wide.
+mkdir -p "$work/proxy"
+python3 - "$work/proxy" <<'PY'
+import sys, yaml
+fields = {"listener": {"envoyConfig": {"kind": "CiliumEnvoyConfig", "name": "x"}, "name": "l"},
+          "serverNames": ["outbound_.8080_._.tsa-policy-engine.ztd-mgmt.svc.cluster.local"],
+          "terminatingTLS": {"secret": {"name": "t"}},
+          "originatingTLS": {"secret": {"name": "t"}}}
+for k, v in fields.items():
+    yaml.safe_dump({"apiVersion": "cilium.io/v2", "kind": "CiliumNetworkPolicy",
+                    "metadata": {"name": f"planted-{k.lower()}", "namespace": "ztd-data"},
+                    "spec": {"endpointSelector": {}, "egress": [{"toPorts": [{"ports": [{"port": "8080", "protocol": "TCP"}], k: v}]}]}},
+                   open(f"{sys.argv[1]}/{k}.yaml", "w"))
+for kind, ns in (("CiliumEnvoyConfig", "ztd-mgmt"), ("CiliumClusterwideEnvoyConfig", None)):
+    meta = {"name": "planted-envoy"} | ({"namespace": ns} if ns else {})
+    yaml.safe_dump({"apiVersion": "cilium.io/v2", "kind": kind, "metadata": meta,
+                    "spec": {"services": [{"name": "tsa-policy-engine", "namespace": "ztd-mgmt"}], "resources": []}},
+                   open(f"{sys.argv[1]}/{kind}.yaml", "w"))
+PY
+for k in listener serverNames terminatingTLS originatingTLS; do
+  expect "the field $k without an L7 rule fails, naming the policy and the field" 1 \
+    "FAIL planted: $k CiliumNetworkPolicy ztd-data/planted-${k,,}: redirect to Cilium's proxy $k at spec\.egress\.0\.toPorts\.0\.$k" \
+    --manifest planted "$work/proxy/$k.yaml"
+done
+expect "a CiliumEnvoyConfig fails, naming it" 1 \
+  'FAIL planted: CiliumEnvoyConfig CiliumEnvoyConfig ztd-mgmt/planted-envoy: an Envoy configuration of Cilium' \
+  --manifest planted "$work/proxy/CiliumEnvoyConfig.yaml"
+expect "a CiliumClusterwideEnvoyConfig fails, naming it" 1 \
+  'FAIL planted: CiliumClusterwideEnvoyConfig CiliumClusterwideEnvoyConfig <cluster>/planted-envoy: an Envoy configuration of Cilium' \
+  --manifest planted "$work/proxy/CiliumClusterwideEnvoyConfig.yaml"
 
 # 4. An owner annotation removed, at each layer.
 mkdir -p "$work/owner"
@@ -119,7 +152,7 @@ expect "an owner other than sidecar or none fails" 1 \
 expect "the clean renderings pass, listing each owner" 0 \
   'ztd-mgmt/allow-pdp-adapter-to-tsa \(pdp-adapter-to-tsa\): sidecar' \
   --manifest clean "$work/ztd.yaml" "$work/zone-policy.yaml"
-expect "every committed zone file passes" 0 'no Cilium policy of any zone takes an L7 decision'
+expect "every committed zone file passes" 0 "no Cilium object of any zone sends traffic to Cilium's L7 proxy"
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures case(s) failed"

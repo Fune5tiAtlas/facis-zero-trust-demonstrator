@@ -70,11 +70,13 @@ proxySocketPolicy:
   proxyImage: docker.io/istio/proxyv2:1.31.1@sha256:d86cba0dd1eb15c00b6901c69ce5ae3d2d5f8427a47751098cf8c3ab2a4a62e9
 
 # One L7 owner per path (templates/validatingadmissionpolicy-l7-owner.yaml, README.md "The L7 owner
-# rule"). The mesh's sidecar is the L7 owner of every path between plane namespaces, so a Cilium policy
+# rule"). The mesh's sidecar is the L7 owner of every path between plane namespaces, so Cilium's proxy
 # may not take a second L7 decision there: a CiliumNetworkPolicy in a plane namespace, or any
-# CiliumClusterwideNetworkPolicy, carrying toPorts[].rules.http, kafka, l7 or l7proto is refused at
-# admission. rules.dns is admitted (plaintext DNS, outside the mesh). The policy's binding is `name`
-# (namespaced), and `<name>-clusterwide` for the cluster-wide kind.
+# CiliumClusterwideNetworkPolicy, carrying a toPorts[] field that sends traffic to Cilium's L7 proxy
+# (rules.http, kafka, l7 or l7proto, listener, serverNames, terminatingTLS, originatingTLS) is refused
+# at admission, and so is every CiliumEnvoyConfig in a plane namespace and every
+# CiliumClusterwideEnvoyConfig. rules.dns is admitted (plaintext DNS, outside the mesh). The policy's
+# binding is `name` (namespaced kinds), and `<name>-clusterwide` for the cluster-wide kinds.
 l7OwnerPolicy:
   enabled: true
   name: l7-owner-is-the-mesh

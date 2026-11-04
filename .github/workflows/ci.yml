@@ -319,10 +319,12 @@ jobs:
 
       # One L7 owner per path (SRS 2.3.3, Table 4; ADR-0009): no CiliumNetworkPolicy or
       # CiliumClusterwideNetworkPolicy the umbrella, zone-policy and ztd-openbao render with each
-      # shipped zone file and the CI zone file carries an http, kafka, l7 or l7proto rule, and every
+      # shipped zone file and the CI zone file carries a port field that sends traffic to Cilium's L7
+      # proxy (an http, kafka, l7 or l7proto rule, listener, serverNames, terminatingTLS,
+      # originatingTLS), none renders a CiliumEnvoyConfig or CiliumClusterwideEnvoyConfig, and every
       # rendered allow-matrix policy (the NetworkPolicy pairs and the mesh allow rules) carries its
-      # owner annotation ztd.facis.io/l7-owner; the test plants an L7 rule and removes an owner and
-      # expects both reported. Same render path as the address check, rendering only.
+      # owner annotation ztd.facis.io/l7-owner; the test plants each of these and removes an owner
+      # and expects every one reported. Same render path as the address check, rendering only.
       - name: Check that no Cilium policy takes an L7 decision
         run: |
           python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user pyyaml
