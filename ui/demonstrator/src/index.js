@@ -83,7 +83,7 @@
       const result = await res.json();
       if (epoch !== identityEpoch) return identity;
       if (!res.ok) {
-        publish({ mode: "oidc", state: result.state || "unavailable", canOperate: false });
+        publish({ mode: "oidc", state: result.state || (res.status === 401 ? "logged out" : "unavailable"), canOperate: false });
         return identity;
       }
       if (result.mode !== "oidc" || !["authenticated", "denied"].includes(result.state) || typeof result.csrf !== "string") throw fail("IDENTITY_INVALID_RESPONSE");
@@ -350,6 +350,9 @@
           loginFormOpen: true,
           identity: { state: identityEnabled ? "connecting" : "fixture", canOperate: !identityEnabled },
           identityPoll: null,
+          identityPollBusy: false,
+          identityPollDisposed: false,
+          identityRetryDelay: 2000,
           stopIdentityObserver: null,
           scenarioOptions: scenarioCatalog,
           serviceScenarioOptions: serviceScenarioCatalog,
@@ -371,6 +374,8 @@
           showSampleMetadata: true,
           draftConfig: { kind: "trust-zone", target: "zone-a", bundle: "", revision: "", digest: "", adapter: "mock" },
           draftPreview: null,
+          configErrors: {},
+          configError: "",
           stopConnectionObserver: null
         }),
         computed: {
@@ -474,6 +479,12 @@
             this.stopIdentityObserver = onIdentity((value) => {
               this.identity = value;
               if (value.state !== "authenticated") {
+                clearTimeout(this.pendingPoll);
+                this.pendingPoll = null;
+                if (["logged out", "expired"].includes(value.state)) {
+                  clearTimeout(this.identityPoll);
+                  this.identityPoll = null;
+                }
                 this.epoch += 1;
                 this.runState = null;
                 this.flowAvailable = false;
@@ -495,6 +506,7 @@
           void this.syncStatus();
         },
         beforeUnmount() {
+          this.identityPollDisposed = true;
           var _a3, _b;
           (_a3 = this.stopIdentityObserver) == null ? void 0 : _a3.call(this);
           clearTimeout(this.identityPoll);
@@ -504,13 +516,25 @@
         },
         methods: {
           async pollIdentity() {
+            if (this.identityPollBusy || this.identityPollDisposed) return;
+            clearTimeout(this.identityPoll);
+            this.identityPoll = null;
+            if (["logged out", "expired"].includes(this.identity.state)) return;
             if (this.loginBusy) {
-              this.identityPoll = setTimeout(() => void this.pollIdentity(), 2e3);
+              this.identityPoll = setTimeout(() => void this.pollIdentity(), 2000);
               return;
             }
-            const value = await refreshIdentity();
-            if (value.state === "authenticated" && !this.loading) await this.syncStatus();
-            this.identityPoll = setTimeout(() => void this.pollIdentity(), 2e3);
+            this.identityPollBusy = true;
+            try {
+              const value = await refreshIdentity();
+              if (this.identityPollDisposed || ["logged out", "expired"].includes(value.state)) return;
+              if (value.state === "authenticated" && !this.loading && !this.isServicePending) await this.syncStatus();
+              if (this.identityPollDisposed || ["logged out", "expired"].includes(this.identity.state)) return;
+              this.identityRetryDelay = value.state === "unavailable" ? Math.min(this.identityRetryDelay * 2, 30000) : 2000;
+              this.identityPoll = setTimeout(() => void this.pollIdentity(), this.identityRetryDelay);
+            } finally {
+              this.identityPollBusy = false;
+            }
           },
           loginViewer() {
             if (this.passwordMode) {
@@ -530,6 +554,7 @@
               this.loginFormOpen = false;
               this.errorMessage = "";
               await this.syncStatus();
+              void this.pollIdentity();
             } catch (error) {
               const messages = { DIRECT_GRANT_DISABLED: "Keycloak has not enabled username/password login for ztd-ui yet.", INVALID_CREDENTIALS: "Login rejected. Check your credentials; the account may also require setup in Keycloak.", CLIENT_NOT_ALLOWED: "Keycloak rejected the UI client.", LOGIN_RATE_LIMIT: "Too many login attempts. Please wait a minute.", IDENTITY_PROVIDER_UNAVAILABLE: "Keycloak is unavailable. Try again.", INVALID_LOGIN_RESPONSE: "Keycloak returned an invalid identity response.", LOGIN_SERVICE_UNAVAILABLE: "The login endpoint is not available." };
               this.loginError = messages[error.code] || "Login failed (" + (error.code || "CONNECTION_FAILED") + ").";
@@ -547,7 +572,10 @@
           },
           applyFlowState(state2, response = null) {
             this.runState = state2 || null;
-            if (Array.isArray(response == null ? void 0 : response.atlasCatalog)) this.atlasCatalog = response.atlasCatalog;
+            if (Array.isArray(response == null ? void 0 : response.atlasCatalog)) {
+              this.atlasCatalog = response.atlasCatalog;
+              this.scenarioOptions = this.atlasCatalog.filter(s => s && typeof s.id === "string" && typeof s.label === "string").map(s => ({id:s.id,label:s.label}));
+            }
             if (state2 == null ? void 0 : state2.variant) this.selectedVariant = state2.variant;
             if (response == null ? void 0 : response.adapterMode) this.adapterMode = response.adapterMode;
             if (response == null ? void 0 : response.transport) this.transport = response.transport;
@@ -671,18 +699,30 @@
           changeConfigKind() {
             const targets = {"trust-zone":"zone-a", "policy-ref":"guard-a", measurement:"zone-a-gateway", "mock-replacement":"participant-backend"};
             this.draftConfig.target = targets[this.draftConfig.kind]; this.draftPreview = null;
+            this.configErrors = {}; this.configError = "";
+          },
+          clearConfigError(field) {
+            this.draftPreview = null;
+            this.configError = "";
+            if (field) this.configErrors = {...this.configErrors, [field]: ""};
           },
           async previewDraft() {
-            this.draftPreview = null; this.errorMessage = "";
-            if (!this.canOperate) { this.errorMessage = "denied — CFG-NOT-AUTHORISED"; return; }
+            this.draftPreview = null; this.configErrors = {}; this.configError = "";
+            if (!this.canOperate) { this.configError = "Configuration preview is not permitted (CFG-NOT-AUTHORISED)."; return; }
             const d = this.draftConfig;
             const payload = d.kind === "trust-zone" ? {zone:d.target} : d.kind === "policy-ref" ? {bundle:d.bundle.trim(), revision:d.revision.trim()} : d.kind === "measurement" ? {digest:d.digest.trim()} : {adapter:d.adapter};
-            if (d.kind === "measurement" && !/^sha256:[0-9a-fA-F]{64}$/.test(payload.digest)) { this.errorMessage = "CFG-SCHEMA-INVALID: enter sha256 followed by a colon and 64 hexadecimal characters."; return; }
-            if (d.kind === "policy-ref" && (!payload.bundle || !payload.revision)) { this.errorMessage = "CFG-SCHEMA-INVALID: bundle and revision are required."; return; }
+            if (d.kind === "measurement" && !/^sha256:[0-9a-fA-F]{64}$/.test(payload.digest)) {
+              this.configErrors = {digest: "Enter sha256: followed by exactly 64 hexadecimal characters."};
+              this.$nextTick(() => this.$refs.measurementDigest?.focus()); return;
+            }
+            if (d.kind === "policy-ref" && (!payload.bundle || !payload.revision)) {
+              this.configErrors = {bundle: payload.bundle ? "" : "Enter a policy bundle.", revision: payload.revision ? "" : "Enter a policy revision."};
+              this.$nextTick(() => (payload.bundle ? this.$refs.policyRevision : this.$refs.policyBundle)?.focus()); return;
+            }
             const change = {kind:d.kind, target:d.target, payload};
             if (this.identityMode) {
               try { const response = await identityCommand("config-preview", change); this.draftPreview = response.preview; }
-              catch (error) { this.errorMessage = "Configuration preview rejected (" + error.code + ")."; }
+              catch (error) { this.configError = "Configuration preview rejected (" + error.code + ")."; }
               return;
             }
             this.draftPreview = {...change, phase:"preview", validation:d.kind === "policy-ref" ? "awaiting-registry" : "local-schema-valid"};
@@ -708,7 +748,7 @@
       </svg>
 
       <aside class="sidebar">
-        <button class="brand" type="button" @click="setActiveView('journey')" aria-label="FACIS Zero Trust home"><span class="brand-mark"><shell-icon name="shield" /></span><span><strong>FACIS</strong><small>Zero Trust Demonstrator</small></span></button>
+        <button class="brand" type="button" @click="setActiveView('journey')" aria-label="FACIS Zero Trust home"><span class="brand-mark"><shell-icon name="shield" /></span><span><strong><img src="./assets/Facis-logo.svg" alt="FACIS" width="63" height="22" /></strong><small>Zero Trust Demonstrator</small></span></button>
         <nav class="primary-nav" aria-label="Primary navigation">
           <p class="nav-label">Demonstrator</p>
           <button class="nav-item" :class="{ active: activeView === 'journey' }" type="button" aria-label="Journey" @click="setActiveView('journey')" :aria-current="activeView === 'journey' ? 'page' : null"><shell-icon name="route" /><span>Journey</span></button>
@@ -803,16 +843,16 @@
                 <div class="config-field"><span>Participant backend</span><p>Participant sample service</p><small>Read-only in this phase</small></div>
                 <div class="config-field"><span>Protected resource</span><p>sample-report</p><small>Read-only in this phase</small></div>
                 <div class="config-field"><span>DNS</span><p>Not supplied</p><small>Read-only in this phase</small></div>
-                <label class="config-field"><span>Change type</span><select style="width:100%;min-height:38px;padding:0 10px;border:1px solid #c7d1de;border-radius:7px;background:#fff;color:inherit" v-model="draftConfig.kind" @change="changeConfigKind" :disabled="!canOperate"><option value="trust-zone">Trust zone</option><option value="policy-ref">Policy reference</option><option value="measurement">Measurement</option><option value="mock-replacement">Mock replacement</option></select></label>
-                <label class="config-field"><span>Target</span><select style="width:100%;min-height:38px;padding:0 10px;border:1px solid #c7d1de;border-radius:7px;background:#fff;color:inherit" v-model="draftConfig.target" :disabled="!canOperate" @change="draftPreview = null"><template v-if="draftConfig.kind === 'trust-zone'"><option value="zone-a">zone-a</option><option value="zone-b">zone-b</option></template><template v-else-if="draftConfig.kind === 'policy-ref'"><option value="guard-a">guard-a</option><option value="guard-b">guard-b</option></template><template v-else-if="draftConfig.kind === 'measurement'"><option value="zone-a-gateway">zone-a-gateway</option><option value="zone-b-gateway">zone-b-gateway</option></template><template v-else><option value="participant-backend">participant-backend</option><option value="protected-resource">protected-resource</option></template></select></label>
-                <template v-if="draftConfig.kind === 'policy-ref'"><label class="config-field"><span>Policy bundle</span><input v-model="draftConfig.bundle" @input="draftPreview = null" type="text" maxlength="200" :disabled="!canOperate" /></label><label class="config-field"><span>Policy revision</span><input v-model="draftConfig.revision" @input="draftPreview = null" type="text" maxlength="200" :disabled="!canOperate" /></label><p>Registry verification is unavailable. A preview does not confirm that this bundle and revision exist.</p></template>
-                <label v-if="draftConfig.kind === 'measurement'" class="config-field"><span>Measurement digest</span><input v-model="draftConfig.digest" @input="draftPreview = null" type="text" placeholder="sha256:&lt;64 hex characters&gt;" maxlength="71" :disabled="!canOperate" /><small>sha256 followed by a colon and 64 hexadecimal characters</small></label>
-                <label v-if="draftConfig.kind === 'mock-replacement'" class="config-field"><span>Adapter</span><select style="width:100%;min-height:38px;padding:0 10px;border:1px solid #c7d1de;border-radius:7px;background:#fff;color:inherit" v-model="draftConfig.adapter" @change="draftPreview = null" :disabled="!canOperate"><option value="mock">mock</option><option value="real" disabled>real — awaiting approved API</option></select></label>
+                <label class="config-field"><span>Change type</span><select v-model="draftConfig.kind" @change="changeConfigKind" :disabled="!canOperate"><option value="trust-zone">Trust zone</option><option value="policy-ref">Policy reference</option><option value="measurement">Measurement</option><option value="mock-replacement">Mock replacement</option></select></label>
+                <label class="config-field"><span>Target</span><select v-model="draftConfig.target" :disabled="!canOperate" @change="draftPreview = null"><template v-if="draftConfig.kind === 'trust-zone'"><option value="zone-a">zone-a</option><option value="zone-b">zone-b</option></template><template v-else-if="draftConfig.kind === 'policy-ref'"><option value="guard-a">guard-a</option><option value="guard-b">guard-b</option></template><template v-else-if="draftConfig.kind === 'measurement'"><option value="zone-a-gateway">zone-a-gateway</option><option value="zone-b-gateway">zone-b-gateway</option></template><template v-else><option value="participant-backend">participant-backend</option><option value="protected-resource">protected-resource</option></template></select></label>
+                <template v-if="draftConfig.kind === 'policy-ref'"><label class="config-field" :class="{ 'field-invalid': configErrors.bundle }"><span>Policy bundle</span><input ref="policyBundle" v-model="draftConfig.bundle" @input="clearConfigError('bundle')" type="text" maxlength="200" :disabled="!canOperate" :aria-invalid="!!configErrors.bundle" :aria-describedby="configErrors.bundle ? 'policy-bundle-error' : null" /><small v-if="configErrors.bundle" id="policy-bundle-error" class="field-error" role="alert">{{ configErrors.bundle }}</small></label><label class="config-field" :class="{ 'field-invalid': configErrors.revision }"><span>Policy revision</span><input ref="policyRevision" v-model="draftConfig.revision" @input="clearConfigError('revision')" type="text" maxlength="200" :disabled="!canOperate" :aria-invalid="!!configErrors.revision" :aria-describedby="configErrors.revision ? 'policy-revision-error' : null" /><small v-if="configErrors.revision" id="policy-revision-error" class="field-error" role="alert">{{ configErrors.revision }}</small></label><p>Registry verification is unavailable. A preview does not confirm that this bundle and revision exist.</p></template>
+                <label v-if="draftConfig.kind === 'measurement'" class="config-field" :class="{ 'field-invalid': configErrors.digest }"><span>Measurement digest</span><input ref="measurementDigest" v-model="draftConfig.digest" @input="clearConfigError('digest')" type="text" placeholder="sha256:&lt;64 hex characters&gt;" maxlength="71" :disabled="!canOperate" :aria-invalid="!!configErrors.digest" :aria-describedby="configErrors.digest ? 'measurement-digest-help measurement-digest-error' : 'measurement-digest-help'" /><small id="measurement-digest-help">sha256 followed by a colon and 64 hexadecimal characters</small><small v-if="configErrors.digest" id="measurement-digest-error" class="field-error" role="alert">{{ configErrors.digest }}</small></label>
+                <label v-if="draftConfig.kind === 'mock-replacement'" class="config-field"><span>Adapter</span><select v-model="draftConfig.adapter" @change="draftPreview = null" :disabled="!canOperate"><option value="mock">mock</option><option value="real" disabled>real — awaiting approved API</option></select></label>
               </div>
               <aside class="configuration-safety">
                 <span class="card-tag">Local draft control</span>
                 <p class="draft-note">Choose an allowed change and preview its payload. Apply requires the approved validation and pull request pipeline.</p>
-                <div class="draft-actions"><button class="secondary-button" type="button" @click="previewDraft" :disabled="!canOperate">Preview draft</button><button class="primary-button interactive" type="button" disabled>Apply live</button></div>
+                <p v-if="configError" class="action-error" role="alert">{{ configError }}</p><div class="draft-actions"><button class="secondary-button" type="button" @click="previewDraft" :disabled="!canOperate">Preview draft</button><button class="primary-button interactive" type="button" disabled>Apply live</button></div>
                 <dl v-if="draftPreview" class="draft-preview" aria-live="polite"><div v-for="(value, key) in draftPreview" :key="key"><dt>{{ key }}</dt><dd>{{ typeof value === 'object' ? JSON.stringify(value) : value || 'Not set' }}</dd></div></dl>
                 <label class="sample-toggle"><input v-model="showSampleMetadata" type="checkbox" aria-label="Show sample metadata" /><span><strong>Show sample metadata</strong><small>Displays local run identifiers and source labels. This does not change policy or security behavior.</small></span></label>
                 <div id="config-lock-note" class="lock-note"><shell-icon name="lock" /><p><strong>Live apply is unavailable.</strong> Draft editing and preview are local presentation features only. They do not change real services, policy, DNS, infrastructure or Atlas lifecycle controls.</p></div>
