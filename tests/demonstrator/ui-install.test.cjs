@@ -7,22 +7,22 @@ test('installer reproduces all supplied UI assets byte for byte including Vue li
  const flow=JSON.parse(fs.readFileSync(path.join(root,'flows/demonstrator/ui-install.json')));
  const messages=[];
  new Function('node','Buffer',flow.find(n=>n.id==='facis-native-ui-files').func)({send:m=>messages.push(m)},Buffer);
- assert.equal(messages.length,5);
- const names=['index.html','index.css','index.js','vendor/vue.global.js','vendor/LICENSE.vue'];
+ const names=['index.html','index.css','index.js','vendor/vue.global.js','vendor/LICENSE.vue','assets/Facis-logo.svg','assets/favicon-32x32.png','assets/favicon-192x192.png','assets/apple-touch-icon-180x180.png'];
+ assert.equal(messages.length,names.length);
  for(const [i,m] of messages.entries()){
   assert.equal(m.filename,'/data/uibuilder/facis-demo/src/'+names[i]);
   assert.deepEqual(m.payload,fs.readFileSync(path.join(root,'ui/demonstrator/src',names[i])));
-  assert.equal(m.installFiles,5);
+  assert.equal(m.installFiles,names.length);
  }
  const file=flow.find(n=>n.id==='facis-native-ui-write');assert.equal(file.createDir,true);assert.equal(file.overwriteFile,'true');assert.equal(file.appendNewline,false);
  const html=messages[0].payload.toString();assert.match(html,/src="\.\/vendor\/vue.global.js"/);
 });
-test('installer reports completion only after all five file-node acknowledgements',()=>{
+test('installer reports completion only after all nine file-node acknowledgements',()=>{
  const flow=JSON.parse(fs.readFileSync(path.join(root,'flows/demonstrator/ui-install.json')));
  const state=new Map(),statuses=[];
  const fn=new Function('msg','node','context',flow.find(n=>n.id==='facis-native-ui-complete').func);
- for(let i=0;i<5;i++)fn({installId:'test',installFiles:5},{status:s=>statuses.push(s)},{get:k=>state.get(k),set:(k,v)=>state.set(k,v)});
- assert.equal(statuses.filter(s=>s.fill==='green').length,1);assert.equal(statuses[4].text,'All 5 UI files installed');
+ for(let i=0;i<9;i++)fn({installId:'test',installFiles:9},{status:s=>statuses.push(s)},{get:k=>state.get(k),set:(k,v)=>state.set(k,v)});
+ assert.equal(statuses.filter(s=>s.fill==='green').length,1);assert.equal(statuses[8].text,'All 9 UI files installed');
 });
 test('standalone identity and installer exports match their combined import',()=>{
  const read=name=>JSON.parse(fs.readFileSync(path.join(root,'flows/demonstrator',name)));
