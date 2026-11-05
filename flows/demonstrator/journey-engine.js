@@ -1,3 +1,44 @@
+// Synthetic service contexts only. These roles/scopes are local test policy,
+// not an approved ATLAS role mapping and never a source of live authorization.
+const fixtures = {
+  reader: {label:'Reader',roles:['resource-reader'],scopes:['read']},
+  'reader-detail': {label:'Reader with detail',roles:['resource-reader','resource-detail'],scopes:['read','read:detail']},
+  auditor: {label:'Auditor',roles:['resource-auditor'],scopes:['audit']},
+  'reader-auditor': {label:'Reader and auditor',roles:['resource-reader','resource-auditor'],scopes:['read','audit']},
+  'missing-role': {label:'Missing service role',roles:[],scopes:['read']},
+  'unauthorized-role': {label:'Unauthorized service role',roles:['ztd-operator'],scopes:['read']},
+  'wrong-scope': {label:'Wrong service scope',roles:['resource-reader'],scopes:['profile:read']},
+  'detail-only': {label:'Detail role without reader',roles:['resource-detail'],scopes:['read:detail']},
+  revoked: {label:'Revoked credential',roles:['resource-reader'],scopes:['read'],credential:'revoked'},
+  invalid: {label:'Invalid credential',roles:['resource-reader'],scopes:['read'],credential:'invalid'},
+  expired: {label:'Expired access context',roles:['resource-reader'],scopes:['read'],expired:true},
+  'missing-context': {label:'Missing verified context',roles:['resource-reader'],scopes:['read'],verified:false},
+  'dependency-unavailable': {label:'Security dependency unavailable',roles:['resource-reader'],scopes:['read'],dependency:false}
+};
+const resourceFixtureCatalog = Object.freeze(Object.entries(fixtures).map(([id,value])=>Object.freeze({id,label:value.label})));
+function evaluateFixtureResource(input = {}) {
+  const {caseId,requestId,correlationId} = input;
+  const base={source:'fixture',mode:'fixture',securitySource:'fixture-only',caseId:typeof caseId==='string'?caseId:null,requestId,correlationId,timestamp:new Date().toISOString(),safeData:{}};
+  const refuse=(reasonCode,explanation,status=403)=>({...base,outcome:status===503?'unavailable':'denied',status,reasonCode,explanation});
+  if (Object.keys(input).some(k=>!['caseId','requestId','correlationId'].includes(k)) || ![requestId,correlationId].every(id=>typeof id==='string'&&/^[A-Za-z0-9._:-]{1,128}$/.test(id))) return refuse('FIXTURE_INVALID_REQUEST','Fixture input or correlation identifiers are invalid.',400);
+  if (!Object.hasOwn(fixtures,caseId)) return refuse('FIXTURE_CASE_UNKNOWN','Select a registered local fixture case.',400);
+  const context=fixtures[caseId];
+  if (context.dependency===false) return refuse('FIXTURE_SECURITY_UNAVAILABLE','The synthetic security dependency is unavailable; protected content is withheld.',503);
+  if (context.verified===false) return refuse('FIXTURE_CONTEXT_REQUIRED','A synthetic verified service context is required.',401);
+  if (context.expired) return refuse('FIXTURE_CONTEXT_EXPIRED','The synthetic service access context has expired.',401);
+  if (context.credential==='revoked') return refuse('FIXTURE_CREDENTIAL_REVOKED','The synthetic credential has been revoked.');
+  if (context.credential==='invalid') return refuse('FIXTURE_CREDENTIAL_INVALID','The synthetic credential is invalid.');
+  const reader=context.roles.includes('resource-reader');
+  const auditor=context.roles.includes('resource-auditor');
+  if (!reader&&!auditor) return refuse('FIXTURE_ROLE_DENIED','No permitted synthetic service role is present.');
+  const read=reader&&context.scopes.includes('read');
+  const audit=auditor&&context.scopes.includes('audit');
+  if (!read&&!audit) return refuse('FIXTURE_SCOPE_DENIED','The synthetic role lacks the required resource scope.');
+  const detail=read&&context.roles.includes('resource-detail')&&context.scopes.includes('read:detail');
+  const parts=[...(read?['Synthetic report summary.']:[]),...(detail?['Synthetic detailed findings.']:[]),...(audit?['Synthetic audit trail.']:[])];
+  return {...base,outcome:'success',status:200,reasonCode:'FIXTURE_RESOURCE_RETURNED',explanation:'Synthetic service rights permit this local fixture response; no live authorization was performed.',safeData:{resource:'sample-report',action:'read',report:{id:'FIXTURE-REPORT-'+caseId,title:'Protected Resource fixture: '+context.label,content:parts.join(' ')}}};
+}
+
 const CHECK_DEFINITIONS = [
   { id: 'request', name: 'Resource request', detail: 'Participant requests the protected sample resource.' },
   { id: 'initial-refusal', name: 'Initial refusal', detail: 'Request is refused until the required credential is present.' },
@@ -120,6 +161,24 @@ const atlasSpecFor = (id, variant) => {
   return copy;
 };
 const finishAtlas = (state, spec) => {
+  if (spec.resourceFixtureCase) {
+    const result=evaluateFixtureResource({caseId:spec.resourceFixtureCase,requestId:'resource-'+state.runId,correlationId:state.correlationId});
+    state.resourceFixtureResult=result;
+    state.adapterMode='fixture';state.transport='fixture';state.securitySource='fixture-only';
+    state.terminal=true;state.result=result.outcome==='success'?'success':result.outcome==='unavailable'?'unavailable':'failure';
+    state.terminalStatus=result.outcome==='success'?'Granted':result.outcome==='unavailable'?'Unavailable':'Refused';
+    state.outcome=result.outcome==='success'?'Fixture resource returned':result.outcome==='unavailable'?'Fixture security dependency unavailable':'Fixture resource refused';
+    state.reasonCode=result.reasonCode;state.reason=result.explanation;state.tone=result.outcome==='success'?'success':result.outcome==='unavailable'?'warning':'danger';
+    state.credential.status=spec.resourceFixtureCase==='revoked'?'Revoked (fixture)':spec.resourceFixtureCase==='invalid'?'Invalid (fixture)':spec.resourceFixtureCase==='expired'?'Expired (fixture)':spec.resourceFixtureCase==='missing-context'?'Missing (fixture)':'Synthetic case only';
+    state.connection.status='Local fixture only';
+    state.permission={name:'Synthetic service rights',status:result.outcome==='success'?'Pass':result.outcome==='unavailable'?'Unavailable':'Fail',detail:result.explanation};
+    state.policyChecks=[{label:'Protected Resource fixture',status:state.permission.status,detail:result.explanation}];
+    const check=state.checks[state.checks.length-1];check.status=result.outcome==='success'?'Pass':result.outcome==='unavailable'?'Unavailable':'Fail';check.reasonCode=result.reasonCode;
+    state.failedCheck=result.outcome==='success'?null:clone(check);
+    if(result.outcome==='success')state.fixtureResource=clone(result.safeData);else delete state.fixtureResource;
+    addEvidence(state,'fixture.resource.decision',result.explanation,{...clone(result),fixture:true,blocked:result.outcome!=='success'});
+    addEvent(state,'run.completed',state.outcome);return;
+  }
   state.terminal = true;
   state.result = spec.result;
   state.terminalStatus = spec.result === 'success' ? 'Granted' : 'Refused';
@@ -139,7 +198,7 @@ const evaluateAtlasStep = (state, spec, index) => {
   if (step.skip) { check.status = 'Skipped'; check.detail = 'Not executed in presentation-required variant.'; return; }
   const at = timestamp();
   state.activeStep = index + 1;
-  check.status = step.state === 'denied' || step.state === 'revoked' || step.state === 'refused' ? 'Fail' : 'Pass';
+  check.status = step.state === 'unavailable' ? 'Unavailable' : step.state === 'denied' || step.state === 'revoked' || step.state === 'refused' ? 'Fail' : 'Pass';
   check.evaluatedAt = at;
   check.detail = step.detail;
   const eventStates = step.states || [step.state];
@@ -151,7 +210,7 @@ const evaluateAtlasStep = (state, spec, index) => {
     if (step.ruleId) payload.rule_id = step.ruleId;
     const feedEvent = { run_id: state.runId, correlation_id: state.correlationId, seq, ts: at, source: step.source, kind: step.kind, payload };
     state.fixtureEvents.push(feedEvent);
-    addEvidence(state, 'fixture.' + step.kind, step.detail, { fixture: true, blocked: check.status === 'Fail', source: step.source, kind: step.kind, state: eventState, reasonCode: step.reasonCode || null, ruleId: step.ruleId || null, contractEvent: feedEvent, fixtureRefs: step.fixtureRefs || [] });
+    addEvidence(state, 'fixture.' + step.kind, step.detail, { fixture: true, blocked: ['Fail','Unavailable'].includes(check.status), source: step.source, kind: step.kind, state: eventState, reasonCode: step.reasonCode || null, ruleId: step.ruleId || null, contractEvent: feedEvent, fixtureRefs: step.fixtureRefs || [] });
   }
   addEvent(state, 'step.completed', step.name + ': ' + step.state + ' (fixture-only).');
   if (step.kind === 'credential_event') {
@@ -176,7 +235,7 @@ const newAtlasState = (spec, variant, serviceScenario) => {
   const runId = uuid();
   return {
     sample: true, fixtureOnly: true, atlasPlan: true, fixtureSource: 'docs/scenarios.md + supplied XFSC/contract fixtures',
-    adapterMode: adapterConfig.mode, transport: 'fixture', securitySource: 'fixture-only', serviceScenario, serviceRequest: null,
+    adapterMode: spec.resourceFixtureCase ? 'fixture' : adapterConfig.mode, transport: 'fixture', securitySource: 'fixture-only', serviceScenario, serviceRequest: null,
     ownerId: userId, runId, correlationId: uuid(), startedAt: at, updatedAt: at,
     scenario: spec.id, scenarioLabel: spec.label, summary: spec.summary, profile: spec.profile, variant,
     credentialToRevoke: spec.id === 'atlas-revoked-credential' ? spec.credential.id : null,
