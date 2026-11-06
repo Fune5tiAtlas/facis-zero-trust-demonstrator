@@ -91,7 +91,7 @@ ambient) against copies of the kind zone file.
 ## The facts a zone file must carry
 
 The umbrella reads the whole file (`deployment/helm/ztd/zones/README.md`). Where the mesh runs, it
-must also state `zone.trustDomain` (the DNS zone delegated to the trust zone), the API lane
+must also state `zone.trustDomain` (a name under the DNS zone delegated to the trust framework, one per zone), the API lane
 (`networkPolicy.kubeApi.enabled: true` with its port), `cni.cilium.enabled: true`, a
 `zone.kubernetesVersion` of 1.33 or later, the control-plane namespaces in `planes.extra` and the
 openings. The other releases read these zone facts from it:
@@ -138,4 +138,23 @@ naming the key with nothing rendered. The script before the fix stopped there wi
 
 On a kind host, raise `fs.inotify.max_user_instances` to 512 first
 (`sudo sysctl -w fs.inotify.max_user_instances=512`): every kind node shares the host kernel, and
-the Istio CNI agent fails to start below that limit.
+the Istio CNI agent fails to start below that limit. On any other cluster the limit is the node's;
+read it on every node through the node's Cilium agent (read-only):
+
+```bash
+for p in $(kubectl --context <context> -n kube-system get pod -l k8s-app=cilium -o name); do
+  kubectl --context <context> -n kube-system exec "$p" -c cilium-agent -- cat /proc/sys/fs/inotify/max_user_instances
+done
+```
+
+The participant clusters of zone A and zone B (contexts `zerotrust-a`, `zerotrust-b`) have their
+zone files, `deployment/helm/ztd/zones/zone-a.yaml` and `zone-b.yaml`, on interim trust domains.
+The installer has no guard of its own; the proof `scripts/verify-mesh-identity/verify.sh` installs
+there only behind its participant-cluster opt-in (`ZTD_CONFIRM_CLUSTER`), and leaves the zone
+installed only behind its keep opt-in (`ZTD_KEEP_ZONE`) when every check passed; an interrupted or
+failed run tears down. A zone left installed is removed with `install.sh uninstall` (the command
+above, with its zone file and context) followed by `kubectl --context <context> delete namespace
+ztd-system`; a new run of the proof does that itself in its clean-slate section. The proof writes the
+record of each run (`evidence.md`, `environment.json`) to a run directory outside the repository,
+`ZTD_EVIDENCE_DIR` or a new directory under `${XDG_STATE_HOME:-$HOME/.local/state}`, printed as its
+last line; the repository holds no record of a run (see `scripts/verify-mesh-identity/README.md`).

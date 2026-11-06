@@ -18,10 +18,11 @@ The chart has no defaults for the zone record on purpose. `zone.kubernetesVersio
 refuses to render until the file states them, so a zone is never installed on assumed values.
 Where the mesh runs (`mesh.mode` other than `none`) the file must also state:
 
-- `zone.trustDomain`: the zone's SPIFFE trust domain, which is the DNS zone delegated to that trust
-  zone (the one in which the trust framework publishes its records). It is not read off the
-  cluster; the Technical Design Authority confirms it, and until the delegation exists the field
-  has no value and the chart does not render. It is fixed at the first SPIRE install.
+- `zone.trustDomain`: the zone's SPIFFE trust domain, a name under the DNS zone delegated to the
+  trust framework, one per zone (`zone-a.<zone>`, `zone-b.<zone>`). It is never resolved, so no
+  second delegation is requested for it; it is not read off the cluster, and the Technical Design
+  Authority confirms it. It is fixed in the SPIRE root CA at install: a zone installed on one name is
+  re-installed (a new SPIRE CA, new SVIDs) to move to another.
 - `networkPolicy.kubeApi.enabled: true`, with the API server's port (and, without Cilium, its
   addresses): SPIRE and istiod call the API.
 - `cni.cilium.enabled: true`: the control-plane openings are Cilium policies by entity; a zone on
@@ -37,4 +38,29 @@ local kind cluster uses `../ci/values.yaml` (trust domain `kind.facis-ztd.local`
 A zone file records a cluster; it does not mean the chart is installed there. `ionos.yaml` is
 recorded from the IONOS cluster and validated against its API with a server-side dry run, but the
 chart is not installed on that cluster (see the file's header); it runs no mesh, so it carries no
-trust domain. The files for zone A and zone B are added when the OSC clusters are provided.
+trust domain.
+
+`zone-a.yaml` and `zone-b.yaml` record the two participant clusters on the Open Sovereign Cloud
+(contexts `zerotrust-a` and `zerotrust-b`): Kubernetes `v1.34.7`, StorageClass `default`,
+`loadBalancer.type: cloud` (not yet exercised), Cilium 1.18.8 installed by the provider with
+`cni-exclusive=false`, the mesh in sidecar mode, the two control-plane namespaces and the three
+openings, and the API lane on port 443 by entity, with no address in the file. Two facts of the
+provider's platform are recorded with them: CoreDNS listens on 8053 (`networkPolicy.dns.ports`),
+and the zone's namespaces carry Gardener's opt-out label
+`apiserver-proxy.networking.gardener.cloud/inject: disable` (`planes.namespaceLabels`), so that the
+provider's webhook leaves the pods on the `kubernetes` Service and they reach the API through the
+`kubeApi` lane.
+
+| Zone file | `zone.trustDomain` | Status |
+|---|---|---|
+| `zone-a.yaml` | `zone-a.trust.invalid` | interim, until the delegated trust-framework zone is named and the Technical Design Authority confirms `zone-a.<zone>` |
+| `zone-b.yaml` | `zone-b.trust.invalid` | interim, until the delegated trust-framework zone is named and the Technical Design Authority confirms `zone-b.<zone>` |
+
+The interim names let SPIRE and the mesh go onto the clusters before the delegated zone is named.
+`.invalid` is a reserved top-level domain that can never resolve or be delegated, so an interim
+name cannot be taken for a real one, and the proof recognises it by its `.trust.invalid` suffix. The
+mesh-identity proof may leave a zone installed on its interim name, behind its keep opt-in
+(`ZTD_KEEP_ZONE`, [scripts/verify-mesh-identity](../../../../scripts/verify-mesh-identity/README.md));
+because the name is fixed in the SPIRE root CA, that zone is re-installed with the final name once
+it is confirmed. Every re-run of the proof with the keep opt-in also regenerates the SPIRE root CA
+and reissues every SVID, which costs nothing while no other workload runs on the clusters.

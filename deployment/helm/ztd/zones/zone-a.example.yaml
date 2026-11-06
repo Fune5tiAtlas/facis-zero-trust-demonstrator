@@ -5,9 +5,9 @@ zone:
   storageClass: csi-default    # `kubectl get storageclass`
   loadBalancer:
     type: cloud                # cloud | metallb | none
-  # The zone's SPIFFE trust domain: the DNS zone delegated to this trust zone, in which the trust
-  # framework publishes its records (not read off the cluster; the Technical Design Authority
-  # confirms it). Required where the mesh runs; fixed at the first SPIRE install.
+  # The zone's SPIFFE trust domain: a name under the DNS zone delegated to the trust framework, one
+  # per zone (zone-a.<zone>), never resolved (not read off the cluster; the Technical Design
+  # Authority confirms it). Required where the mesh runs; fixed in the SPIRE root CA at install.
   trustDomain: zone-a.example
 mesh:
   mode: sidecar                # the mesh decision of ADR-0009; ambient is the parked alternative

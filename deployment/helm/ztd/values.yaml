@@ -11,8 +11,8 @@ zone:
   storageClass: ""       # storage class the zone provides to persistent components
   loadBalancer:
     type: ""             # how the zone exposes services: cloud | metallb | none
-  # The zone's SPIFFE trust domain: the DNS zone delegated to this trust zone, the one in which the
-  # trust framework publishes its records (kind: kind.facis-ztd.local). Shared by SPIRE
+  # The zone's SPIFFE trust domain: a name under the DNS zone delegated to the trust framework, one
+  # per zone, never resolved (kind: kind.facis-ztd.local). Shared by SPIRE
   # (global.spire.trustDomain) and the mesh (meshConfig.trustDomain), both read from this key by
   # scripts/install-zone. Required whenever mesh.mode is not none. It is baked into the SPIRE
   # server's root CA at first start: changing it later means reinstalling SPIRE and reissuing every
@@ -41,6 +41,12 @@ planes:
   # - name: istio-system
   #   plane: management
   #   mesh: false
+  # Labels the cluster's provider asks of the namespaces it should leave alone, set on every
+  # namespace the umbrella creates (plane and control-plane namespaces), a zone fact. On the Gardener
+  # clusters of zone A and zone B: apiserver-proxy.networking.gardener.cloud/inject: disable, which
+  # keeps the provider's webhook from pointing the pods at the API server's public name, so that they
+  # reach it through the kubernetes Service and the kubeApi lane. Never the plane or the mesh label.
+  namespaceLabels: {}
 
 # --------------------------------------------------------------------------------------------
 # Mesh mode. ADR-0009 baselines Istio sidecar mode with Cilium as the CNI, superseding the ambient
@@ -77,12 +83,15 @@ cni:
 # --------------------------------------------------------------------------------------------
 networkPolicy:
   defaultDeny: true
-  # Declared bypass, workloads -> DNS (docs/architecture.md, section 6): port 53 to the resolver only.
+  # Declared bypass, workloads -> DNS (docs/architecture.md, section 6): the resolver's port only.
   dns:
     enabled: true
     namespace: kube-system
     podSelector:
       k8s-app: kube-dns
+    # The port the resolver pods listen on (the targetPort of the kube-dns Service; a network policy
+    # matches the pod's port, not the Service's), UDP and TCP. 53 on kind; 8053 on Gardener.
+    ports: [53]
   # Pods inside one plane namespace may reach each other at the network layer; whether they may
   # actually talk is decided on identity by the mesh layer, not on IP.
   intraPlane: true
@@ -117,12 +126,18 @@ networkPolicy:
   # by entity in each namespace (a Kubernetes policy cannot name the API server). A self-hosted API
   # server runs on the host network of a control-plane node, and Cilium sees its calls to a pod on
   # another node with the identity of that node (remote-node), on its own node as host: the
-  # kube-apiserver entity matches only the API server's own address. The kind proof showed it
-  # (docs/evidences/mesh-identity), so the lane names the three entities, on the webhook port of the
-  # webhook pod only.
+  # kube-apiserver entity matches only the API server's own address. A run of the mesh identity
+  # proof shows it (scripts/verify-mesh-identity/README.md), so the lane names the three entities, on
+  # the webhook port of the webhook pod only.
   controlPlaneWebhooks:
     enabled: false
     fromEntities: [kube-apiserver, host, remote-node]
+    # A provider whose API server runs outside the cluster may reach the webhooks through a pod of
+    # its own (Gardener: the vpn-shoot pod in kube-system), which Cilium sees as that pod, not as an
+    # entity, when it runs on the webhook pod's node. Its Cilium endpoint selectors go here, a zone
+    # fact (k8s:io.kubernetes.pod.namespace and at least one pod label); the lane stays on the
+    # webhook port of the webhook pod. Empty by default; never an address.
+    fromEndpoints: []
     targets:
       - name: istiod
         namespace: istio-system

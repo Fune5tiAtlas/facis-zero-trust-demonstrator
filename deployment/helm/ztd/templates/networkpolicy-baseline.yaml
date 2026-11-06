@@ -6,7 +6,10 @@ lane is a CiliumNetworkPolicy by entity (ciliumnetworkpolicy-control-planes.yaml
 form below: Cilium does not select an API server that runs on a cluster node by its address.
 */ -}}
 {{- $cilium := .Values.cni.cilium.enabled }}
-{{- if and .Values.networkPolicy.kubeApi.enabled (not $cilium) (not .Values.networkPolicy.kubeApi.cidrs) }}
+{{- /* A meshed zone without Cilium is refused by ciliumnetworkpolicy-control-planes.yaml, naming the
+derogation; this check covers the zones without a mesh, so that a meshed zone file whose API lane is
+by entity (no cidrs) gets that message rather than this one. */ -}}
+{{- if and .Values.networkPolicy.kubeApi.enabled (not $cilium) (not .Values.networkPolicy.kubeApi.cidrs) (eq .Values.mesh.mode "none") }}
 {{- fail "networkPolicy.kubeApi.enabled needs at least one entry in networkPolicy.kubeApi.cidrs; an empty destination would open every address" }}
 {{- end }}
 {{- $mcp := .Values.networkPolicy.meshControlPlane }}
@@ -61,10 +64,12 @@ spec:
             matchLabels:
               {{- toYaml $.Values.networkPolicy.dns.podSelector | nindent 14 }}
       ports:
-        - port: 53
+        {{- range ($.Values.networkPolicy.dns.ports | default (list 53)) }}
+        - port: {{ . }}
           protocol: UDP
-        - port: 53
+        - port: {{ . }}
           protocol: TCP
+        {{- end }}
 {{- end }}
 {{- if $.Values.networkPolicy.intraPlane }}
 ---

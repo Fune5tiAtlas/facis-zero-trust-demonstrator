@@ -7,6 +7,9 @@ host and remote-node entities (a self-hosted API server's calls into a pod on an
 remote-node identity, on its own node the host identity); a podSelector does not match them and an ipBlock matches node
 addresses only under policy-cidr-match-mode=nodes, a cluster setting the zones may not have.
 
+Where the provider's API server reaches the webhooks through a pod of its own (Gardener's vpn-shoot),
+the zone names that pod in controlPlaneWebhooks.fromEndpoints, on the same webhook ports.
+
 One CiliumNetworkPolicy per control-plane namespace holds that namespace's ingress openings (one per
 pod selector, should a namespace's openings select different pods), and one per management-plane
 namespace holds the API lane. The API lane opens the `kubernetes` Service port, 443, and the zone's
@@ -28,7 +31,7 @@ under the default deny, and another CNI needs a declared derogation.
 {{- $byNs := dict }}
 {{- if $np.controlPlaneWebhooks.enabled }}
 {{- range $np.controlPlaneWebhooks.targets }}
-{{- $rule := dict "description" (printf "controlPlaneWebhooks: the API server -> the %s admission webhook on %v" .name .port) "opening" "controlPlaneWebhooks" "selector" .podSelector "entities" $np.controlPlaneWebhooks.fromEntities "port" .port }}
+{{- $rule := dict "description" (printf "controlPlaneWebhooks: the API server -> the %s admission webhook on %v" .name .port) "opening" "controlPlaneWebhooks" "selector" .podSelector "entities" $np.controlPlaneWebhooks.fromEntities "endpoints" ($np.controlPlaneWebhooks.fromEndpoints | default list) "port" .port }}
 {{- $_ := set $byNs .namespace (append (get $byNs .namespace | default list) $rule) }}
 {{- end }}
 {{- end }}
@@ -77,6 +80,17 @@ spec:
         - ports:
             - port: {{ .port | quote }}
               protocol: TCP
+    {{- if .endpoints }}
+    - fromEndpoints:
+        {{- range .endpoints }}
+        - matchLabels:
+            {{- toYaml . | nindent 12 }}
+        {{- end }}
+      toPorts:
+        - ports:
+            - port: {{ .port | quote }}
+              protocol: TCP
+    {{- end }}
     {{- end }}
 {{- end }}
 {{- end }}

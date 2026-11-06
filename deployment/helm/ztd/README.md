@@ -50,19 +50,21 @@ declared derogation of the preferred stack first (`docs/workload-identity.md`).
 | `zone.kubernetesVersion` | none, required | Server version recorded at stand-up; `scripts/verify-umbrella` asserts it |
 | `zone.storageClass` | none, required | Storage class the zone provides to persistent components |
 | `zone.loadBalancer.type` | none, required | `cloud`, `metallb` or `none` |
-| `zone.trustDomain` | none; required where `mesh.mode` is not `none` | The zone's SPIFFE trust domain: the DNS zone delegated to the trust zone (`kind.facis-ztd.local` on kind). Read by the installer for SPIRE and the mesh; fixed at the first SPIRE install |
+| `zone.trustDomain` | none; required where `mesh.mode` is not `none` | The zone's SPIFFE trust domain: a name under the DNS zone delegated to the trust framework, one per zone (`kind.facis-ztd.local` on kind; `zone-a.trust.invalid` and `zone-b.trust.invalid`, interim, on the participant clusters). Read by the installer for SPIRE and the mesh; fixed at the first SPIRE install |
 | `planes.management.namespace` | `ztd-mgmt` | Management-plane namespace |
 | `planes.data.namespace` | `ztd-data` | Data-plane namespace |
 | `planes.extra` | `[]` | Further `{name, plane, mesh}` namespaces: the control planes `spire-system` and `istio-system` (management, `mesh: false`) and any a component task adds. `mesh: false` leaves out the mesh label |
+| `planes.namespaceLabels` | `{}` | Labels the cluster's provider asks of the namespaces it should leave alone, set on every namespace the umbrella creates (never the plane or mesh label). On the Gardener clusters of zone A and zone B: `apiserver-proxy.networking.gardener.cloud/inject: disable`, so that the provider's webhook does not point the pods at the API server's public name, which the `kubeApi` lane (the `kube-apiserver` entity) does not admit |
 | `mesh.mode` | `sidecar` | `sidecar` (the ADR-0009 baseline), `ambient` (parked) or `none`; sets the namespace label. Sidecar mode refuses a `zone.kubernetesVersion` below 1.33 (native sidecars) |
 | `mesh.revision` | `""` | Sidecar mode: pin an Istio revision (`istio.io/rev`) instead of the default injector |
 | `cni.cilium.enabled` | `true` | Render the Cilium-specific pieces: the entity openings and the API lane, and the host-probe exception of the parked ambient mode. Required with a mesh |
 | `networkPolicy.defaultDeny` | `true` | Default deny, ingress and egress, in every plane namespace |
-| `networkPolicy.dns.*` | kube-dns in `kube-system` | The declared DNS bypass, port 53 only |
+| `networkPolicy.dns.*` | kube-dns in `kube-system`, port 53 | The declared DNS bypass, the resolver pods' port only (`ports`: the kube-dns Service's targetPort, 8053 on the Gardener clusters of zone A and zone B) |
 | `networkPolicy.intraPlane` | `true` | Pods within one plane namespace may reach each other at L3/L4 |
 | `networkPolicy.kubeApi.*` | off | Management-plane egress to the API server; required where `mesh.mode` is not `none`. With Cilium a policy to the `kube-apiserver` entity on the `kubernetes` Service port 443 and on `ports` (`cidrs` recorded only); without, an `ipBlock` to `cidrs` (required) on `ports`, a per-zone fact |
 | `networkPolicy.meshControlPlane.*` | off; istiod (`app: istiod`) in `istio-system`, 15012 | Declared opening: every meshed plane namespace → istiod's xDS port (egress there, ingress in `istio-system`) |
-| `networkPolicy.controlPlaneWebhooks.*` | off; entities `kube-apiserver`, `host`, `remote-node`; istiod 15017, controller-manager 9443 | Declared opening: the API server → the admission webhooks of both control planes (Cilium, by entity) |
+| `networkPolicy.controlPlaneWebhooks.*` | off; entities `kube-apiserver`, `host`, `remote-node`; no `fromEndpoints`; istiod 15017, controller-manager 9443 | Declared opening: the API server → the admission webhooks of both control planes (Cilium, by entity) |
+| `networkPolicy.controlPlaneWebhooks.fromEndpoints` | `[]` | Cilium endpoint selectors of the provider's pod that relays the API server's calls to in-cluster webhooks (Gardener: `vpn-shoot` in `kube-system`), admitted on the same webhook ports; a zone fact, never an address |
 | `networkPolicy.identityServer.*` | off; SPIRE server (`app.kubernetes.io/name: server`) in `spire-system`, 8081, entities `host`, `remote-node` | Declared opening: the host-networked SPIRE agents → the SPIRE server (Cilium, by entity) |
 | `allowMatrix` | the lanes of architecture §6 | Data-plane → management-plane lanes, as data (see below) |
 | `verification.enabled` | `true` | Post-install job that reads the layout back and fails the release if it is wrong |
