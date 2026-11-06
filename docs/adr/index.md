@@ -4,6 +4,9 @@ Architecture Decision Records capture the decisions that shape this demonstrator
 taken, and what would cause them to be revisited. A decision recorded here is settled: reopening it
 is a change with a named cost, not a discussion.
 
+Every decision, its record, status and evidence — including those still in open pull requests and
+numbers allocated but not yet written — is listed in the [Decision ledger](decision-ledger.md).
+
 ## Governing decisions
 
 The first five were taken by the project's Technical Design Authority and Project Leader on
@@ -45,7 +48,9 @@ its reasons, the requirements it answers, and what would reopen it.
 
 | ADR | Decision |
 |---|---|
+| [0008](0008-envoy-ext-authz-as-the-guard-policy-hook.md) | Envoy ext_authz as the guard's policy hook, ext_proc as the config-only alternative |
 | [0011](0011-mock-tee-evidence-format-and-provisioning.md) | Mock TEE evidence — format, release artefact, and provisioning |
+| [0016](0016-oauth2-library-behind-the-connector-provider-contract.md) | OAuth2 library behind the connector's provider contract |
 
 ## Format
 
