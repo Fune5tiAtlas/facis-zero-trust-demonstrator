@@ -30,6 +30,7 @@ nav:
   - Orchestrated flows: flows.md
   - Scenario decisions: scenarios.md
   - Keycloak integration: keycloak.md
+  - Demonstrator UI and identity: demonstrator-handoff.md
   - Identity model: identity-model.md
   - Connector OAuth2 provider: oauth2-provider.md
   - Guard policy hook: policy-hook.md
