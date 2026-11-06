@@ -19,10 +19,9 @@ You need:
   cluster-scoped resources;
 - credentials for the container registry the images are pulled from, and network reachability to it
   from both clusters;
-- the DNS zone delegation for the trust framework in place, or the trust-list steps will not
-  resolve;
-- Helm v4.3.0, the version the pipeline pins, kubectl, `jq`, `curl` and `python3` with PyYAML
-  (the zone installer), and istioctl 1.31.1 to inspect the proxies;
+- the DNS zone delegation for the trust framework in place ([TRAIN DNS zone](../train-dns.md)), or
+  the trust-list steps will not resolve;
+- Helm v4.3.0, the version the pipeline pins, and kubectl;
 - this repository checked out, and the values file for the zone you are installing.
 
 Check the version first — everything below assumes 1.29 or later, and the mesh needs 1.33 or later:

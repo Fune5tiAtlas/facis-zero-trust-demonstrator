@@ -12,7 +12,7 @@ specific cluster, with the check that proves each stage, see [Environments](envi
 - Kubernetes **1.33 or later** on a cluster that runs the mesh, for the native sidecar containers
   that record decides on; 1.29 stays the floor for a cluster without the mesh.
 - A container registry reachable from the clusters, with credentials available to the cluster.
-- DNS delegation for the trust zone.
+- DNS delegation for the trust-framework zone, as described in [TRAIN DNS zone](train-dns.md).
 
 ## Installing a zone
 
