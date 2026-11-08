@@ -570,9 +570,9 @@ if release == "prometheus":
     # A silent zone: no uptime sample of its gateway for 15 s (the window is the pending period;
     # for 5 s on top), one rule per zone of the entry, so a zone that never reported is caught too.
     rules = [{"alert": "ZoneSilent",
-              "expr": f'absent_over_time({{__name__=~"otelcol_process_uptime.*",collector="otel-gateway",zone="{z["name"]}"}}[15s])',
+              "expr": f'absent_over_time({{__name__=~"otelcol_process_uptime.*",collector="otel-gateway",ztd_source="collector",zone="{z["name"]}"}}[15s])',
               "for": "5s",
-              "labels": {"severity": "critical", "zone": z["name"], "target": "zone-gateway"},
+              "labels": {"severity": "critical", "zone": z["name"], "target": "zone-gateway", "ztd_source": "collector"},
               "annotations": {"summary": f"No telemetry from {z['name']}: its zone gateway, its export path or the zone is down"}}
              for z in (ob.get("entry") or {}).get("zones") or []]
     values["serverFiles"]["alerting_rules.yml"]["groups"].append({"name": "ztd-silent-zones", "interval": "5s", "rules": rules})

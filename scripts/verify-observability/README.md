@@ -88,7 +88,7 @@ An alert is a Prometheus rule in the `firing` state.
 An alert counts only when it became active after the failure was injected (`activeAt`), so an alert
 left from an earlier failure is never mistaken for the detection. The detection time is measured
 from the injection to the rule seen `firing` in Prometheus's alerts API (`/api/v1/alerts`), and the
-same alert must then be in the `ALERTS{alertstate="firing"}` series; one above 30 s fails its check.
+same alert must then be in the `ALERTS{alertstate="firing",ztd_source="collector"}` series; one above 30 s fails its check.
 An alert resolves when the rule is neither pending nor firing.
 
 `VERIFY_INJECT_FAULT=spire-lane-is-narrow` (an extra policy opening 8081 to the gateway) or

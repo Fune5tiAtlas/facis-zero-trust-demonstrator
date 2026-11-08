@@ -233,7 +233,7 @@ jaeger_trace() { probe curl -s --max-time 10 "http://jaeger:16686/api/traces/$1"
 # alert from the alerts API, as [{labels, state, activeAt}]; alerts_series: the firing alerts of the
 # ALERTS series, in the same shape.
 prom_alerts() { probe curl -s --max-time 10 http://prometheus-server/api/v1/alerts | jq -c '.data.alerts'; }
-alerts_series() { pq 'ALERTS{alertstate="firing"}' | jq -c '[.data.result[] | {labels: (.metric | del(.alertstate)), state: "firing"}]'; }
+alerts_series() { pq 'ALERTS{alertstate="firing",ztd_source="collector"}' | jq -c '[.data.result[] | {labels: (.metric | del(.alertstate)), state: "firing"}]'; }
 hex() { openssl rand -hex "$1"; }
 now_ns() { date +%s%N; }
 until_true() { # until_true <timeout-s> <command...>
@@ -373,7 +373,7 @@ if if01=$(zone_records "$ZONE" "corr-$RUN_ID" | jq -c 'select(.attributes.seq ==
   else record if01-fields-kept failed "fields kept: $(jq -c '.attributes' <<<"$if01")"; fi
 else record if01-fields-kept failed "the IF-01 event did not reach the exported file of $ZONE"; fi
 
-agents_up=$(pq "up{job=\"spire-agent\",zone=\"$ZONE\"} == 1" | jq -r '[.data.result[].metric.node] | sort | join(",")')
+agents_up=$(pq "up{job=\"spire-agent\",zone=\"$ZONE\",ztd_source=\"collector\"} == 1" | jq -r '[.data.result[].metric.node] | sort | join(",")')
 agent_nodes=$(kz -n spire-system get pods -l app.kubernetes.io/name=agent -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' | sort | paste -sd, -)
 if [ -n "$agent_nodes" ] && [ "$agents_up" = "$agent_nodes" ]; then record spire-agents-scraped passed "up == 1 for the agent of every node ($agent_nodes), zone $ZONE"
 else record spire-agents-scraped failed "agents scraped: '$agents_up', agents running on: '$agent_nodes'"; fi
@@ -393,10 +393,10 @@ code=$(kz -n "$NS_SCRATCH" exec obs-node-address-probe -- curl -s -o /dev/null -
 if $bind_ok; then record agents-stay-on-loopback passed "${bind_detail}a pod asking $node_ip:9988 is refused"
 else record agents-stay-on-loopback failed "${bind_detail}$node_ip:9988 answered HTTP $code"; fi
 
-srv=$(pqv "max(last_over_time(up{job=\"spire-server\",zone=\"$ZONE\"}[30s]))")
-cm=$(pqv "max(last_over_time(up{job=\"spire-controller-manager\",zone=\"$ZONE\"}[30s]))")
-ns_srv=$(pqv "count(count by (__name__) ({__name__=~\"spire_server_.+\",zone=\"$ZONE\"}))")
-ns_cr=$(pqv "count(count by (__name__) ({__name__=~\"controller_runtime_.+\",zone=\"$ZONE\"}))")
+srv=$(pqv "max(last_over_time(up{job=\"spire-server\",zone=\"$ZONE\",ztd_source=\"collector\"}[30s]))")
+cm=$(pqv "max(last_over_time(up{job=\"spire-controller-manager\",zone=\"$ZONE\",ztd_source=\"collector\"}[30s]))")
+ns_srv=$(pqv "count(count by (__name__) ({__name__=~\"spire_server_.+\",zone=\"$ZONE\",ztd_source=\"collector\"}))")
+ns_cr=$(pqv "count(count by (__name__) ({__name__=~\"controller_runtime_.+\",zone=\"$ZONE\",ztd_source=\"collector\"}))")
 if [ "$srv" = 1 ] && [ "$cm" = 1 ] && [ "${ns_srv:-0}" -gt 0 ] && [ "${ns_cr:-0}" -gt 0 ]; then
   record spire-server-scraped passed "up == 1 for the server and the controller-manager; ${ns_srv} spire_server_ and ${ns_cr} controller_runtime_ series of $ZONE"
 else record spire-server-scraped failed "server up=$srv controller-manager up=$cm spire_server_ series=$ns_srv controller_runtime_ series=$ns_cr"; fi
@@ -474,8 +474,8 @@ if [ "$ecode" = 200 ] && until_true 90 correlated; then
 else record correlated-trace failed "echo HTTP $ecode; trace $tid: $(jaeger_trace "$tid" | jq -c '[.data[0].processes[]?.serviceName]')"; fi
 
 # ---------------------------------------------------------------- revocation probe
-probe_up() { [ "$(pqv "max(last_over_time(httpcheck_status{zone=\"$ZONE\",http_status_class=\"2xx\"}[10s]))")" = 1 ] && [ -z "$(pqv "max(last_over_time(httpcheck_error{zone=\"$ZONE\"}[10s])) > 0")" ]; }
-probe_down() { [ -n "$(pqv "max(last_over_time(httpcheck_error{zone=\"$ZONE\"}[10s])) > 0")" ] || [ "$(pqv "max(last_over_time(httpcheck_status{zone=\"$ZONE\",http_status_class=\"2xx\"}[10s]))")" = 0 ]; }
+probe_up() { [ "$(pqv "max(last_over_time(httpcheck_status{zone=\"$ZONE\",http_status_class=\"2xx\",ztd_source=\"collector\"}[10s]))")" = 1 ] && [ -z "$(pqv "max(last_over_time(httpcheck_error{zone=\"$ZONE\",ztd_source=\"collector\"}[10s])) > 0")" ]; }
+probe_down() { [ -n "$(pqv "max(last_over_time(httpcheck_error{zone=\"$ZONE\",ztd_source=\"collector\"}[10s])) > 0")" ] || [ "$(pqv "max(last_over_time(httpcheck_status{zone=\"$ZONE\",http_status_class=\"2xx\",ztd_source=\"collector\"}[10s]))")" = 0 ]; }
 if until_true 60 probe_up; then
   RESTORE+=("kz -n $NSM scale deploy/status-list --replicas=1")
   kz -n "$NSM" scale deploy/status-list --replicas=0 >>"$LOG"; t0=$(date +%s)
@@ -503,7 +503,7 @@ if [ "$MODE" = kind ] || [ "$DCTX" != "$ZCTX" ]; then
   # The gateway's metrics of the outage, scraped every 5 s. Each signal has its own gRPC connection
   # to the entry, which reconnects on gRPC's backoff (it grows through the outage), so the metrics
   # can arrive well after the span: wait for them up to 3 min.
-  outage_samples() { pqv "count_over_time(up{job=\"spire-server\",zone=\"$ZONE\"}[50s] @ $((down_end - 5)))"; }
+  outage_samples() { pqv "count_over_time(up{job=\"spire-server\",zone=\"$ZONE\",ztd_source=\"collector\"}[50s] @ $((down_end - 5)))"; }
   outage_complete() { [ "$(outage_samples)" -ge 6 ] 2>/dev/null; }
   until_true 180 outage_complete || true
   samples=$(outage_samples)
@@ -682,12 +682,12 @@ else record prometheus-scrapes-no-zone failed "targets: $targets"; fi
 
 # ---------------------------------------------------------------- retention
 mark=$(date +%s)
-before=$(pqv "count_over_time(up{job=\"spire-server\",zone=\"$ZONE\"}[1m] @ $mark)")
+before=$(pqv "count_over_time(up{job=\"spire-server\",zone=\"$ZONE\",ztd_source=\"collector\"}[1m] @ $mark)")
 kd -n "$NSB" delete pod -l app.kubernetes.io/name=prometheus,app.kubernetes.io/component=server --wait=true >>"$LOG" 2>&1
 kd -n "$NSB" rollout status deploy/prometheus-server --timeout=180s >>"$LOG" 2>&1
 prom_ready() { probe curl -sf http://prometheus-server/-/ready; }
 until_true 120 prom_ready || true
-after=$(pqv "count_over_time(up{job=\"spire-server\",zone=\"$ZONE\"}[1m] @ $mark)")
+after=$(pqv "count_over_time(up{job=\"spire-server\",zone=\"$ZONE\",ztd_source=\"collector\"}[1m] @ $mark)")
 if [ -n "$before" ] && [ "${before:-0}" -gt 0 ] && [ "$after" = "$before" ]; then
   record metrics-survive-restart passed "$before samples of the minute before the restart, the same after it"
 else record metrics-survive-restart failed "before $before, after $after"; fi

@@ -10,7 +10,15 @@
 #      revocation probe every 5 s, the probe's request bounded to 2 s, collector batches of 1 s, rule evaluation every 5 s, for: 10s (the
 #      silent-zone rules: a 15 s window and for: 5s), no alert sender in the Prometheus configuration
 #      (the firing state is the alert), and that the
-#      worst-case sums stay below 30 s.
+#      worst-case sums stay below 30 s;
+#   3. checks that the alerts read only the collectors' own signals, in two layers: every selector
+#      in the rules of a health metric or of a rule's own series (ztd:*) carries
+#      ztd_source="collector", which the collectors stamp on their scrapes, k8s_cluster and the probe
+#      and the zone gateway's OTLP pipeline (the data plane's, untrusted) overwrites with workload;
+#      and that pipeline's filter drops every name the rules read, every ztd:* series and ALERTS /
+#      ALERTS_FOR_STATE, in each spelling that Prometheus stores under that name (other separators,
+#      leading or trailing ones, another case). The promtool tests add forged workload series,
+#      recorded-series names included, that neither hide a failure nor raise an alert.
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -82,6 +90,57 @@ budgets = {"missing target": 5 + 1 + 2 + 5 + 10, "silent zone": 15 + 5 + 5,
 for k, v in budgets.items():
     if v >= 30: bad.append(f"the worst case of {k} is {v} s, not below 30 s")
 if bad: sys.exit("detection budget: " + "; ".join(bad))
+# The alerts read only the collectors' own signals.
+trust = []
+health = r"(?:up|k8s_[a-z_]+|httpcheck_[a-z_]+|otelcol_[a-z_]+|ztd:[a-z_]+:[a-z_]+)"
+exprs = [r["expr"] for g in rules["groups"] for r in g["rules"]]
+names = set()
+for e in exprs:
+    for m in re.finditer(r"(?<![\w\"])(" + health + r")\b(\{[^}]*\})?", e):
+        if m.group(1) in ("by", "on"): continue
+        names.add(m.group(1))
+        if 'ztd_source="collector"' not in (m.group(2) or ""):
+            trust.append(f"the selector {m.group(0)!r} does not require ztd_source=\"collector\"")
+    for m in re.finditer(r"\{__name__=~\"(" + health + r")[^\"]*\"([^}]*)\}", e):
+        names.add(m.group(1))
+        if 'ztd_source="collector"' not in m.group(2):
+            trust.append(f"the selector {m.group(0)!r} does not require ztd_source=\"collector\"")
+if not names: trust.append("no health metric found in the rules")
+# Every alert carries ztd_source="collector", so ALERTS{ztd_source="collector"} holds only the rules'.
+for g in rules["groups"]:
+    for r in g["rules"]:
+        if "alert" in r and (r.get("labels") or {}).get("ztd_source") != "collector":
+            trust.append(f"the alert {r['alert']} does not label itself ztd_source=collector")
+stamp = {"key": "ztd.source", "value": "collector", "action": "upsert"}
+for name, c in (("otel-node", node), ("otel-gateway", gw)):
+    for pname, pl in c["service"]["pipelines"].items():
+        if not pname.startswith("metrics") or not pl: continue
+        if "otlp" in pl["receivers"]:
+            if pl["receivers"] != ["otlp"]:
+                trust.append(f"{name} pipeline {pname} merges OTLP with the collector's own receivers")
+            for proc in ("filter/reserved", "transform/workload"):
+                if proc not in pl["processors"]: trust.append(f"{name} pipeline {pname} lacks {proc}")
+        elif not any(stamp in (c["processors"].get(p, {}).get("attributes") or []) for p in pl["processors"]):
+            trust.append(f"{name} pipeline {pname} does not stamp ztd.source=collector")
+cond = " ".join(gw["processors"]["filter/reserved"]["metrics"]["metric"])
+patterns = re.findall(r'IsMatch\(name, "([^"]+)"\)', cond)
+recorded = {r["record"] for g in rules["groups"] for r in g["rules"] if "record" in r}
+reserved = sorted(names | recorded | {"ALERTS", "ALERTS_FOR_STATE"})
+def dropped(form): return any(re.search(p, form) for p in patterns)
+for n in reserved:
+    forms = {n, n + ".", n + "-", "_" + n, "." + n, n.upper(), n.lower(), n + ":x", n + "/x"}
+    for sep in (".", "-", "/", ":"):
+        forms.add(n.replace("_", sep))
+    for form in sorted(forms):
+        if not dropped(form):
+            trust.append(f"the gateway's OTLP filter lets {form!r} through, stored as {n!r}")
+for form in ("uptime", "request_count", "ztdx", "ztd_proof_zone_claim"):   # unreserved names pass (the last is the proof's)
+    if dropped(form): trust.append(f"the gateway's OTLP filter drops the unreserved name {form!r}")
+wl = gw["processors"]["transform/workload"]["metric_statements"]
+if not any('set(resource.attributes["ztd.source"], "workload")' in st for b in wl for st in b["statements"]):
+    trust.append("the gateway's OTLP pipeline does not set ztd.source=workload")
+if trust: sys.exit("trusted signals: " + "; ".join(trust))
+print("trusted signals: the rules read " + ", ".join(sorted(names)) + " with ztd_source=\"collector\" only; OTLP is stamped workload and drops " + ", ".join(reserved) + " in every spelling")
 print("detection budget: rendered intervals match; worst cases " + ", ".join(f"{k} {v} s" for k, v in budgets.items()))
 PY
 cp "$here/alert-rules.test.yaml" "$work/"

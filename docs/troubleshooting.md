@@ -115,7 +115,7 @@ The alerts are Prometheus's alerting rules on the demonstrator cluster: an alert
 rule reaches the `firing` state. Read them from
 Prometheus (`kubectl -n ztd-observability port-forward svc/prometheus-server 9090:80`, then
 `/api/v1/alerts`, where `state` is `pending` or `firing`, or the query
-`ALERTS{alertstate="firing"}`); Jaeger (`svc/jaeger`, port 16686) is reached the same way, with
+`ALERTS{alertstate="firing",ztd_source="collector"}`); Jaeger (`svc/jaeger`, port 16686) is reached the same way, with
 cluster access only. The proof records each firing alert, with its detection time, as evidence.
 
 **Detection budget.** Every alert fires within 30 seconds of the failure, by construction. The firing

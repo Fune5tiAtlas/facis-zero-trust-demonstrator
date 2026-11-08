@@ -133,6 +133,10 @@ config:
     batch:
       timeout: 1s
       send_batch_size: 512
+    # Its scrapes are health signals the alerts read (otel-gateway.yaml): stamped ztd.source=collector.
+    resource/collector:
+      attributes:
+        - { key: ztd.source, value: collector, action: upsert }
   exporters:
     debug: null
     otlp/entry:
@@ -178,6 +182,6 @@ config:
         exporters: [otlp/entry]
       metrics:
         receivers: [prometheus]
-        processors: [memory_limiter, batch]
+        processors: [memory_limiter, resource/collector, batch]
         exporters: [otlp/entry]
       traces: null

@@ -116,7 +116,7 @@ backups; the installer sizes the rotation so that every zone's files fit in
 release on `uninstall`.
 
 A Prometheus rule in the `firing` state is the alert, read from
-Prometheus's alerts API (`/api/v1/alerts`) and the `ALERTS` series.
+Prometheus's alerts API (`/api/v1/alerts`) and the `ALERTS{ztd_source="collector"}` series.
 
 The demonstrator cluster needs cert-manager (it runs its own, v1.21.2); `install` refuses a cluster
 without its CRDs. On kind `scripts/dev/kind-cert-manager-up.sh` installs the pinned version. A

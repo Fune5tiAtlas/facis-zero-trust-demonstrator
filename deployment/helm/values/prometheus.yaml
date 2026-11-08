@@ -84,57 +84,65 @@ serverFiles:
       - name: ztd-control-plane
         interval: 5s
         rules:
+          # Every rule reads health signals only, ztd_source="collector": the zone's collectors set it
+          # on their own scrapes, k8s_cluster and the probe, and set workload on the OTLP the data
+          # plane sends them (otel-gateway.yaml), so no workload series can join or shadow these.
           # A scrape target of a zone stops answering: the scrape result, not the pod status. The
           # window of 15 s keeps a target whose collector has gone silent from counting as up for
           # Prometheus's 5 min lookback.
           - alert: SpireServerDown
-            expr: last_over_time(up{job="spire-server"}[15s]) == 0
+            expr: last_over_time(up{job="spire-server",ztd_source="collector"}[15s]) == 0
             for: 10s
-            labels: { severity: critical, target: spire-server }
+            labels: { severity: critical, target: spire-server, ztd_source: collector }
             annotations:
               summary: "The SPIRE server of {{ $labels.zone }} does not answer its metrics scrape"
           - alert: SpireControllerManagerDown
-            expr: last_over_time(up{job="spire-controller-manager"}[15s]) == 0
+            expr: last_over_time(up{job="spire-controller-manager",ztd_source="collector"}[15s]) == 0
             for: 10s
-            labels: { severity: critical, target: spire-controller-manager }
+            labels: { severity: critical, target: spire-controller-manager, ztd_source: collector }
             annotations:
               summary: "The SPIRE controller-manager of {{ $labels.zone }} does not answer its metrics scrape"
           - alert: SpireAgentDown
-            expr: last_over_time(up{job="spire-agent"}[15s]) == 0
+            expr: last_over_time(up{job="spire-agent",ztd_source="collector"}[15s]) == 0
             for: 10s
-            labels: { severity: critical, target: spire-agent }
+            labels: { severity: critical, target: spire-agent, ztd_source: collector }
             annotations:
               summary: "The SPIRE agent on node {{ $labels.node }} of {{ $labels.zone }} does not answer its metrics scrape"
           # An agent whose series vanish with its node collector: fewer agents report than the zone
-          # has ready nodes that the agent DaemonSet targets.
+          # has ready nodes that the agent DaemonSet targets. The recorded series keep
+          # ztd_source="collector", and the alert reads them by it, so a series of the same name sent
+          # by a workload (ztd_source="workload") never joins the match.
           - record: ztd:spire_agents_expected:count
             expr: |
-              min by (zone) (
-                label_replace(count by (zone) (last_over_time(k8s_node_condition_ready[30s]) == 1), "source", "ready-nodes", "", "")
+              min by (zone, ztd_source) (
+                label_replace(count by (zone, ztd_source) (last_over_time(k8s_node_condition_ready{ztd_source="collector"}[30s]) == 1), "source", "ready-nodes", "", "")
                 or
-                label_replace(max by (zone) (last_over_time(k8s_daemonset_desired_scheduled_nodes{k8s_daemonset_name="spire-agent"}[30s])), "source", "agent-daemonset", "", "")
+                label_replace(max by (zone, ztd_source) (last_over_time(k8s_daemonset_desired_scheduled_nodes{k8s_daemonset_name="spire-agent",ztd_source="collector"}[30s])), "source", "agent-daemonset", "", "")
               )
           # The window of 10 s is the first term of the alert's budget (10 + evaluation 5 + for 10 =
           # 25 s): a vanished agent's last sample leaves the count 10 s after it was taken.
           - record: ztd:spire_agents_reporting:count
             expr: |
-              count by (zone) (last_over_time(up{job="spire-agent"}[10s]) == 1)
-              or on (zone) (0 * ztd:spire_agents_expected:count)
+              count by (zone, ztd_source) (last_over_time(up{job="spire-agent",ztd_source="collector"}[10s]) == 1)
+              or on (zone) (0 * ztd:spire_agents_expected:count{ztd_source="collector"})
           - alert: SpireAgentsMissing
-            expr: ztd:spire_agents_reporting:count < on (zone) ztd:spire_agents_expected:count
+            expr: |
+              max by (zone) (ztd:spire_agents_reporting:count{ztd_source="collector"})
+              < on (zone)
+              max by (zone) (ztd:spire_agents_expected:count{ztd_source="collector"})
             for: 10s
-            labels: { severity: critical, target: spire-agent }
+            labels: { severity: critical, target: spire-agent, ztd_source: collector }
             annotations:
               summary: "{{ $labels.zone }}: {{ $value }} SPIRE agents report, fewer than the zone's ready nodes"
           # The revocation status list probed from a zone does not answer, or answers an error
           # (availability only, ZT-51).
           - alert: RevocationEndpointDown
             expr: |
-              (max by (zone, http_url) (last_over_time(httpcheck_error[10s])) > 0)
+              (max by (zone, http_url) (last_over_time(httpcheck_error{ztd_source="collector"}[10s])) > 0)
               or
-              (max by (zone, http_url) (last_over_time(httpcheck_status{http_status_class="2xx"}[10s])) == 0)
+              (max by (zone, http_url) (last_over_time(httpcheck_status{http_status_class="2xx",ztd_source="collector"}[10s])) == 0)
             for: 10s
-            labels: { severity: critical, target: revocation-endpoint }
+            labels: { severity: critical, target: revocation-endpoint, ztd_source: collector }
             annotations:
               summary: "{{ $labels.zone }}: the revocation status list {{ $labels.http_url }} is unreachable"
       # installer: the group ztd-silent-zones, one absent_over_time rule per zone of the entry

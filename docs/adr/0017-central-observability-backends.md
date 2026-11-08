@@ -43,9 +43,32 @@ pod without an SVID.
   entry), Prometheus (metrics by remote write; it scrapes nothing in a zone; the alert rules) and
   Jaeger.
 - **Alerts are Prometheus rules in the `firing` state.** An alert is emitted when its rule fires, and
-  is read from Prometheus's alerts API (`/api/v1/alerts`) and the `ALERTS` series. The proof records
+  is read from Prometheus's alerts API (`/api/v1/alerts`), which lists only what the rules evaluate,
+  and the `ALERTS{ztd_source="collector"}` series: every rule labels its alert so. The proof records
   each firing alert with its detection time as evidence. No source names a receiver to route an
   alert to.
+- **The alerts read only the collectors' own signals.** The zone gateway's OTLP receiver is open to
+  every data-plane workload (the allow-matrix row), so what arrives there is untrusted. Two layers
+  keep it out of the alerts, and either one alone suffices:
+  - **Source label.** The health signals the rules read (the scrapes' `up`, `k8s_cluster`'s node and
+    DaemonSet metrics, the probe's `httpcheck_*`, the collectors' own `otelcol_*`) are stamped
+    `ztd.source=collector` by the collector that produces them, on a pipeline that carries no OTLP.
+    The gateway's OTLP metrics pipeline sets `ztd.source=workload`, overwriting any value the client
+    sent. Every selector of the rules, on the inputs and on the rules' own recorded series
+    (`ztd:*`, which keep the label), requires `ztd_source="collector"`, and every alert labels itself
+    `ztd_source: collector`.
+  - **Reserved names.** The same pipeline drops every metric whose name Prometheus would store as a
+    health input, a recorded `ztd:` series or the alert series (`ALERTS`, `ALERTS_FOR_STATE`): the
+    remote write turns other characters into `_` and trims them at the ends, so the filter matches
+    those names with any separator, leading or trailing characters and case. Names such as `uptime`
+    or `ztd_proof_zone_claim` pass.
+
+  So a workload can neither keep a failed component's series up, raise a false alert, nor break a
+  rule's match with a series of the same name. Alerts are read from `/api/v1/alerts`, which lists only
+  what the rules evaluate, or from `ALERTS{ztd_source="collector"}`.
+  `scripts/verify-observability/test-alert-rules.sh` checks the rendered rules, pipelines and filter
+  (each reserved name in its separator, case and edge variants) and runs promtool cases with forged
+  series, recorded-series names included.
 - **Logs are exported to files, not to a query service.** The entry's log pipeline of each zone ends
   in the collector's `file` exporter: the zone's records as OTLP JSON lines in
   `/var/lib/ztd-logs/<zone>.jsonl` on a persistent volume of the cluster's storage class
@@ -108,6 +131,14 @@ pod's termination, the mesh's endpoint update) and the poll.
   host network with read access to every pod's logs, so the key adds no new trust boundary.
 - Negative: during the contingency period the demonstrator cluster has a public entry. Only the
   per-zone mutual-TLS listeners are behind it, with the zones' egress addresses as source ranges.
+- Negative: what a workload sends over OTLP is trusted only as far as its own telemetry. A
+  data-plane pod can still send traces, logs and metrics of unreserved names under any service name
+  (stored with `ztd_source="workload"`),
+  flood the gateway's queue (which then refuses new data, health signals included, until it drains)
+  or stop sending; the alerts never read its metrics, and a silent or flooded gateway raises
+  `ZoneSilent` or shows in the gateway's refused-item counters. The OTLP receiver has no
+  authentication of its own beyond the mesh's mTLS and the allow-matrix row. Accepted for a
+  demonstrator; an `AuthorizationPolicy` per sending identity would narrow it.
 - Negative: while the export path is down, the collectors buffer in a bounded queue (file-backed on
   the node collectors). A full queue refuses new data and counts it
   (`otelcol_exporter_enqueue_failed_*`); a batch still unsent after the 30 min retry window is dropped
