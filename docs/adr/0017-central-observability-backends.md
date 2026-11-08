@@ -78,15 +78,21 @@ pod without an SVID.
 | Collector batch timeout | 1 s | | | 1 s |
 | Export latency | at most 2 s | | | at most 2 s |
 | Absence window | | 15 s | 10 s | |
+| Probe timeout | | | | 2 s |
 | Rule evaluation interval | 5 s | 5 s | 5 s | 5 s |
 | Alert `for` | 10 s | 5 s | 10 s | 10 s |
-| **Worst case** | **23 s** | **25 s** | **25 s** | **23 s** |
+| **Worst case** | **23 s** | **25 s** | **25 s** | **25 s** |
 
 There is no routing stage: the firing state is the alert. The silent-zone rule's window already
 holds the alert back, so its `for` is 5 s rather than 10 s; with 10 s its worst case would be 30 s,
-not below the limit. `scripts/verify-observability/test-alert-rules.sh`
-checks in CI that the rendered values are these, and the proof measures each alert on a cluster and
-fails one that arrives later than 30 s.
+not below the limit. Export latency covers the zone gateway's send, the entry's batch and its remote
+write to Prometheus. The probe's request is bounded by its timeout, below the probe interval and the
+rule's lookback: an unbounded probe that hangs leaves no sample, and the alert would never fire.
+`scripts/verify-observability/test-alert-rules.sh` checks in CI that the rendered values are these,
+and the proof measures each alert on a cluster and fails one that arrives later than 30 s. The budget
+counts from the moment the failed component stops answering; the proof counts from the command that
+injects the failure and polls every second, so its figures also hold the component's shutdown (a
+pod's termination, the mesh's endpoint update) and the poll.
 
 ## Consequences
 

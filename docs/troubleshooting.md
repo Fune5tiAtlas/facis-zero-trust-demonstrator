@@ -126,10 +126,16 @@ state is the alert, so no routing delay is added:
 | `SpireServerDown`, `SpireControllerManagerDown`, `SpireAgentDown` (a missing target, `up == 0`) | scrape 5 s + batch 1 s + export at most 2 s + evaluation 5 s + `for` 10 s | 23 s |
 | `ZoneSilent` (no uptime sample of the zone gateway) | absence window 15 s + evaluation 5 s + `for` 5 s | 25 s |
 | `SpireAgentsMissing` (fewer agents report than the zone has ready nodes the agent DaemonSet targets) | window 10 s + evaluation 5 s + `for` 10 s | 25 s |
-| `RevocationEndpointDown` (the probe of the status list fails) | probe 5 s + batch 1 s + export at most 2 s + evaluation 5 s + `for` 10 s | 23 s |
+| `RevocationEndpointDown` (the probe of the status list fails) | probe 5 s + probe timeout 2 s + batch 1 s + export at most 2 s + evaluation 5 s + `for` 10 s | 25 s |
 
 The silent-zone rule's 15 s window already holds the alert back, so its `for` is 5 s: with 10 s its
-worst case would be 30 s, not below the limit.
+worst case would be 30 s, not below the limit. The export term covers the zone gateway's send, the
+entry's batch and its remote write to Prometheus. The probe's request is bounded by its timeout, below
+the probe interval and the rule's lookback: an unbounded probe that hangs would leave no sample, and
+the alert would never fire. The budget counts from the moment the failed component stops answering.
+The proof measures from the command that injects the failure and polls the alerts every second, so
+its figures also hold the time the stopped component takes to stop answering (a pod's termination,
+the mesh's endpoint update) and the poll; they stay below 30 s as well.
 `scripts/verify-observability/test-alert-rules.sh` checks that the rendered values are these.
 
 | Symptom | Likely cause | Check |

@@ -117,6 +117,9 @@ config:
       targets:
         - endpoint: ""                   # installer: telemetryExport.revocationStatusListUrl
           method: GET
+          # Bounded below the 5 s interval and the alert rule's 10 s lookback: a probe that hangs
+          # longer than the lookback leaves no sample, and the alert would never fire.
+          timeout: 2s
   processors:
     memory_limiter:
       check_interval: 1s

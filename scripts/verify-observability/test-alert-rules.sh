@@ -7,7 +7,7 @@
 #      with docker, or a promtool on PATH);
 #   2. checks that the rendered intervals are the ones the detection budget states
 #      (docs/troubleshooting.md, docs/adr/0017-central-observability-backends.md): scrapes and the
-#      revocation probe every 5 s, collector batches of 1 s, rule evaluation every 5 s, for: 10s (the
+#      revocation probe every 5 s, the probe's request bounded to 2 s, collector batches of 1 s, rule evaluation every 5 s, for: 10s (the
 #      silent-zone rules: a 15 s window and for: 5s), no alert sender in the Prometheus configuration
 #      (the firing state is the alert), and that the
 #      worst-case sums stay below 30 s.
@@ -70,12 +70,15 @@ for name, c in (("otel-node", node), ("otel-gateway", gw)):
         expect(f"{name} scrape {job['job_name']}", job["scrape_interval"], "5s")
     expect(f"{name} batch timeout", c["processors"]["batch"]["timeout"], "1s")
 expect("revocation probe interval", gw["receivers"]["http_check/revocation"]["collection_interval"], "5s")
+probes = gw["receivers"]["http_check/revocation"]["targets"]
+for t in probes: expect(f"revocation probe timeout of {t.get('endpoint') or 'the target'}", t.get("timeout"), "2s")
 expect("k8s_cluster interval", gw["receivers"]["k8s_cluster"]["collection_interval"], "5s")
 # Worst cases (seconds), with no routing stage: a missing target: scrape 5 + batch 1 + export 2 +
 # evaluation 5 + for 10; a silent zone: window 15 + evaluation 5 + for 5; a vanished agent: reporting
-# window 10 + evaluation 5 + for 10; the probe: interval 5 + batch 1 + export 2 + evaluation 5 + for 10.
+# window 10 + evaluation 5 + for 10; the probe: interval 5 + timeout 2 + batch 1 + export 2 +
+# evaluation 5 + for 10.
 budgets = {"missing target": 5 + 1 + 2 + 5 + 10, "silent zone": 15 + 5 + 5,
-           "vanished agent": 10 + 5 + 10, "revocation probe": 5 + 1 + 2 + 5 + 10}
+           "vanished agent": 10 + 5 + 10, "revocation probe": 5 + 2 + 1 + 2 + 5 + 10}
 for k, v in budgets.items():
     if v >= 30: bad.append(f"the worst case of {k} is {v} s, not below 30 s")
 if bad: sys.exit("detection budget: " + "; ".join(bad))
