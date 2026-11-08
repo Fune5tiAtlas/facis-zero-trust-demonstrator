@@ -19,11 +19,27 @@ and are the authoritative list. This page records the components chosen and why.
 ### Pending Eclipse IP review
 
 Dependencies Dash cannot clear yet. They are not exceptions: each stays here until Eclipse approves it,
-and is removed then. None is pending: the last two, `golang.org/x/text` v0.42.0
+and is removed then. The earlier two, `golang.org/x/text` v0.42.0
 ([iplab #32075](https://gitlab.eclipse.org/eclipsefdn/emo-team/iplab/-/work_items/32075)) and
 `github.com/santhosh-tekuri/jsonschema/v6` v6.0.3
 ([iplab #32387](https://gitlab.eclipse.org/eclipsefdn/emo-team/iplab/-/work_items/32387)), were approved
-by 23 October 2026.
+by 23 October 2026. Pending, each awaiting the IP review request a committer files:
+
+| Module | Version |
+|---|---|
+| `go.opentelemetry.io/otel` | v1.47.0 |
+| `go.opentelemetry.io/otel/metric` | v1.47.0 |
+| `go.opentelemetry.io/otel/trace` | v1.47.0 |
+| `go.opentelemetry.io/otel/log` | v1.47.0 |
+| `go.opentelemetry.io/otel/sdk` | v1.47.0 |
+| `go.opentelemetry.io/otel/sdk/metric` | v1.47.0 |
+| `go.opentelemetry.io/otel/exporters/otlp/otlptrace` | v1.47.0 |
+| `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp` | v1.47.0 |
+| `github.com/grpc-ecosystem/grpc-gateway/v2` | v2.30.0 |
+| `google.golang.org/genproto/googleapis/api` | v0.0.0-20260928230214-8a89bd6388cc |
+| `google.golang.org/grpc` | v1.83.2 |
+| `github.com/envoyproxy/protoc-gen-validate` | v1.3.3 |
+| `golang.org/x/text` | v0.43.0 |
 
 ## Licence exceptions
 
