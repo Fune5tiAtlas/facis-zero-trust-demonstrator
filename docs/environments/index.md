@@ -24,8 +24,9 @@ Where a step cannot be executed yet it says so, rather than reading as though it
 - **Cilium as CNI** on the clusters that run the mesh, configured with `cni.exclusive=false` so the
   Istio CNI plugin can chain behind it, and **Istio in sidecar mode** on top
   ([ADR-0009](../adr/0009-service-mesh-mode-istio-sidecar-with-cilium.md); ambient is the parked
-  alternative). The IONOS cluster runs no mesh today and keeps its provider-managed Calico; see its
-  guide.
+  alternative). The IONOS cluster keeps its provider-managed Calico and runs no mesh yet: SPIRE and
+  the mesh there are in progress, with the Istio CNI plugin chained behind Calico ([the mesh and
+  SPIRE on each cluster](../specifications.md#the-mesh-and-spire-on-each-cluster)); see its guide.
 - **The clusters are client-provided.** Provisioning them is out of scope; these guides begin at the
   point where a kubeconfig is in hand.
 - **Nothing is applied by hand.** Every step below is a chart, a script in `scripts/` or a pipeline

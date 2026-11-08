@@ -235,9 +235,12 @@ with the eight releases, are proven by `scripts/verify-mesh-identity/verify.sh`
 
 What waits for the client clusters is the first acceptance criterion — the layout on all three
 clusters — and the per-zone values the baseline records, including the API endpoint for the
-management-plane lane. The two OSC clusters are not yet provided. The IONOS cluster is, and
-`zones/ionos.yaml` is recorded from it, but the chart is not installed there: that cluster holds no
-demonstration workload and runs no mesh, its CNI is the provider-managed Calico rather than the
-Cilium of [ADR-0009](adr/0009-service-mesh-mode-istio-sidecar-with-cilium.md), and whether it needs
-Cilium and the mesh at all is a decision for its visualization stage. Until then the IONOS zone file
-is validated against that cluster's API with a server-side dry run, which persists nothing.
+management-plane lane. The two OSC clusters are provided, and the mesh-identity proof has run on
+zone A and zone B ([Open Sovereign Cloud — what has been run](environments/osc.md#what-has-been-run)).
+The IONOS cluster is provided too, and `zones/ionos.yaml` is recorded from it, but the chart is not
+installed there: that cluster holds no demonstration workload, its CNI is the provider-managed Calico
+rather than the Cilium of [ADR-0009](adr/0009-service-mesh-mode-istio-sidecar-with-cilium.md), and
+SPIRE and the mesh there are in progress, with the Istio CNI plugin chained behind Calico ([the mesh
+and SPIRE on each cluster](specifications.md#the-mesh-and-spire-on-each-cluster)). Until that work
+installs them the IONOS zone file is validated against that cluster's API with a server-side dry
+run, which persists nothing.
