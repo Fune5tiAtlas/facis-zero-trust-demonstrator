@@ -26,6 +26,7 @@ the decision.
 | ZT-35, ZT-64 — expected launch digests uploaded to TRAIN by the pipeline and fetched by the peer | TSPA's trust-list entry has no digest field; the value must ride in an existing `Type`/`Value` list, with the connector's identifier in `ServiceTypeIdentifier` (the TCR lookup key) | TRAIN's data model was built for credential issuers; the SRS assumes TRAIN stores measurements without fixing where | [TRAIN trust-list publishing](tspa-publish-api.md) · [ADR-0011 §§ 4.2–4.3](adr/0011-mock-tee-evidence-format-and-provisioning.md) |
 | TRAIN glossary and SRS 2.7 — trust anchored in DNS; the TRAIN zone created and reachable | The zone is signed from its first start and the TCR validates DNSSEC, but the DS is published at the parent only after key persistence and a working re-sign job are proven on the deployed zone manager; until then resolvers treat the zone as insecure | The zone manager as shipped loses its keys with its volume and never re-signs; a DS published before that is fixed turns either event into a refusal of the whole zone, which the TCR reports as an empty trust list | [TRAIN DNS zone](train-dns.md) |
 | TDR, QA requirements, ORCE Automation QA — "Deploy, redeploy and uninstall must run with zero manual intervention" | Deploy, redeploy and uninstall of a zone run without a manual step (`scripts/install-zone/install.sh`, or the ORCE lifecycle workflow). OpenBao's bootstrap Job unseals the server on install and on every upgrade that changes a value, which may restart it. A restart the lifecycle does not cause (an eviction, a node reboot, an out-of-memory kill) leaves the server sealed and not ready until `scripts/secrets/unseal.sh` is run, a documented manual step | The unseal key lives in a Kubernetes Secret the bootstrap owns; an automatic unseal needs a key-management backend (a cloud KMS, an HSM or another OpenBao) that the demonstrator does not operate. The XFSC reference deployment wraps the same OpenBao chart with selectable auto-unseal backends, which an operator of the demonstrator may adopt | [Secrets — after a restart](secrets.md#after-a-restart-manual-unseal) · [ADR-0004](adr/0004-openbao-as-x509-key-value-store.md) · declared here, pending the F-07 decision |
+| ZT-01, ZT-23, ZT-24 — a service mesh that protects "communication between all services running for the Demonstrator" (ZT-01) and is used "within each Kubernetes cluster" (ZT-23), and "Each Kubernetes cluster MUST contain a deployment of SPIRE" (ZT-24) | The mesh and SPIRE run on the local kind cluster and on the participant clusters of zone A and zone B. The IONOS cluster does not run them yet: SPIRE and the mesh there are in progress, in sidecar mode as on the zones, with the Istio CNI plugin chained behind the provider's Calico and the SPIRE datastore on a persistent volume, its trust domain decided with the final trust domains. Each requirement is stated per cluster in [the mesh and SPIRE on each cluster](#the-mesh-and-spire-on-each-cluster), met on a cluster only beside the run that shows it | The IONOS cluster has no SPIRE yet, so a mesh with SPIRE identities cannot run there; adding both is separate work, and IONOS is not declared open against ZT-23 | agreed with the Project Leader on 2026-10-27 · [ADR-0005](adr/0005-three-cluster-reading-of-the-target-environment.md) · [ADR-0009](adr/0009-service-mesh-mode-istio-sidecar-with-cilium.md) |
 
 ## Deviation status
 
@@ -37,10 +38,48 @@ carried into its next update. A reading found after that package was submitted i
 carried into the next update of the package. A reading that FACIS declines is handled as a plan change
 under the written-agreement rule, not absorbed into the implementation.
 
-Six readings postdate that package and are not yet part of a submitted one: the CI workflow reading,
+Seven readings postdate that package and are not yet part of a submitted one: the CI workflow reading,
 added when the first Go module arrived; the reuse of the attestation component's own report format for
 the mock attestation; the channel binding the report actually carries; the placement of the expected
 launch digest in the trust list; the meshed namespaces' opening to istiod's xDS port under ZT-55,
-which awaits the approval of the Technical Design Authority and the Project Leader; and the manual
+which awaits the approval of the Technical Design Authority and the Project Leader; the manual
 unseal of OpenBao after a restart outside the lifecycle, read against the "zero manual intervention"
-rule. They are declared here so that they are not mistaken for omissions.
+rule; and the IONOS cluster's mesh and SPIRE left to separate work, agreed with the Project Leader on
+2026-10-27. They are declared here so that they are not mistaken for omissions.
+
+## The mesh and SPIRE on each cluster
+
+The three requirements, as the SRS states them:
+
+- **ZT-01** (Table 3, core functions): "The secure service mesh SHALL protect communication between
+  all services running for the Demonstrator."
+- **ZT-23** (MUST): "A service mesh MUST be used for inter-service communication within each
+  Kubernetes cluster. This service mesh MUST either be Istio- or Cilium-based." Accepted when "a
+  service mesh based on Istio or Cilium is implemented in each Kubernetes cluster" and
+  "communication between services is routed through the service mesh".
+- **ZT-24** (MUST): "Each Kubernetes cluster MUST contain a deployment of SPIRE. The service mesh MUST
+  use SPIRE deployment to provide service identities. Identity verification MUST be based on SPIRE as
+  well." Accepted when "SPIRE is deployed in each Kubernetes cluster", "the service mesh is
+  configured to use SPIRE-provided identities", "appropriate SPIRE node- and workload attestation is
+  used" and "all services participating in the service mesh are registered as SPIRE workloads".
+
+The executed proof is the mesh-identity proof, `scripts/verify-mesh-identity/` (what a run shows is
+in its README; what has been run, in [Open Sovereign Cloud — what has been
+run](environments/osc.md#what-has-been-run)). It installs the zone's eight releases from the empty
+cluster and checks, on every node: Istio in sidecar mode with the Istio CNI plugin chained behind
+Cilium; a meshed stand-in on every node whose proxy holds a SPIRE-issued certificate in the zone's
+trust domain; calls across the node boundary through both proxies over mutual TLS, with the caller's
+SPIFFE ID seen by the receiver; an unregistered workload's call refused; one attested SPIRE agent per
+node; and every SPIRE entry written by the registration rule for the pod of its node's agent, every
+certificate read matched to an entry. The services it meshes are its own stand-ins and the OpenBao
+server; the demonstrator's own services do not run on any cluster yet.
+
+| Cluster | ZT-01 | ZT-23 | ZT-24 |
+|---|---|---|---|
+| Local kind cluster (`deployment/helm/ztd/ci/values.yaml`) | Not met: the proof shows the stand-ins' and the OpenBao server's calls protected, not those of every service of the demonstrator | Met for the services the proof runs: the proof's run on a fresh two-worker cluster, every check passed | Met for the services the proof runs: the same run (SPIRE deployed, the mesh's identities issued by SPIRE, one attested agent per node, every meshed pod registered) |
+| Zone A, Open Sovereign Cloud (`zones/zone-a.yaml`) | Not met, as on kind | Shown for the services the proof runs: the proof's run of 2026-10-26, every check passed, zone kept. Run on the interim trust domain `zone-a.trust.invalid`, so it becomes acceptance evidence once the zone is re-installed under its final trust domain | Shown for the services the proof runs, by the same run and with the same interim trust domain |
+| Zone B, Open Sovereign Cloud (`zones/zone-b.yaml`) | Not met, as on kind | Shown for the services the proof runs: the proof's run of 2026-10-26, every check passed, zone kept. Run on the interim trust domain `zone-b.trust.invalid`, so it becomes acceptance evidence once the zone is re-installed under its final trust domain | Shown for the services the proof runs, by the same run and with the same interim trust domain |
+| IONOS Cloud (`zones/ionos.yaml`) | Not met: no mesh runs there yet | Not met; in progress: Istio in sidecar mode as on the zones, the Istio CNI plugin chained behind the provider's Calico. No proof has been run | Not met; in progress: SPIRE with its datastore on a persistent volume, its trust domain decided with the final trust domains. No proof has been run |
+
+A cell changes to met only with a run of the proof, or of its IONOS counterpart, that shows it on
+that cluster.
