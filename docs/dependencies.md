@@ -25,21 +25,21 @@ and is removed then. The earlier two, `golang.org/x/text` v0.42.0
 ([iplab #32387](https://gitlab.eclipse.org/eclipsefdn/emo-team/iplab/-/work_items/32387)), were approved
 by 23 October 2026. Pending, each awaiting the IP review request a committer files:
 
-| Module | Version |
-|---|---|
-| `go.opentelemetry.io/otel` | v1.47.0 |
-| `go.opentelemetry.io/otel/metric` | v1.47.0 |
-| `go.opentelemetry.io/otel/trace` | v1.47.0 |
-| `go.opentelemetry.io/otel/log` | v1.47.0 |
-| `go.opentelemetry.io/otel/sdk` | v1.47.0 |
-| `go.opentelemetry.io/otel/sdk/metric` | v1.47.0 |
-| `go.opentelemetry.io/otel/exporters/otlp/otlptrace` | v1.47.0 |
-| `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp` | v1.47.0 |
-| `github.com/grpc-ecosystem/grpc-gateway/v2` | v2.30.0 |
-| `google.golang.org/genproto/googleapis/api` | v0.0.0-20260928230214-8a89bd6388cc |
-| `google.golang.org/grpc` | v1.83.2 |
-| `github.com/envoyproxy/protoc-gen-validate` | v1.3.3 |
-| `golang.org/x/text` | v0.43.0 |
+| Module | Version | Licence |
+|---|---|---|
+| `go.opentelemetry.io/otel` | v1.47.0 | Apache-2.0 AND BSD-3-Clause |
+| `go.opentelemetry.io/otel/metric` | v1.47.0 | Apache-2.0 AND BSD-3-Clause |
+| `go.opentelemetry.io/otel/trace` | v1.47.0 | Apache-2.0 AND BSD-3-Clause |
+| `go.opentelemetry.io/otel/log` | v1.47.0 | Apache-2.0 AND BSD-3-Clause |
+| `go.opentelemetry.io/otel/sdk` | v1.47.0 | Apache-2.0 AND BSD-3-Clause |
+| `go.opentelemetry.io/otel/sdk/metric` | v1.47.0 | Apache-2.0 AND BSD-3-Clause |
+| `go.opentelemetry.io/otel/exporters/otlp/otlptrace` | v1.47.0 | Apache-2.0 AND BSD-3-Clause |
+| `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp` | v1.47.0 | Apache-2.0 AND BSD-3-Clause |
+| `github.com/grpc-ecosystem/grpc-gateway/v2` | v2.30.0 | BSD-3-Clause |
+| `google.golang.org/genproto/googleapis/api` | v0.0.0-20260928230214-8a89bd6388cc | Apache-2.0 |
+| `google.golang.org/grpc` | v1.83.2 | Apache-2.0 |
+| `github.com/envoyproxy/protoc-gen-validate` | v1.3.3 | Apache-2.0 |
+| `golang.org/x/text` | v0.43.0 | BSD-3-Clause |
 
 ## Licence exceptions
 
@@ -89,7 +89,7 @@ Direct dependencies of the Go module. Transitive dependencies are listed in the 
 | `github.com/jackc/pgx/v5` | v5.11.0 | MIT | PostgreSQL driver of the token store: the schema migrations today (`services/token-store`), the service's queries as they land |
 | `github.com/envoyproxy/go-control-plane/envoy` | v1.37.0 | Apache-2.0 | the Envoy `ext_authz` and `ext_proc` API types the guard policy hook is served through (`cmd/policy-hook-probe`); only its `envoyhook` package may import them |
 | `google.golang.org/grpc` | v1.83.2 | Apache-2.0 | gRPC transport of the policy hook's Envoy services |
-| `go.opentelemetry.io/otel`, `/otel/sdk`, `/otel/trace`, `/otel/exporters/otlp/otlptrace/otlptracehttp` | v1.47.0 | Apache-2.0 | the OpenTelemetry Go SDK of the observability proof's echo service (`tools/trace-echo`): W3C trace-context propagation and one server span per request, exported by OTLP/HTTP |
+| `go.opentelemetry.io/otel`, `/otel/sdk`, `/otel/trace`, `/otel/exporters/otlp/otlptrace/otlptracehttp` | v1.47.0 | Apache-2.0 AND BSD-3-Clause | the OpenTelemetry Go SDK of the observability proof's echo service (`tools/trace-echo`): W3C trace-context propagation and one server span per request, exported by OTLP/HTTP |
 
 The admission check validates SBOMs against the official CycloneDX 1.5, 1.6 and 1.7 JSON Schemas and
 the schemas they reference (CycloneDX specification tag 1.7.2, Apache-2.0), vendored in
