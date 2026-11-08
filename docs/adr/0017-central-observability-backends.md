@@ -108,6 +108,11 @@ pod's termination, the mesh's endpoint update) and the poll.
   host network with read access to every pod's logs, so the key adds no new trust boundary.
 - Negative: during the contingency period the demonstrator cluster has a public entry. Only the
   per-zone mutual-TLS listeners are behind it, with the zones' egress addresses as source ranges.
+- Negative: while the export path is down, the collectors buffer in a bounded queue (file-backed on
+  the node collectors). A full queue refuses new data and counts it
+  (`otelcol_exporter_enqueue_failed_*`); a batch still unsent after the 30 min retry window is dropped
+  and counted (`otelcol_exporter_send_failed_*`). Nothing in the zone waits on it. The upstream
+  sending queue has no drop-oldest mode, and no source asks for one.
 - Negative: the logs are files, searched on the cluster (a pod that mounts the volume read-only), not
   through a query interface. Their retention is the volume: once a zone's backups are used up, its
   oldest file is removed.
