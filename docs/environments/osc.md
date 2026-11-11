@@ -309,7 +309,7 @@ scrapes them yet: that belongs to the observability work.
 Each run writes its record (`evidence.md`, `environment.json`) to a run directory outside the
 repository, `ZTD_EVIDENCE_DIR` when set, else a new directory under
 `${XDG_STATE_HOME:-$HOME/.local/state}/ztd/verify-mesh-identity/<context>/`, and prints that
-directory as its last line; every IPv4 address of the cluster is written as `<address>` in it. The
+directory as its last line; every IPv4 and IPv6 address of the cluster is written as `<address>` in it. The
 repository holds no record of a run: a record is proof of a state at a time and goes with the task
 that asked for it. What a run shows, section by section, is in
 `scripts/verify-mesh-identity/README.md`.

@@ -9,6 +9,13 @@ from an empty cluster with `scripts/install-zone/install.sh`, twice, runs the st
 and `fixtures/mesh-on-node.yaml`, proves each check below on every node, and tears the zone down again (or, on a participant cluster with the keep
 opt-in, records what it leaves installed).
 
+The machinery it shares with `scripts/verify-plane-separation/verify.sh` lives in `scripts/lib/`, which
+`verify.sh` sources: `proof.sh` (the CI refusal, the context guard below, the run directory and its
+refusal inside the repository, the check and exit accounting, the redaction of addresses) and
+`probe.sh` (placement on a node, the HTTP and TCP probes and their outcome classes, the denial log of a
+proxy, reads on a node through its Cilium agent, the capture-rule lift for the proxy-less stand-ins, and
+the routing check). Moving them there changed no check and no line of the record.
+
 ## The run directory
 
 Each run writes its record, `evidence.md` and `environment.json`, to a run directory outside the
@@ -21,8 +28,8 @@ with `tail -n 1`:
   `${XDG_STATE_HOME:-$HOME/.local/state}/ztd/verify-mesh-identity/<context>/<UTC start>/`, the start
   written `YYYYMMDDTHHMMSSZ`; a run never reuses or changes an earlier run's directory.
 
-On a participant cluster every IPv4 address in the record is written as `<address>`, except the
-loopback `127.0.0.1`, which is no address of the cluster.
+On a participant cluster every IPv4 and IPv6 address in the record is written as `<address>`, except
+the loopbacks `127.0.0.1` and `::1` and the unspecified `::`, which are no address of the cluster.
 
 **The repository holds no record of a run.** A record is proof of a state at a time: what one
 cluster looked like when one commit was run against it. It goes with the task that asked for that
@@ -206,7 +213,11 @@ this node's, port 8080). They are applied in section 5 before any stand-in is ca
 with the stand-ins, by their label `app.kubernetes.io/name: verify-mesh-pairs`. No pair names
 `unregistered`, `unregistered-svid`, `pdp-impostor` or `unpaired`.
 
-Every refusal the record writes names its layer:
+Every refusal the record writes names its layer. The result is read from curl's own exit code, written
+on its standard output, not from the exit status of `kubectl exec` (`scripts/lib/probe.sh`); an attempt
+whose output carries none observed nothing and is run again, at most three attempts in all (the check of
+that probe says so in the record, with what each such attempt returned), and a probe that never carries
+one is `error(no exit code)`, never a refusal.
 
 | Result | Layer | What happened |
 |---|---|---|
@@ -398,8 +409,20 @@ refusals are asked with a server-side dry-run create of a renamed copy of the th
 real admission request even once the stand-ins exist. Each API server replica takes up a policy
 change on its own (a provider's control plane runs more than one), so the create is retried while
 the capture rule still refuses it, and the check of the restore requires the refusal to hold five
-times in a row, a second apart; the validation is lifted for at most about 45 seconds. If the run
+times in a row, a second apart; the validation is lifted for at most about 45 seconds. The lift is
+of the whole policy, not of the three stand-ins alone: in that window, plus the time each API server
+replica takes to take up the restore, any pod created in any injected plane namespace is admitted
+without a proxy (the template, socket and proxy rules stay in force), a known exposure that the restore
+and the five refusals bound but do not narrow. If the run
 exits while the validation is lifted (an interrupt included), its exit trap puts the validation
-back, and says so on stderr when it cannot. The status port the
+back, and says so on stderr when it cannot. A run killed outright (SIGKILL, out-of-memory, a reboot)
+runs no trap and leaves the policy without the validation. This proof heals that itself, since
+section 1 uninstalls the zone and section 2 installs it again; `verify-plane-separation`, which
+installs nothing, refuses to start and names the restore (its README, "Safety and cleanup"). When the
+policy holds no capture validation at the lift, the creation check fails and its detail names that
+restore. Lift and restore are JSON patches, so after any run on a cluster the field manager `kubectl-patch`
+owns `.spec.validations` of the policy; a later `helm upgrade` of `zone-policy` (and so
+`scripts/install-zone/install.sh install`) whose chart changes a validation stops on that conflict until
+the restore above, with `--force-conflicts`, takes the field back (`docs/troubleshooting.md`). The status port the
 admitted-pod check expects is read from the installed `zone-policy` release
 (`helm get values --all`), not from the chart's defaults.
