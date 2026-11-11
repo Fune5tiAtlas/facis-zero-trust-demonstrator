@@ -82,7 +82,7 @@ jobs:
 
   candidate:
     name: Candidate images
-    needs: [chart-gate]
+    # candidate-only branch: built without the chart gate (integration image, not a release)
     runs-on: ubuntu-latest
     # The interim signing key lives only in this protected environment's secrets.
     environment: release
