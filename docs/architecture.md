@@ -110,9 +110,11 @@ of a path, this column changes with it.
 
 The test column names the scenario tag that proves each row, in the form the acceptance harness
 requires: the requirement row and its acceptance test identifier
-([Tags](bdd.md#tags)). A tag is named here even where its scenario is not yet written — the
-matrix is the specification that scenario is written from, and the traceability sheet reports the
-row as uncovered until it exists.
+([Tags](bdd.md#tags)). Every row here is proved by the reachability scenario `@ZT-55 @BDD-ZT-055`,
+which runs the verifier `scripts/verify-plane-separation/verify.sh` against an installed zone in the
+cluster mode of the harness and executes this matrix from every data-plane namespace, and the
+[management plane → data plane](#management-plane-data-plane) row from every management-plane namespace
+([Tags](bdd.md#tags) states what it asserts per row kind).
 
 | From data-plane workload → (row) | ZT-55 role | Allowed? | Enforcement (NetworkPolicy; mesh AuthorizationPolicy) | Principal admitted | Test |
 |---|---|---|---|---|---|
@@ -173,10 +175,9 @@ and it is declared as such under [Declared openings](#declared-openings-of-the-n
 [Specifications](specifications.md). Any other administrative endpoint a data-plane workload
 reaches remains denied by the catch-all row.
 
-**Out of scope: collection initiated from the management plane.** Paths initiated from the
-management plane toward a data-plane cluster, such as metric collection pulled by the
-observability interfaces, are outside this matrix. ZT-55 governs reachability from the data plane,
-so the matrix models that direction only.
+**The other direction.** This matrix holds the paths a data-plane workload initiates. The paths a
+management-plane workload initiates toward the data plane are disposed under
+[Management plane → data plane](#management-plane-data-plane) below: none is permitted.
 
 Each row of the matrix is justified below. A permitted row states the requirement that needs the
 path, which end initiates it, and the surface it is limited to. A denied row states what reaching
@@ -271,10 +272,55 @@ plays in the matrix.
   makes the matrix a closed statement about the management plane rather than a list of examples:
   every management-plane destination is either named by a row above or denied by this one, and
   none is denied merely by being left out. This row is also what the plane-separation test asserts
-  for any management-plane destination it probes and does not find listed: that destination is
-  unreachable at both layers. The closure has one declared gap, which that test leaves out:
+  for any management-plane destination it probes and does not find listed. The test is the
+  reachability scenario, run by `scripts/verify-plane-separation/verify.sh`, which finds those
+  destinations as the Services of the management-plane namespaces that no row names. Every port of
+  each one is unreachable from the data plane at the network layer. A destination with a mesh proxy
+  is refused by that proxy as well, behind a network opening scoped to the probe. A destination
+  without one (the SPIRE and Istio control planes) is recorded as having no mesh layer. The closure
+  has one declared gap, which that test records as open rather than denied:
   istiod's xDS port, reached under the opening described under
   [Declared openings](#declared-openings-of-the-network-baseline), which no row disposes yet.
+
+### Management plane → data plane
+
+The acceptance test of ZT-55 (Annex A, BDD-ZT-055) tests reachability from both planes. The allow
+matrix above disposes the paths a data-plane workload initiates toward the management plane; this
+table disposes the paths a management-plane workload initiates toward the data plane. A
+management-plane workload is any pod of a namespace labelled management plane, the SPIRE and Istio
+namespaces among them. No such path is permitted: the zone renders no rule at either layer that
+admits one, so each is denied by the default deny alone.
+
+| From management-plane workload → (row) | Allowed? | Enforcement (NetworkPolicy; mesh AuthorizationPolicy) | Principal admitted | Test |
+|---|---|---|---|---|
+| any management-plane workload → any data-plane workload (`management-to-data`) | **DENY** | NetworkPolicy: DENY; mesh: DENY | none | `@ZT-55 @BDD-ZT-055` |
+
+The verdict is read from the zone's declared policy, not set here:
+
+- **NetworkPolicy.** The umbrella renders `default-deny`, for ingress and egress, in every plane
+  namespace. The only ingress it admits into a data-plane namespace from a pod is `allow-intra-plane`,
+  which selects the namespace's own pods. Every row of the allow matrix renders its egress rule in the
+  caller's namespace and its ingress rule in the destination's, and no row has a data-plane
+  destination. The egress of a management-plane namespace is limited to name resolution, its own
+  namespace, istiod's xDS port and the API server ([Declared openings](#declared-openings-of-the-network-baseline)).
+- **Mesh.** The `default-deny` AuthorizationPolicy admits nothing. Every `allow-<row>` policy selects a
+  destination in a management-plane namespace, and `intraPlanePairs` is empty, so a data-plane
+  workload's proxy refuses every management-plane caller with `403 RBAC: access denied` and logs the
+  refusal with both SPIFFE IDs. A caller without a proxy, such as a pod of the SPIRE or Istio
+  namespace, has no identity: the destination's proxy resets its plain-text connection under the
+  mesh-wide mutual TLS mode `STRICT` (`PeerAuthentication` `default` of `zone-policy`), and writes no
+  denial line, because the denial log records authorization refusals only. No data-plane destination
+  runs without a proxy: the admission policy's capture rule refuses a pod without one in an injected
+  plane namespace, and the reachability scenario fails on a data-plane workload it finds without one.
+- **Replies and collection.** The reply of a permitted row travels on the connection its data-plane
+  caller opened, so it is not a path initiated from the management plane. No pulled collection, such
+  as metrics scraped by the observability interfaces, is deployed. One would be a new row of this
+  table with its own justification.
+
+The reachability scenario `@ZT-55 @BDD-ZT-055` probes this row from every management-plane namespace
+toward every Service of every data-plane namespace, at both layers. Before probing, it checks the rule
+above against the rendered umbrella and against the policies the cluster holds, and it fails on a rule
+that admits this direction, naming it as an opening this section does not dispose.
 
 ### Supporting services (outside the management plane)
 
