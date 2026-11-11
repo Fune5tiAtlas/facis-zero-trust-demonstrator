@@ -521,6 +521,17 @@ before authorization, so no denial line names it. The line is evidence in Envoy'
 IF-01 event; its form as a security-state event is pending the observability work
 ([IF-04](api-docs.md#if-04-observability-and-evidence)).
 
+**The reachability proof.** That the two layers hold together on a running zone is shown by
+`scripts/verify-plane-separation/verify.sh`, the verifier the Annex scenario for ZT-55 runs
+([BDD: Tags](bdd.md#tags)). It executes the allow matrix of
+[Architecture §6](architecture.md#allow-matrix-data-plane-management-plane) from every data-plane
+namespace and attributes each refusal to its layer. The denial line above is its evidence for the
+mesh layer:
+
+- a caller with a row's labels under another identity is refused by the destination's proxy;
+- a denied destination with a proxy refuses a prober admitted only for the probe by a network
+  opening that the verifier applies and removes.
+
 ## Telemetry
 
 The `spire` release switches on the Prometheus endpoint of the server and of the agents. The ports
