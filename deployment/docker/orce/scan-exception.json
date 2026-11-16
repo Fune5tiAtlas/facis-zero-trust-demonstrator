@@ -1,7 +1,7 @@
 {
-  "expires": "2026-11-13",
-  "reason": "The excluded findings belong to the mandated upstream ORCE 2.0.13 runtime and kubectl v1.35.8. First-party additions, including Helm built with Go 1.27.3 and x/net v0.60.0, remain under the scan gate.",
-  "tracking": "Existing upstream ORCE and kubectl exception; confirmation requested through FACIS on 2026-09-23 remains pending. The Helm exclusion was removed on 2026-10-26 after updating its source build. No expiry extension.",
+  "expires": "2026-12-16",
+  "reason": "The excluded findings belong to the mandated upstream ORCE 2.0.13 runtime and kubectl v1.35.8. First-party additions, including Helm built with Go 1.27.3 and x/net v0.62.0, remain under the scan gate.",
+  "tracking": "Existing upstream ORCE and kubectl exception; confirmation requested through FACIS on 2026-09-23 remains pending. The Helm exclusion was removed on 2026-10-26 after updating its source build. Extended on 2026-11-16 from 2026-11-13 to 2026-12-16, still pending FACIS confirmation and a rebuilt upstream ORCE image; jq is patched in this image, not excluded.",
   "skipDirs": [
     "/opt/maestro",
     "/usr/src/node-red",

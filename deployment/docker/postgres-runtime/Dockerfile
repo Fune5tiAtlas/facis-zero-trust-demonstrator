@@ -10,3 +10,6 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
 # PostgreSQL 16.15 on Alpine, independent of the local test fixture image.
 FROM docker.io/library/postgres@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
 COPY --from=gosu /out/gosu /usr/local/bin/gosu
+
+# Apply the distribution security updates for Kerberos and libxslt.
+RUN apk upgrade --no-cache krb5-libs libxslt
