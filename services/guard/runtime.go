@@ -42,6 +42,32 @@ type Config struct {
 	// TargetTenant, when set, is the tenant this guard's route belongs to: sent to policy with every
 	// request and recorded on every decision event. It comes from here only, never from the request.
 	TargetTenant string `json:"target_tenant,omitempty"`
+	// GRPCMethods are the gRPC methods guarded besides the REST route, as full method paths
+	// ("/package.Service/Method"). Empty means the guard serves the REST route only.
+	GRPCMethods []string `json:"grpc_methods,omitempty"`
+}
+
+// grpcMethod is a full gRPC method path: the service, with its package, and the method.
+var grpcMethod = regexp.MustCompile(`^/[A-Za-z_][A-Za-z0-9_.]*/[A-Za-z_][A-Za-z0-9_]*$`)
+
+// restPath is the one REST route of the protected resource.
+const restPath = "/demo"
+
+// route reports whether the request is for a guarded route, and the gRPC service when it is a
+// gRPC call. A gRPC call is a POST to a configured method path with a gRPC content type; a path
+// the configuration does not name is no route, whatever its content type.
+func (r *Runtime) route(in hook.Request) (grpcService string, ok bool) {
+	if in.Method != http.MethodPost {
+		return "", false
+	}
+	if in.Path == restPath {
+		return "", true
+	}
+	contentType := in.Headers.Get("Content-Type")
+	if !slices.Contains(r.cfg.GRPCMethods, in.Path) || (contentType != "application/grpc" && !strings.HasPrefix(contentType, "application/grpc+")) {
+		return "", false
+	}
+	return in.Path[1:strings.LastIndexByte(in.Path, '/')], true
 }
 
 // tenantName is a tenant as the contracts name it: a Kubernetes namespace name.
@@ -75,6 +101,11 @@ func New(cfg Config, events hook.EventSink) (*Runtime, error) {
 	}
 	if cfg.PeerZone == "" || len(cfg.AllowedCallers) == 0 || cfg.ScopeTenants["report:read"] == "" || cfg.ScopeTenants["report:summary"] == "" || cfg.ScopeTenants["report:read"] == cfg.ScopeTenants["report:summary"] {
 		return nil, errors.New("guard requires peer zone and allowed mesh callers")
+	}
+	for _, method := range cfg.GRPCMethods {
+		if !grpcMethod.MatchString(method) {
+			return nil, errors.New("guard gRPC methods must be full method paths, /package.Service/Method")
+		}
 	}
 	cfg.PublishedBaseURL = strings.TrimRight(cfg.PublishedBaseURL, "/")
 	cfg.PolicyURL = strings.TrimRight(cfg.PolicyURL, "/")
@@ -169,14 +200,17 @@ func (r *Runtime) Evaluate(ctx context.Context, in hook.Request) hook.Outcome {
 	defer cancel()
 	path, _, _ := strings.Cut(in.Path, "?")
 	seen := hook.EventPayload{Resource: resource(in.Method, r.cfg.PublishedBaseURL, path), Tenant: r.cfg.TargetTenant}
-	if in.Method != http.MethodPost || in.Path != "/demo" {
+	grpcService, routed := r.route(in)
+	if !routed {
 		return r.refuse("route_denied", seen)
 	}
+	in.GRPCService = grpcService
 	target, _ := url.Parse(r.cfg.PublishedBaseURL)
 	if !strings.EqualFold(in.Host, target.Host) {
 		return r.refuse("host_denied", seen)
 	}
-	req, err := http.NewRequestWithContext(ctx, in.Method, r.cfg.PublishedBaseURL+"/demo", nil)
+	// The proof's target is the published base URL and the route's own path, REST or gRPC.
+	req, err := http.NewRequestWithContext(ctx, in.Method, r.cfg.PublishedBaseURL+in.Path, nil)
 	if err != nil {
 		return r.refuse("route_denied", seen)
 	}

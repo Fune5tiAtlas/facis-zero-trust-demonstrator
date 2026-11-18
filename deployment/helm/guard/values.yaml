@@ -10,6 +10,15 @@ trustDomain: zone-b.trust.invalid
 participantServiceAccount: ztd-participant
 resourceName: ztd-protected-resource
 resourcePort: 8080
+# Unary gRPC methods guarded besides the REST route, as full method paths
+# (/package.Service/Method). Empty leaves the guard REST-only. Each method is authorised through
+# the same hook and policy as the REST route and forwarded to the resource's gRPC port over
+# cleartext HTTP/2, with the REST route's 15 s response timeout: a streaming method is cut off at
+# it. The guard's Service port is then named http2, the protocol Istio needs declared to carry
+# gRPC; the resource's Service must declare its gRPC port as HTTP/2 or gRPC too (README).
+grpc:
+  methods: []
+  resourcePort: 9090
 nodeSelector: {}
 podAnnotations: {}
 config:

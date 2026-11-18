@@ -18,6 +18,11 @@
 {{- range .Values.tenant.callerNamespaces -}}
 {{- if or (eq . $.Release.Namespace) (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" .)) -}}{{ fail (printf "tenant.callerNamespaces: %s is not another tenant's namespace" .) }}{{- end -}}
 {{- end -}}
+{{- range .Values.grpc.methods -}}
+{{- if not (regexMatch "^/[A-Za-z_][A-Za-z0-9_.]*/[A-Za-z_][A-Za-z0-9_]*$" .) -}}{{ fail (printf "grpc.methods: %q is not a full method path, /package.Service/Method" .) }}{{- end -}}
+{{- end -}}
+{{- if and .Values.grpc.methods (or (not .Values.grpc.resourcePort) (eq (int .Values.grpc.resourcePort) (int .Values.resourcePort))) -}}{{ fail "grpc.resourcePort is required with grpc.methods and must differ from resourcePort" }}{{- end -}}
+{{- if hasKey .Values.config "grpc_methods" -}}{{ fail "config.grpc_methods is set from grpc.methods; do not set it directly" }}{{- end -}}
 {{- $scopes := .Values.config.scope_tenants -}}
 {{- if or (not (get $scopes "report:read")) (not (get $scopes "report:summary")) (eq (get $scopes "report:read") (get $scopes "report:summary")) -}}{{ fail "full-report and summary scope tenants must be distinct" }}{{- end -}}
 {{- end -}}
@@ -40,4 +45,9 @@ of tenant.callerNamespaces. */}}
 {{- define "guard.annotations" -}}
 {{- if hasKey .Values.podAnnotations "proxy.istio.io/config" -}}{{ fail "podAnnotations: proxy.istio.io/config is refused at admission in a plane namespace (zone-policy); XFCC sanitization is mesh-wide, the EnvoyFilter xfcc-sanitize-set of zone-policy" }}{{- end -}}
 {{- toYaml .Values.podAnnotations -}}
+{{- end -}}
+
+{{- /* The gRPC part of the guard's and the policy evaluator's configuration: the same list for both. */ -}}
+{{- define "guard.grpcConfig" -}}
+{{- if .Values.grpc.methods -}}{{ dict "grpc_methods" .Values.grpc.methods | toJson }}{{- else -}}{}{{- end -}}
 {{- end -}}
