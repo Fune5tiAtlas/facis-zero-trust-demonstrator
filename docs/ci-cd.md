@@ -208,7 +208,8 @@ runners and the cluster dry run, then `bddreport --require-complete` over the fi
 row that is uncovered or failed fails the job (see [BDD acceptance](bdd.md#the-harness)). The dry
 run exists only in this job: where a cluster run happens, its real report is used instead.
 
-The `bdd-cluster` job runs the cluster scenarios (TDR-BDD-01..04 and TDR-BDD-06) against each client
+The `bdd-cluster` job runs the cluster scenarios (TDR-BDD-01..04 and TDR-BDD-06, and the public-ingress
+TLS check behind TDR-BDD-07 against the hosts in the repository variable `BDD_<TARGET>_TLS_ENDPOINTS`) against each client
 target, and `bdd-cluster-report` merges every target into one traceability sheet in which a row is
 proven only if it passed everywhere. They run on pushes to `main`, on every published release and
 on demand — never on pull requests — and one run at a time per target. Evidence is published even

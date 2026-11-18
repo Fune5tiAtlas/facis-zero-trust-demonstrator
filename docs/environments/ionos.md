@@ -236,6 +236,30 @@ kubectl delete -f deployment/orce-minimal/base.yaml --ignore-not-found
 **Verify:** `kubectl get namespaces | grep ztd-` prints nothing, and
 `kubectl get clusterrole,clusterrolebinding | grep ztd-` prints nothing.
 
+## TLS 1.3 on the public ingress
+
+The cluster's ingress class `ztd-public` is a Traefik that this repository does not install. As
+its chart ships it, Traefik accepts TLS 1.2, and on 18 Nov 2026 both public hosts of this cluster
+did. One object in the controller's namespace sets TLS 1.3 as the minimum for every host it
+terminates:
+
+```bash
+kubectl -n <traefik namespace> apply -f deployment/ingress/traefik-tls-options.yaml
+```
+
+There must be no other TLSOption named `default` in a namespace the controller watches, and a
+router that names its own TLSOption keeps that one.
+
+**Verify:** the public-ingress scenario against the cluster's hosts, which fails while either
+accepts a version older than TLS 1.3:
+
+```bash
+BDD_MODE=cluster BDD_TLS_ENDPOINTS=<keycloak host>:443,<orce host>:443 \
+  go test ./internal/bdd -count=1 -godog.tags=@tls-ingress
+```
+
+Not yet applied to this cluster.
+
 ## Operations
 
 - **The pipeline is the record.** Every image that reaches a cluster was built by the pipeline and

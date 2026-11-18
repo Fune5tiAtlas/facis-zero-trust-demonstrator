@@ -242,6 +242,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	registerAdmissionProof(ctx, dryRun)
 	registerChartGate(ctx, dryRun)
 	registerSecretsBaseline(ctx, dryRun)
+	registerTLSEndpoints(ctx, dryRun)
 	registerStructuredLogs(ctx)
 	registerPending(ctx)
 }
