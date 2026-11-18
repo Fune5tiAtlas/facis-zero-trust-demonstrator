@@ -56,7 +56,24 @@ func NewRunner(conn *pgx.Conn) (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Runner{conn: conn, migrations: ms}, nil
+	return NewRunnerWith(conn, ms)
+}
+
+// NewRunnerWith prepares a runner over conn with migrations already loaded by Migrations, so a
+// caller that checks many connections, as a readiness probe does, reads and hashes the embedded
+// files once rather than on every connection.
+func NewRunnerWith(conn *pgx.Conn, migrations []Migration) (*Runner, error) {
+	if len(migrations) == 0 {
+		return nil, errors.New("schema: no migrations to run")
+	}
+	// The runner finds a migration by its version's position, so the slice must be what
+	// Migrations returns: every version from 1, in order, none missing.
+	for i, m := range migrations {
+		if m.Version != i+1 {
+			return nil, fmt.Errorf("schema: migrations must run from version 1 without gaps, in order; found version %d at position %d", m.Version, i+1)
+		}
+	}
+	return &Runner{conn: conn, migrations: migrations}, nil
 }
 
 // Up applies every migration above the current version up to and including to. A to of zero or

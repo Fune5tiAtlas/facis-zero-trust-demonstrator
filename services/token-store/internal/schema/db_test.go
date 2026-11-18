@@ -2,21 +2,17 @@ package schema
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"fmt"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/testsupport"
 )
 
 // The database tests run against the PostgreSQL that TOKEN_STORE_TEST_DATABASE_URL names and skip
-// without it. Each test gets a database of its own, created from that connection and dropped
-// afterwards, so tests neither share state nor need a clean server.
-
-const testDatabaseEnv = "TOKEN_STORE_TEST_DATABASE_URL"
+// without it. Each test gets a database of its own (testsupport.DatabaseURL), dropped afterwards,
+// so tests neither share state nor need a clean server.
 
 type testDatabase struct {
 	t   *testing.T
@@ -25,34 +21,10 @@ type testDatabase struct {
 
 func newTestDatabase(t *testing.T) *testDatabase {
 	t.Helper()
-	url := os.Getenv(testDatabaseEnv)
-	if url == "" {
-		t.Skipf("%s not set; these tests need a PostgreSQL", testDatabaseEnv)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	admin, err := pgx.Connect(ctx, url)
-	if err != nil {
-		t.Fatalf("connecting to %s: %v", testDatabaseEnv, err)
-	}
-	var suffix [6]byte
-	_, _ = rand.Read(suffix[:])
-	name := fmt.Sprintf("ts_test_%s", hex.EncodeToString(suffix[:]))
-	ident := pgx.Identifier{name}.Sanitize()
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+ident); err != nil {
-		t.Fatalf("creating test database: %v", err)
-	}
-	cfg, err := pgx.ParseConfig(url)
+	cfg, err := pgx.ParseConfig(testsupport.DatabaseURL(t, "test"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Database = name
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_, _ = admin.Exec(ctx, "DROP DATABASE "+ident+" WITH (FORCE)")
-		_ = admin.Close(ctx)
-	})
 	return &testDatabase{t: t, cfg: cfg}
 }
 

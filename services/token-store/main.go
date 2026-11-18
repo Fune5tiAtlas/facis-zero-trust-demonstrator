@@ -1,15 +1,18 @@
 // Command token-store is the zone's token store (docs/contracts/token-store.v1.openapi.yaml): it
 // holds the upstream tokens minted to the zone, substitutes them for the guard and detects DPoP
 // proof replay for the connector and the guard. This build carries the authorization database's
-// schema and applies it; the service's endpoints follow.
+// schema and applies it, and runs the service: its listeners, its liveness and readiness and the
+// correlation of its records; the service's endpoints follow.
 //
+//	token-store serve                  run the service until SIGTERM
 //	token-store migrate up [--to N]    apply the migrations above the current version, up to N (default: all)
 //	token-store migrate down --to N    revert to version N; 0 leaves the schema empty
 //	token-store migrate status         report the database against the embedded migrations, as JSON
 //
-// The connection URL comes from --database-url or TOKEN_STORE_DATABASE_URL and is never logged.
-// Exit codes: 0 done, 1 failed, 2 usage, 3 the database is behind the embedded migrations or an
-// applied one drifted (status).
+// The connection URL comes from --database-url or TOKEN_STORE_DATABASE_URL and is never logged;
+// the key-value store's URL from --openbao-url or TOKEN_STORE_OPENBAO_URL. Exit codes: 0 done or
+// drained, 1 failed, 2 usage, 3 the database is behind the embedded migrations or an applied one
+// drifted (status).
 package main
 
 import (
@@ -36,9 +39,20 @@ const (
 )
 
 const usage = `usage:
+  token-store serve                   run the service until SIGTERM; JSON records on stdout
   token-store migrate up [--to N]     apply the migrations above the current version, up to N (default: all)
   token-store migrate down --to N     revert to version N; 0 leaves the schema empty
   token-store migrate status          report the database against the embedded migrations, as JSON
+
+flags of serve (each defaults to the TOKEN_STORE_* variable of the same name):
+  --addr ADDR                   API listener (default :8080)
+  --ops-addr ADDR               ops listener, /healthz and /readyz for the kubelet (default :9090)
+  --database-url URL            PostgreSQL connection URL
+  --openbao-url URL             key-value store URL, http(s)://host[:port]
+  --readiness-timeout DURATION  budget of one /readyz evaluation (default 2s)
+  --drain-delay DURATION        time /readyz answers 503 before the listeners close on SIGTERM (default 5s)
+  --shutdown-timeout DURATION   drain of the listeners on SIGTERM (default 10s)
+  --log-level LEVEL             debug, info, warn or error (default info)
 
 flags of every migrate command:
   --database-url URL   PostgreSQL connection URL (default: $TOKEN_STORE_DATABASE_URL)
@@ -56,6 +70,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	switch args[0] {
+	case "serve":
+		return serve(args[1:], stdout, stderr)
 	case "migrate":
 		return migrate(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -88,7 +104,7 @@ func parseMigrate(args []string, env func(string) string, stderr io.Writer) (mig
 	}
 	fs := flag.NewFlagSet("token-store migrate "+opts.action, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&opts.databaseURL, "database-url", env("TOKEN_STORE_DATABASE_URL"), "PostgreSQL connection URL")
+	fs.StringVar(&opts.databaseURL, "database-url", "", "PostgreSQL connection URL ($TOKEN_STORE_DATABASE_URL)")
 	fs.IntVar(&opts.to, "to", -1, "target version (up: default latest; down: required, 0 empties the schema)")
 	fs.DurationVar(&opts.timeout, "timeout", time.Minute, "deadline for the whole run, lock wait included")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -96,6 +112,11 @@ func parseMigrate(args []string, env func(string) string, stderr io.Writer) (mig
 	}
 	if fs.NArg() > 0 {
 		return opts, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	if opts.databaseURL == "" {
+		// The environment fills in after parsing, never as the flag's default: the flag package
+		// prints defaults in the usage text it writes on an error, and the URL is a credential.
+		opts.databaseURL = env("TOKEN_STORE_DATABASE_URL")
 	}
 	toSet := false
 	fs.Visit(func(f *flag.Flag) {
