@@ -7,8 +7,10 @@ disagree, this page is changed first, through review.
 
 ## What Keycloak is for
 
-Keycloak authenticates **people**: the viewer who drives the demonstrator UI. It does not authorize
-machines. A participant backend calling a protected resource is authorized by the Go connector and
+Keycloak authenticates **people**: the viewer who drives the demonstrator UI and, with the
+[privileged-operations runner](privileged-access.md), the operators who call it. It does not authorize
+the participant path; its one machine identity is the runner's own service account, which
+administers the realm's users. A participant backend calling a protected resource is authorized by the Go connector and
 the guard, with tokens derived from a verified credential presentation and bound to a key
 ([ADR-0003](adr/0003-oauth2-authorisation-surface-in-the-go-connector.md)). Nothing in this model
 reaches that path, and no Keycloak token is accepted by the guard.

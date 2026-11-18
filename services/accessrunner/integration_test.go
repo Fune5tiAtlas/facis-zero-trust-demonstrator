@@ -347,7 +347,9 @@ func TestRunnerAgainstKindAndKeycloak(t *testing.T) {
 		}
 	})
 	t.Run("cluster-logs returns the pod's log", func(t *testing.T) {
-		pod := e.kubectl("-n", "ztd-data", "get", "pods", "-l", "app=app", "-o", "jsonpath={.items[0].metadata.name}")
+		// The restart above rolls the deployment: read a pod of the finished rollout.
+		e.kubectl("-n", "ztd-data", "rollout", "status", "deployment/app", "--timeout=120s")
+		pod := e.kubectl("-n", "ztd-data", "get", "pods", "-l", "app=app", "--field-selector=status.phase=Running", "-o", "jsonpath={.items[0].metadata.name}")
 		status, out := call(token, accessrunner.OpClusterLogs, operator, map[string]any{"namespace": "ztd-data", "pod": pod, "lines": 10})
 		if lines, _ := out["result"].(string); status != http.StatusOK || !strings.Contains(lines, "Starting up on port") {
 			t.Fatalf("logs: %d %v", status, out)

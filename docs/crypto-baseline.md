@@ -57,19 +57,21 @@ decides it and `Setting` is the text in that file that does.
 | Keycloak, realm `facis-ztd` | token encryption key transport (RSA-OAEP-256) | key transport | `RSA-4096` | `deployment/helm/facis-ztd-keycloak/files/realm.json` | `"providerId": "rsa-enc-generated", "subComponents": {}, "config": {"priority": ["100"], "keySize": ["4096"], "algorithm": ["RSA-OAEP-256"]` |
 | Keycloak, realm `facis-ztd` | symmetric key (32 bytes) | encryption | `AES-256` | `deployment/helm/facis-ztd-keycloak/files/realm.json` | `"providerId": "aes-generated", "subComponents": {}, "config": {"priority": ["100"], "secretSize": ["32"]` |
 | Keycloak, realm `facis-ztd` | access tokens of the runner's login client `ztd-access` (ES256) | signature | `ECDSA P-256` | `deployment/helm/facis-ztd-keycloak/files/realm.json` | `"providerId": "ecdsa-generated", "subComponents": {}, "config": {"priority": ["90"], "ecdsaEllipticCurveKey": ["P-256"]}` |
+| Privileged-operations runner | its listener, and its connections to Keycloak | transport | `TLS 1.3` | `cmd/access-runner/main.go` | `TLSConfig: &tls.Config{MinVersion: tls.VersionTLS13}}` |
 | Privileged-operations runner | approvals of privileged operations (grants) | signature | `ECDSA P-256` | `services/accessrunner/grant.go` | `jose.Verify(compact, jose.HeaderPolicy{Typ: GrantType, KidNeeded: true}` |
 | Keycloak, realm `facis-ztd` | internal token MAC (HS512, 128-byte secret) | hash or MAC | `HMAC-SHA-512` | `deployment/helm/facis-ztd-keycloak/files/realm.json` | `"algorithm": ["HS512"], "secretSize": ["128"]` |
 
-Keycloak signs with RS256 and not with an elliptic-curve key because the demonstrator UI's ORCE
-flow accepts RS256 tokens only (`flows/demonstrator/identity-on-start.js`).
+Keycloak signs with RS256 by default, and not with an elliptic-curve key, because the demonstrator
+UI's ORCE flow accepts RS256 tokens only (`flows/demonstrator/identity-on-start.js`). Only the runner's
+login client `ztd-access` has its access tokens signed ES256, by the lower-priority P-256 provider.
 
 ## What changes on an existing installation
 
 - **Keycloak.** Applying the realm regenerates the two RSA keys of the realm at 4096 bits, and the
   encryption key moves from RSA-OAEP to RSA-OAEP-256. Tokens and sessions issued under the old
   signing key stop verifying once it is gone. The AES and HMAC secrets already have these sizes in
-  Keycloak 26.7 and are kept. Only the four providers named here are managed: a key provider added
-  by hand under another name is left alone, one added under one of these four names is overwritten,
+  Keycloak 26.7 and are kept. Only the five providers named here are managed: a key provider added
+  by hand under another name is left alone, one added under one of these names is overwritten,
   and one with a higher priority still decides the signing key. The master
   realm is not configured by this chart.
 - **Admission provider.** Only a new installation gets the ECDSA certificates. An existing TLS

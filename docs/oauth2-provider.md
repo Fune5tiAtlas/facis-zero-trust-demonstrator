@@ -245,8 +245,10 @@ outcome and the challenge cannot be used again (IF-03, D10: the next attempt use
 and outcome). A panic during the transaction rolls it back as well. The store adapter implements the
 library's `storage.Transactional` by delegating to `Stores.Transactions`, and the grant refuses to
 run outside a transaction. Of concurrent requests with one outcome or one challenge exactly one is
-issued a token; the others wait for its row lock and are refused `CRED-OUTCOME-CONSUMED`. A refused
-request is never signed.
+issued a token; the others wait for its row lock and are refused `CRED-OUTCOME-CONSUMED`. A request
+refused before issuance is never signed; one refused after signing because the access it allows ran
+out ([Session re-validation](#session-re-validation)) gets no token, and its consumption and token
+record are rolled back.
 
 **Token records.** `TokenHandler` records the grant it validated with every access token
 (`TokenRecord.GrantType`, `oauth2_token.grant_type`), independently of the grant handler that adds
