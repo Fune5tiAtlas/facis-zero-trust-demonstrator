@@ -205,6 +205,20 @@ to model the trusted XFCC boundary; this is **not** proof of SPIRE, mTLS, admiss
 or bypass refusal on FACIS. Those acceptance lines remain OPEN until deployed
 and tested with final admitted digests. No global extensionProvider is changed.
 
+The guard also serves gRPC methods when the chart's `grpc.methods` names them (ZT-20: "deployable
+for each protected resource on REST/GRPC basis"). A gRPC call reaches the hook as what it is on
+the wire, a POST to `/package.Service/Method` with a gRPC content type; the guard treats it as a
+route only when the method is configured, verifies the token and a DPoP proof made for the
+published base URL plus that path, names the service in the policy input (`grpc_service`) and
+substitutes the upstream credential as for REST. `TestGuardedGRPCThroughEnvoy` in
+`services/guard` sends real gRPC and REST calls through Envoy from the pinned image, configured
+with the chart's rendered `envoy.yaml`, to the guard's runtime and the policy evaluator's rule
+set: the right credential reaches the resource with the substituted one; no credential, a proof
+made for another path, a token without a rule and a caller the guard does not admit are each
+refused before the resource is called. ZT-20 stays open: its row also asks for Rego policies
+evaluated through the TSA policy engine and an OID4VP link on refusal, and the mesh in front of
+the guard is not in this test.
+
 This deployment applies ADR-0008's ext_authz choice using a dedicated namespace
 Envoy. It does not claim native mesh CUSTOM attachment or deployed evidence.
 
