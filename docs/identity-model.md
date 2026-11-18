@@ -26,7 +26,7 @@ custom providers or extensions.
 | Disabled | Implicit flow, direct access grants (password grant), service account, device flow |
 | Redirect URIs | The UI's callback on its own hostname, listed exactly; no wildcards |
 | Web origins | The UI's origin only |
-| Consent | Off: the realm has one first-party client |
+| Consent | Off: the realm's clients are all first-party (`ztd-ui`; with the [privileged-operations runner](privileged-access.md), also `ztd-access` and `ztd-access-runner`) |
 | Front-channel logout | On, with the UI's logout URL |
 | Back-channel logout | On, to the UI backend, so a server-side session ends with the Keycloak session |
 

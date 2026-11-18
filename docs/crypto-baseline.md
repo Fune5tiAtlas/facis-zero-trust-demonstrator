@@ -56,6 +56,8 @@ decides it and `Setting` is the text in that file that does.
 | Keycloak, realm `facis-ztd` | token signatures (RS256) | signature | `RSA-4096` | `deployment/helm/facis-ztd-keycloak/files/realm.json` | `"providerId": "rsa-generated", "subComponents": {}, "config": {"priority": ["100"], "keySize": ["4096"]` |
 | Keycloak, realm `facis-ztd` | token encryption key transport (RSA-OAEP-256) | key transport | `RSA-4096` | `deployment/helm/facis-ztd-keycloak/files/realm.json` | `"providerId": "rsa-enc-generated", "subComponents": {}, "config": {"priority": ["100"], "keySize": ["4096"], "algorithm": ["RSA-OAEP-256"]` |
 | Keycloak, realm `facis-ztd` | symmetric key (32 bytes) | encryption | `AES-256` | `deployment/helm/facis-ztd-keycloak/files/realm.json` | `"providerId": "aes-generated", "subComponents": {}, "config": {"priority": ["100"], "secretSize": ["32"]` |
+| Keycloak, realm `facis-ztd` | access tokens of the runner's login client `ztd-access` (ES256) | signature | `ECDSA P-256` | `deployment/helm/facis-ztd-keycloak/files/realm.json` | `"providerId": "ecdsa-generated", "subComponents": {}, "config": {"priority": ["90"], "ecdsaEllipticCurveKey": ["P-256"]}` |
+| Privileged-operations runner | approvals of privileged operations (grants) | signature | `ECDSA P-256` | `services/accessrunner/grant.go` | `jose.Verify(compact, jose.HeaderPolicy{Typ: GrantType, KidNeeded: true}` |
 | Keycloak, realm `facis-ztd` | internal token MAC (HS512, 128-byte secret) | hash or MAC | `HMAC-SHA-512` | `deployment/helm/facis-ztd-keycloak/files/realm.json` | `"algorithm": ["HS512"], "secretSize": ["128"]` |
 
 Keycloak signs with RS256 and not with an elliptic-curve key because the demonstrator UI's ORCE
