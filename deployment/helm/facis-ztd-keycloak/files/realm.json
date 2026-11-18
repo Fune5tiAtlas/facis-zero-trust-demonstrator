@@ -12,6 +12,14 @@
   "clientSessionMaxLifespan": 28800,
   "revokeRefreshToken": true,
   "refreshTokenMaxReuse": 0,
+  "components": {
+    "org.keycloak.keys.KeyProvider": [
+      {"name": "rsa-generated", "providerId": "rsa-generated", "subComponents": {}, "config": {"priority": ["100"], "keySize": ["4096"], "algorithm": ["RS256"]}},
+      {"name": "rsa-enc-generated", "providerId": "rsa-enc-generated", "subComponents": {}, "config": {"priority": ["100"], "keySize": ["4096"], "algorithm": ["RSA-OAEP-256"]}},
+      {"name": "aes-generated", "providerId": "aes-generated", "subComponents": {}, "config": {"priority": ["100"], "secretSize": ["32"]}},
+      {"name": "hmac-generated-hs512", "providerId": "hmac-generated", "subComponents": {}, "config": {"priority": ["100"], "algorithm": ["HS512"], "secretSize": ["128"]}}
+    ]
+  },
   "roles": {
     "realm": [
       {

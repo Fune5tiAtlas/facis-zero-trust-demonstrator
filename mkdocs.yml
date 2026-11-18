@@ -46,6 +46,7 @@ nav:
       - M3 evidence: evidence-m3.md
   - CI/CD: ci-cd.md
   - Secrets: secrets.md
+  - Cryptographic baseline: crypto-baseline.md
   - Troubleshooting: troubleshooting.md
   - OSS dependencies: dependencies.md
   - Licenses: licenses.md

@@ -72,7 +72,8 @@ and ZT-46/ZT-81 as one shared execution each; each pair is one scenario carrying
 
 Checks that exist but prove only part of a row — the usage manual in the site navigation (behind
 ZT-17), pinned and scoped workflows (behind ZT-56), JSON log records from every Go service that
-rejects its configuration (behind TDR-BDD-06) — stay as untagged `@regression` scenarios. They
+rejects its configuration (behind TDR-BDD-06), the cryptographic register against the repository
+(behind ZT-50) — stay as untagged `@regression` scenarios. They
 run strict and do not cover a row.
 
 Cucumber.js describes its `json` formatter as being in maintenance mode; it is the interchange
