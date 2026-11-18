@@ -5,10 +5,11 @@ holds no demonstration workload: nothing that participates in a zone-to-zone cal
 failure in the pipeline cannot be mistaken for a failure in the demonstrator.
 
 !!! note "Status"
-    The cluster was provided on 23 September 2026. What is installed today is ORCE, the BDD pool and
-    nothing else; stages 1 to 5 below describe that state and were checked against the cluster,
+    The cluster was provided on 23 September 2026. Of what this guide installs, ORCE and the BDD
+    pool are there today; stages 1 to 5 below describe them and were checked against the cluster,
     except where a stage says otherwise. The runner, registry access and visualization stages are
-    planned and marked so.
+    planned and marked so. The cluster also serves a Keycloak and the demonstrator UI on two public
+    hosts that this guide does not install ([TLS 1.3 on the public ingress](#tls-13-on-the-public-ingress)).
 
 ## Before you start
 
