@@ -23,6 +23,14 @@ import (
 // minSecret is the shortest HMAC secret the provider accepts.
 const minSecret = 32
 
+// maxAccessTokenLifespan is the longest session re-validation interval (15 minutes), and
+// minAccessTokenLifespan the shortest: a session renews at three quarters of its token's life, and a
+// grant is refused when less than two seconds of access would be left.
+const (
+	maxAccessTokenLifespan = 15 * time.Minute
+	minAccessTokenLifespan = 10 * time.Second
+)
+
 // config is the service's configuration surface. Secrets are not in it: only the paths of the
 // files that hold them.
 type config struct {
@@ -238,6 +246,15 @@ func (c config) validate() error {
 	}
 	if c.accessTokenLifespan <= 0 {
 		return errors.New("the access-token lifespan must be longer than 0")
+	}
+	// The lifespan is the session re-validation interval: a credential is verified again at the
+	// latest when the token it was granted on expires.
+	if c.accessTokenLifespan > maxAccessTokenLifespan {
+		return fmt.Errorf("the access-token lifespan is the session re-validation interval and must not exceed %s", maxAccessTokenLifespan)
+	}
+	// A shorter lifespan leaves a session no time to renew before its token expires.
+	if c.accessTokenLifespan < minAccessTokenLifespan {
+		return fmt.Errorf("the access-token lifespan must be at least %s", minAccessTokenLifespan)
 	}
 	if c.readinessTimeout <= 0 {
 		return errors.New("the readiness timeout must be longer than 0")
