@@ -50,7 +50,7 @@ decides it and `Setting` is the text in that file that does.
 | Participant | DPoP proof key | signature | `ECDSA P-256` | `services/participant/connector.go` | `ecdsa.GenerateKey(elliptic.P256(), rand.Reader)` |
 | Admission provider | cosign image signatures it accepts | signature | `ECDSA P-256` | `internal/cosignverify/cosignverify.go` | `key.Curve != elliptic.P256()` |
 | Admission provider | its CA and server certificate | signature | `ECDSA P-256` | `deployment/helm/admission/templates/tls.yaml` | `genSignedCertWithKey (index $dns 2) nil $dns (int .Values.tls.validityDays) $genCA (genPrivateKey "ecdsa")` |
-| Public ingress (Traefik) | every host the controller terminates, once the manifest is applied to the cluster | transport | `TLS 1.3` | `deployment/ingress/traefik-tls-options.yaml` | `minVersion: VersionTLS13` |
+| Public ingress (Traefik) | the hosts the controller terminates through a router that names no TLSOption of its own, once the manifest is applied to the cluster as its only `default` TLSOption | transport | `TLS 1.3` | `deployment/ingress/traefik-tls-options.yaml` | `minVersion: VersionTLS13` |
 | Admission provider | its HTTPS listener | transport | `TLS 1.3` | `services/admission-provider/provider.go` | `MinVersion:   tls.VersionTLS13` |
 | OpenBao | transit key of the secrets baseline proof | encryption | `AES-256` | `deployment/helm/ztd/templates/_openbao.tpl` | `{"type":"aes256-gcm96"}` |
 | Keycloak, realm `facis-ztd` | token signatures (RS256) | signature | `RSA-4096` | `deployment/helm/facis-ztd-keycloak/files/realm.json` | `"providerId": "rsa-generated", "subComponents": {}, "config": {"priority": ["100"], "keySize": ["4096"]` |

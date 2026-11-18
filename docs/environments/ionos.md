@@ -238,10 +238,13 @@ kubectl delete -f deployment/orce-minimal/base.yaml --ignore-not-found
 
 ## TLS 1.3 on the public ingress
 
-The cluster's ingress class `ztd-public` is a Traefik that this repository does not install. As
-its chart ships it, Traefik accepts TLS 1.2, and on 18 Nov 2026 both public hosts of this cluster
-did. One object in the controller's namespace sets TLS 1.3 as the minimum for every host it
-terminates:
+The ORCE of stages 2 and 3 has no ingress. The cluster also serves two public hosts that those
+stages do not install: the Keycloak whose realm `deployment/helm/facis-ztd-keycloak` manages, and
+the demonstrator UI that realm names as its origin. Both come in through the ingress class
+`ztd-public`, a Traefik that this repository does not install. As its chart ships it, Traefik
+accepts TLS 1.2, and on 18 Nov 2026 both hosts did. One object in the controller's namespace sets
+TLS 1.3 as the minimum for every host it terminates through a router that names no TLSOption of
+its own:
 
 ```bash
 kubectl -n <traefik namespace> apply -f deployment/ingress/traefik-tls-options.yaml

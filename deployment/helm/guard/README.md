@@ -63,10 +63,12 @@ method becomes an exact-path Envoy route that matches a gRPC content type only, 
 `grpc.resourcePort` over cleartext HTTP/2. The call goes through the same hook as a REST call: the
 Participant's mesh identity, the token and a DPoP proof made for the published base URL plus the
 method path, then the policy decision and the substituted upstream credential, which the Resource
-receives as the `authorization` and `dpop` metadata. A refusal is decided as for REST, with 401,
-403 or 503; for a gRPC call Envoy answers it as a gRPC status in a trailers-only response, which
-the client reads as `UNAUTHENTICATED`, `PERMISSION_DENIED` or `UNAVAILABLE`, and the JSON body of
-the REST refusal is not delivered. A method that is not listed is not routed (`UNIMPLEMENTED`).
+receives as the `authorization` and `dpop` metadata. A refusal is decided as for REST, with the
+status of its reason code: 401, 403, 409 (the token store holds no upstream token) or 503. For a
+gRPC call Envoy answers it as a gRPC status in a trailers-only response, and the JSON body of the
+REST refusal is not delivered. The test shows 401 arriving as `UNAUTHENTICATED`, 403 as
+`PERMISSION_DENIED` and an unlisted method, which is not routed, as `UNIMPLEMENTED`; what a client
+sees for 409 and 503 is not exercised.
 
 The same list is rendered into the policy evaluator's configuration, and the policy input names
 the call's service (`grpc_service`). With the option on, the guard's Service port is named
@@ -80,7 +82,7 @@ AuthorizationPolicy paths as rendered, is not proven by anything yet. The Resour
 must declare `grpc.resourcePort` as HTTP/2 or gRPC (port name `grpc` or `http2`, or
 `appProtocol`): on a port the mesh treats as TCP or HTTP/1.1 the call fails, and the path rules of
 the AuthorizationPolicy do not match. The Protected Resource sample service does not serve gRPC;
-the test's resource is the gRPC health service. The 503 refusal is not exercised by the test.
+the test's resource is the gRPC health service.
 
 ## Audience boundary
 
