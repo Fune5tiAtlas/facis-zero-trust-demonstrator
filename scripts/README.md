@@ -11,6 +11,7 @@ Bash is the language for scripts under `scripts/` per the Technical Development 
 | `dev/kind-cilium-up.sh` | the local kind cluster with Cilium chained (`cni.exclusive=false`) |
 | `verify-umbrella/verify.sh` | evidence for the umbrella chart alone on kind |
 | `verify-mesh-identity/verify.sh` | evidence that the mesh identities are SPIRE's, the whole zone on kind |
+| `verify-orce-errors/verify.sh` | a malformed lifecycle command against a container of the ORCE image (`ORCE_IMAGE`), with this checkout's flow and settings: a JSON refusal, the error object in the flow context, and no log line that is not a JSON record |
 | `mesh-mode/check-upstream-state.sh` | the upstream-state record behind ADR-0009 and its reopen check |
 ## Guard policy-hook proofs (`verify-policy-hook/`)
 

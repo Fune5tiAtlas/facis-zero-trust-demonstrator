@@ -71,7 +71,8 @@ both are implemented, and the generator refuses the source otherwise. The Annex 
 and ZT-46/ZT-81 as one shared execution each; each pair is one scenario carrying both rows' tags.
 
 Checks that exist but prove only part of a row — the usage manual in the site navigation (behind
-ZT-17), pinned and scoped workflows (behind ZT-56) — stay as untagged `@regression` scenarios. They
+ZT-17), pinned and scoped workflows (behind ZT-56), JSON log records from every Go service that
+rejects its configuration (behind TDR-BDD-06) — stay as untagged `@regression` scenarios. They
 run strict and do not cover a row.
 
 Cucumber.js describes its `json` formatter as being in maintenance mode; it is the interchange
@@ -222,7 +223,7 @@ The ORCE image is amd64 only; on an arm64 machine Docker runs it emulated.
 | `BDD_ORCE_URL` | ORCE base URL |
 | `BDD_ORCE_ADMIN_TOKEN` | read-only ORCE admin API bearer token |
 | `BDD_ORCE_HTTP_USER`, `BDD_ORCE_HTTP_PASS` | credentials of the ORCE HTTP endpoints |
-| `BDD_ORCE_LOGS_CMD` | a command printing the ORCE log (rows 02 and 06 assert the JSON refusal record) |
+| `BDD_ORCE_LOGS_CMD` | a command printing the ORCE container's log, both of its streams, and nothing else on stdout: `kubectl logs` of that one container does (rows 02 and 06 assert the JSON refusal record; row 06 fails on any line that is not a JSON object, so a banner or another container's output fails it). The command's own stderr is not read |
 | `BDD_RELEASE_CHART` | the release under test, a chart path in the ORCE image; default the lifecycle fixture |
 | `BDD_RELEASE_VALUES` | its valid baseline values; default the fixture's `ci/values.yaml` |
 | `BDD_TARGET`, `BDD_RUN_ID` | names the target and the run in the evidence |
