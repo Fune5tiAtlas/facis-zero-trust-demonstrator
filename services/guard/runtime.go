@@ -73,6 +73,8 @@ type Runtime struct {
 	callers *meshcaller.XFCC
 	clients *Clients
 	events  hook.EventSink
+	// Refused counts every refusal, once, by its reason code.
+	Refused Refusals
 }
 
 func New(cfg Config, events hook.EventSink) (*Runtime, error) {
@@ -126,9 +128,18 @@ func (r *Runtime) refuse(reason string, status int) hook.Outcome {
 		SetHeaders: []hook.Header{{Name: "content-type", Value: "application/json"}, {Name: hook.HeaderRequestID, Value: id}}}
 }
 
-// Evaluate validates the incoming proof before policy or substitution, so replay cannot be hidden
-// by a freshly minted upstream proof. Every dependency failure is a refusal.
+// Evaluate decides one request and counts it when it is refused.
 func (r *Runtime) Evaluate(ctx context.Context, in hook.Request) hook.Outcome {
+	out := r.evaluate(ctx, in)
+	if !out.Allowed {
+		r.Refused.add(out.ReasonCode)
+	}
+	return out
+}
+
+// evaluate validates the incoming proof before policy or substitution, so replay cannot be hidden
+// by a freshly minted upstream proof. Every dependency failure is a refusal.
+func (r *Runtime) evaluate(ctx context.Context, in hook.Request) hook.Outcome {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	grpcService, routed := r.route(in)

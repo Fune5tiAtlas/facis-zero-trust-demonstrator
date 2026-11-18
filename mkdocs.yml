@@ -47,6 +47,7 @@ nav:
   - CI/CD: ci-cd.md
   - Secrets: secrets.md
   - Cryptographic baseline: crypto-baseline.md
+  - Fail-closed behaviour: fail-closed.md
   - Troubleshooting: troubleshooting.md
   - OSS dependencies: dependencies.md
   - Licenses: licenses.md

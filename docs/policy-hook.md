@@ -184,10 +184,10 @@ token without the entitlement (rule denial), no token asks for a presentation.
 
 ## Not here yet
 
-This page and the proofs establish the hook's behaviour; the hook runs as a verification binary
-only. The guard's deployable adapter — the policy engine
-client, the token store client, the guard's own token check feeding the policy input, and the
-Helm wiring that attaches the filter to the mesh's Envoy — is recorded as open in the
+The proofs above establish the hook's behaviour with the probe's fixture transport. The deployable
+guard, with its real policy engine, token store and token check, is described below and in
+[Fail-closed behaviour](fail-closed.md); attaching the filter to the mesh's own Envoy instead of a
+namespace Envoy stays open in the
 [decision on the policy hook](adr/0008-envoy-ext-authz-as-the-guard-policy-hook.md).
 
 ## M3 deployable adapter — local integration

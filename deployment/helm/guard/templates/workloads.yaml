@@ -51,7 +51,9 @@ spec:
           ports:
             - {name: ops, containerPort: {{ if eq $component "guard" }}9090{{ else }}8080{{ end }}}
           readinessProbe:
-            httpGet: {path: /healthz, port: ops}
+            # The guard is ready only while its dependencies answer (cmd/guard /readyz); the policy
+            # evaluator has none.
+            httpGet: {path: {{ if eq $component "guard" }}/readyz{{ else }}/healthz{{ end }}, port: ops}
           livenessProbe:
             httpGet: {path: /healthz, port: ops}
           resources:

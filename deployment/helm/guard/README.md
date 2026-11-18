@@ -84,6 +84,17 @@ must declare `grpc.resourcePort` as HTTP/2 or gRPC (port name `grpc` or `http2`,
 the AuthorizationPolicy do not match. The Protected Resource sample service does not serve gRPC;
 the test's resource is the gRPC health service.
 
+## Dependencies
+
+The guard reports its dependencies (policy engine, key set, token store) on its ops port, and the
+chart uses `/readyz` as the guard's readiness. `alerts/guard-rules.yaml` holds the alert rules for the
+scrape job `ztd-guard`. To be scraped, set `metrics.scraper` to the scraper's mesh identity, namespace
+and pod labels: the chart then admits that identity alone to `GET /metrics` on port 9090
+(AuthorizationPolicy and NetworkPolicy) and adds the Service `ztd-guard-metrics`, which keeps a guard
+that is not ready. The scraper must be in the mesh, scrape every 5 s with a 1 s timeout and evaluate
+the rules every 5 s; [Fail-closed behaviour](../../../docs/fail-closed.md) has the timing, what each
+outage does to a request, and what is proven.
+
 ## Audience boundary
 
 Set `config.inbound_audience` to `https://guard.facis.invalid` and
