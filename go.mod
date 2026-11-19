@@ -10,6 +10,7 @@ require (
 	github.com/cucumber/messages/go/v34 v34.2.0
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0
 	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/opencontainers/runtime-spec v1.3.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/sirupsen/logrus v1.9.4
 	golang.org/x/crypto v0.57.0
@@ -44,7 +45,6 @@ require (
 	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect
 	github.com/hashicorp/golang-lru v0.5.4 // indirect
 	github.com/mattn/go-sqlite3 v1.14.44 // indirect
-	github.com/opencontainers/runtime-spec v1.3.0 // indirect
 	github.com/pion/dtls/v3 v3.1.4 // indirect
 	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/transport/v4 v4.0.1 // indirect

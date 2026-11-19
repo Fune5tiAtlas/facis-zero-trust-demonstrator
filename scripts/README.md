@@ -52,6 +52,15 @@ pull request that touches the hook, uploads the records as an artefact and write
 the job summary; those are the numbers of a Linux host. `envoy/` holds the three bootstrap
 templates the probe renders.
 
+## Attestation evidence provisioning (`attestation-provision/`)
+
+`attestation-provision/prove.sh` provisions every zone's mock attestation evidence from its file in
+`deployment/attestation/`, from zero: the pinned `cmcd`, `estserver` and `metatool`, a throwaway
+PKI, one `estserver` and one `cmcd` per zone as plain processes, and the gateway's startup check
+against each `cmcd`. It then changes one measurement and shows the evidence change, and refuses
+reference values signed outside the metadata CA. Needs go, jq and openssl; `--out DIR` keeps the
+records and logs. See [docs/attestation-provisioning.md](../docs/attestation-provisioning.md).
+
 ## Attested channel proofs (`atls-probe/`)
 
 Three scripts prove the behaviour of the attested channel (`internal/atls`) between separate

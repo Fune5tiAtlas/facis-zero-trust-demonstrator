@@ -38,6 +38,7 @@ nav:
   - API documentation: api-docs.md
   - Interface contracts: contracts/index.md
   - Attested channel control: attested-channel.md
+  - Attestation evidence provisioning: attestation-provisioning.md
   - TRAIN trust-list publishing: tspa-publish-api.md
   - TRAIN DNS zone: train-dns.md
   - BDD acceptance:
