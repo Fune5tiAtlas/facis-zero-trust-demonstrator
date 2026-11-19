@@ -6,6 +6,10 @@
 const DefaultChannelLifetime time.Duration = 900000000000
 const DefaultHandshakeTimeout time.Duration = 10000000000
 const DefaultMaxConcurrentHandshakes untyped int = 8
+const ModeClient Mode = 2
+const ModeMutual Mode = 0
+const ModeServer Mode = 1
+const VerdictNotAttested Verdict = "not_attested"
 const VerdictSuccess Verdict = "success"
 func Dial(context.Context, string, Config) (*Conn, error)
 func Listen(string, Config) (*Listener, error)
@@ -19,6 +23,7 @@ method (*Error) Unwrap() []error
 method (*Listener) Accept(context.Context) (*Conn, error)
 method (*Listener) Addr() net.Addr
 method (*Listener) Close() error
+method (Mode) String() string
 method (PeerVerifierFunc) VerifyPeer(context.Context, PeerAttestation) error
 type Config struct
 type Config struct, ChannelLifetime time.Duration
@@ -26,6 +31,7 @@ type Config struct, CmcdAddr string
 type Config struct, ExpectedPeerIdentity string
 type Config struct, HandshakeTimeout time.Duration
 type Config struct, MaxConcurrentHandshakes int
+type Config struct, Mode Mode
 type Config struct, PeerVerifier PeerVerifier
 type Config struct, Policies []byte
 type Config struct, TLS *crypto/tls.Config
@@ -43,6 +49,7 @@ type Measurement struct, Evidence string
 type Measurement struct, HashAlg string
 type Measurement struct, Index int
 type Measurement struct, Name string
+type Mode int
 type PeerAttestation struct
 type PeerAttestation struct, AttestedAt time.Time
 type PeerAttestation struct, EvidenceNotAfter time.Time

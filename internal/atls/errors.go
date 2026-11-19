@@ -37,7 +37,7 @@ var (
 	// client holding a zone certificate that never speaks attestation looks the same.
 	ErrPeerAborted = errors.New("atls: peer left before the attestation exchange completed")
 
-	// ErrAttestModeMismatch: the peer requested an attestation mode other than mutual.
+	// ErrAttestModeMismatch: the peer requested an attestation mode other than this end's Mode.
 	ErrAttestModeMismatch = errors.New("atls: attestation mode mismatch")
 
 	// ErrAttesterUnavailable: this zone's attester (cmcd) could not be reached or failed.

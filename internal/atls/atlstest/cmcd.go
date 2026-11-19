@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -35,13 +36,20 @@ func (z *Zone) StartCmcd(t testing.TB) string {
 			t.Fatalf("atlstest: cmcd serializer: %v", err)
 		}
 		s := grpc.NewServer()
-		grpcapi.RegisterCMCServiceServer(s, &cmcd{c: z.c, genMu: &z.genMu, ser: ser})
+		grpcapi.RegisterCMCServiceServer(s, &cmcd{c: z.c, genMu: &z.genMu, ser: ser, calls: &z.calls})
 		go func() { _ = s.Serve(ln) }()
 		z.tb.Cleanup(s.Stop)
 		z.cmcdAddr = ln.Addr().String()
 	})
 	return z.cmcdAddr
 }
+
+// CmcdCalls returns how many reports the zone's stand-in cmcd generated and verified.
+func (z *Zone) CmcdCalls() (attest, verify int64) {
+	return z.calls.attest.Load(), z.calls.verify.Load()
+}
+
+type cmcdCalls struct{ attest, verify atomic.Int64 }
 
 // UnreachableCmcd returns an address on which no cmcd answers.
 func UnreachableCmcd(t testing.TB) string {
@@ -62,6 +70,7 @@ type cmcd struct {
 	// genMu is the zone's report-generation lock (Zone.genMu).
 	genMu *sync.Mutex
 	ser   ar.Serializer
+	calls *cmcdCalls
 }
 
 func (s *cmcd) Attest(_ context.Context, req *grpcapi.AttestationRequest) (*grpcapi.AttestationResponse, error) {
@@ -71,6 +80,7 @@ func (s *cmcd) Attest(_ context.Context, req *grpcapi.AttestationRequest) (*grpc
 	if err := grpcapi.CheckVersion(req.Version); err != nil {
 		return nil, fmt.Errorf("version check failed: %w", err)
 	}
+	s.calls.attest.Add(1)
 	s.genMu.Lock()
 	report, err := prover.Generate(req.Nonce, req.Cached, s.c.GetMetadata(), s.c.Drivers, s.ser, s.c.HashAlg)
 	s.genMu.Unlock()
@@ -84,6 +94,7 @@ func (s *cmcd) Verify(_ context.Context, req *grpcapi.VerificationRequest) (*grp
 	if err := grpcapi.CheckVersion(req.Version); err != nil {
 		return nil, fmt.Errorf("version check failed: %w", err)
 	}
+	s.calls.verify.Add(1)
 	result := verifier.Verify(req.Report, req.Nonce, req.Policies, s.c.PolicyEngineSelect,
 		s.c.PolicyOverwrite, s.c.RootCas, s.c.PeerCache, req.Peer, req.PeerAddr, s.c.UseOmsp)
 	data, err := json.Marshal(result)

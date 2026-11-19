@@ -1,4 +1,5 @@
-// Package atls establishes mutually attested TLS 1.3 channels between zones.
+// Package atls establishes attested TLS 1.3 channels between zones: mutually attested by
+// default, or attesting only the server or only the client (Config.Mode, ZT-29).
 //
 // It is the only package allowed to import the CMC attested-TLS library
 // (github.com/Fraunhofer-AISEC/cmc, pinned at v0.9.15); a depguard rule fails the build when any
@@ -10,10 +11,11 @@
 //   - TLS 1.3 with mutual certificate authentication, whatever the caller's tls.Config allows;
 //   - the peer's certificate chains to the zone trust anchors, carries ExpectedPeerIdentity and
 //     uses a key algorithm of the crypto baseline;
-//   - CMC completed the mutual attestation without error, produced exactly one result for this
-//     connection, and its verdict is success (warn is a refusal);
-//   - the peer's evidence is still within its validity;
-//   - the PeerVerifier, if configured, accepted the peer.
+//   - CMC completed the attestation of the configured mode without error;
+//   - on an end that attests its peer: exactly one result exists for this connection, its verdict
+//     is success (warn is a refusal), the peer's evidence is still within its validity, and the
+//     PeerVerifier, if configured, accepted the peer. On an end that does not, no result exists
+//     and the peer carries VerdictNotAttested.
 //
 // Every refusal closes the connection and returns an *Error matching exactly one sentinel.
 //

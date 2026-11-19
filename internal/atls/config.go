@@ -13,6 +13,7 @@ import (
 	"time"
 
 	ar "github.com/Fraunhofer-AISEC/cmc/attestationreport"
+	"github.com/Fraunhofer-AISEC/cmc/attestedtls"
 	"github.com/Fraunhofer-AISEC/cmc/cmc"
 )
 
@@ -25,6 +26,33 @@ const (
 
 // minRSABits is the smallest RSA key the crypto baseline (BSI TR-02102, ZT-50) accepts here.
 const minRSABits = 4096
+
+// Mode is the attestation mode of a channel (ZT-29): which ends present an attestation report.
+// Both ends of a channel must be configured with the same mode; CMC sends it in its attestation
+// request and refuses a peer that asks for another one with ErrAttestModeMismatch.
+type Mode int
+
+const (
+	// ModeMutual: both ends present a report and each verifies the other's. The default.
+	ModeMutual Mode = iota
+	// ModeServer: only the server (the Listener end) presents a report; the client verifies it.
+	ModeServer
+	// ModeClient: only the client (the Dial end) presents a report; the server verifies it.
+	ModeClient
+)
+
+// String names the mode as ZT-29 does.
+func (m Mode) String() string {
+	switch m {
+	case ModeMutual:
+		return "mutual"
+	case ModeServer:
+		return "server-side"
+	case ModeClient:
+		return "client-side"
+	}
+	return fmt.Sprintf("Mode(%d)", int(m))
+}
 
 // Config configures one end of an attested channel. The zero value is not usable: TLS,
 // CmcdAddr and ExpectedPeerIdentity are required.
@@ -59,8 +87,12 @@ type Config struct {
 	// of the process. Zero means DefaultMaxConcurrentHandshakes.
 	MaxConcurrentHandshakes int
 
+	// Mode is the attestation mode; the zero value is ModeMutual. In ModeServer the server does
+	// not attest the client, and in ModeClient the client does not attest the server: that end's
+	// connection carries a peer with VerdictNotAttested, identified by its certificate only.
+	Mode Mode
 	// PeerVerifier, when set, is asked after a successful attestation whether the peer may
-	// connect. Any error refuses the channel. It runs within the handshake deadline and slot: a
+	// connect. It is refused (ErrConfig) on an end whose Mode does not attest the peer. Any error refuses the channel. It runs within the handshake deadline and slot: a
 	// verifier still running at the deadline refuses the channel with ErrHandshakeTimeout.
 	PeerVerifier PeerVerifier
 
@@ -80,6 +112,7 @@ const (
 // prepared is a validated Config with defaults applied.
 type prepared struct {
 	role             role
+	mode             Mode
 	base             *tls.Config
 	cmcdAddr         string
 	inProcess        *cmc.Config
@@ -90,6 +123,28 @@ type prepared struct {
 	maxConcurrent    int
 	verifier         PeerVerifier
 	rewrite          func(*ar.AttestationResult) bool
+}
+
+// attestsPeer reports whether this end verifies its peer's attestation in its mode.
+func (p *prepared) attestsPeer() bool {
+	switch p.mode {
+	case ModeServer:
+		return p.role == roleClient
+	case ModeClient:
+		return p.role == roleServer
+	}
+	return true
+}
+
+// cmcMode is the mode as CMC names it.
+func (p *prepared) cmcMode() attestedtls.AttestSelect {
+	switch p.mode {
+	case ModeServer:
+		return attestedtls.Attest_Server
+	case ModeClient:
+		return attestedtls.Attest_Client
+	}
+	return attestedtls.Attest_Mutual
 }
 
 func configError(format string, args ...any) error {
@@ -156,8 +211,14 @@ func (c Config) prepare(r role) (*prepared, error) {
 		return nil, configError("HandshakeTimeout, ChannelLifetime and MaxConcurrentHandshakes must not be negative")
 	}
 
+	switch c.Mode {
+	case ModeMutual, ModeServer, ModeClient:
+	default:
+		return nil, configError("unknown attestation mode %d", int(c.Mode))
+	}
 	p := &prepared{
 		role:             r,
+		mode:             c.Mode,
 		cmcdAddr:         c.CmcdAddr,
 		inProcess:        c.inProcess,
 		policies:         c.Policies,
@@ -167,6 +228,9 @@ func (c Config) prepare(r role) (*prepared, error) {
 		maxConcurrent:    c.MaxConcurrentHandshakes,
 		verifier:         c.PeerVerifier,
 		rewrite:          c.rewrite,
+	}
+	if p.verifier != nil && !p.attestsPeer() {
+		return nil, configError("a PeerVerifier needs a mode in which this end attests its peer, not %s", p.mode)
 	}
 	if p.handshakeTimeout == 0 {
 		p.handshakeTimeout = DefaultHandshakeTimeout

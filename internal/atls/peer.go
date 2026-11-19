@@ -13,12 +13,17 @@ import (
 	ar "github.com/Fraunhofer-AISEC/cmc/attestationreport"
 )
 
-// Verdict is the outcome of the peer's attestation. A returned connection always carries
-// VerdictSuccess; any other outcome refuses the channel.
+// Verdict is the outcome of the peer's attestation. A returned connection carries VerdictSuccess,
+// or VerdictNotAttested on the end whose Mode does not attest its peer; any other outcome refuses
+// the channel.
 type Verdict string
 
-// VerdictSuccess is the only verdict a returned connection carries.
+// VerdictSuccess: the peer was attested and its verdict is success.
 const VerdictSuccess Verdict = "success"
+
+// VerdictNotAttested: this end's Mode does not attest the peer. The peer is identified by its
+// certificate only; it has no measurements and no attestation time.
+const VerdictNotAttested Verdict = "not_attested"
 
 // Measurement is one verified measurement from the peer's evidence.
 type Measurement struct {
@@ -36,7 +41,7 @@ type Measurement struct {
 
 // PeerAttestation is what an established channel knows about its peer.
 type PeerAttestation struct {
-	// Verdict is always VerdictSuccess on a returned connection.
+	// Verdict is VerdictSuccess, or VerdictNotAttested on an end that does not attest its peer.
 	Verdict Verdict
 	// PeerID is the hex SHA-256 fingerprint of the peer's TLS leaf certificate.
 	PeerID string
@@ -50,7 +55,8 @@ type PeerAttestation struct {
 	// EvidenceNotAfter is the validity end of the peer's evidence, zero when the result
 	// states none.
 	EvidenceNotAfter time.Time
-	// ValidUntil is the earlier of AttestedAt plus the channel lifetime and EvidenceNotAfter.
+	// ValidUntil is the earlier of AttestedAt plus the channel lifetime and EvidenceNotAfter; for
+	// a peer that is not attested, the end of its handshake plus the channel lifetime.
 	// The channel must be re-established before this time.
 	ValidUntil time.Time
 }
@@ -169,6 +175,19 @@ func judge(rec *recorder, peerLeaf *x509.Certificate, lifetime time.Duration, no
 			fmt.Sprintf("peer evidence expired at %s", pa.EvidenceNotAfter.UTC().Format(time.RFC3339)), nil)
 	}
 	return pa, nil
+}
+
+// unattested is the peer of an end whose mode does not attest it: no attestation result may
+// exist, and the channel lifetime still bounds the channel.
+func unattested(rec *recorder, peerLeaf *x509.Certificate, lifetime time.Duration, now time.Time) (PeerAttestation, error) {
+	if results, _ := rec.snapshot(); len(results) != 0 {
+		return PeerAttestation{}, refuse(ErrNotAttested,
+			fmt.Sprintf("the handshake produced %d attestation results in a mode that verifies none", len(results)), nil)
+	}
+	if peerLeaf == nil {
+		return PeerAttestation{}, refuse(ErrNotAttested, "peer presented no certificate", nil)
+	}
+	return PeerAttestation{Verdict: VerdictNotAttested, PeerID: fingerprint(peerLeaf), ValidUntil: now.Add(lifetime)}, nil
 }
 
 func fingerprint(leaf *x509.Certificate) string {

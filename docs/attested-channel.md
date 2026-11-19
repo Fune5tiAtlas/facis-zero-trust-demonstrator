@@ -1,6 +1,7 @@
 # Attested channel control
 
-The zones talk to each other only over a mutually attested TLS 1.3 channel (ZT-28 to ZT-35). The
+The zones talk to each other only over an attested TLS 1.3 channel (ZT-28 to ZT-35), mutually
+attested unless both ends choose a one-sided [attestation mode](#attestation-modes). The
 Go package `internal/atls` is the one place that establishes such a channel. It wraps the
 Fraunhofer AISEC CMC attested-TLS library and exposes only the demonstrator's own types.
 
@@ -36,8 +37,17 @@ type Config struct {
     HandshakeTimeout        time.Duration  // default 10 s
     ChannelLifetime         time.Duration  // default 15 min
     MaxConcurrentHandshakes int            // default 8
+    Mode                    Mode           // default ModeMutual; both ends must agree
     PeerVerifier            PeerVerifier   // optional veto after attestation
 }
+
+type Mode int // ZT-29: which ends present an attestation report
+const (
+    ModeMutual Mode = iota // both ends (the zero value)
+    ModeServer             // only the server (Listener end); the client verifies it
+    ModeClient             // only the client (Dial end); the server verifies it
+)
+func (m Mode) String() string // "mutual", "server-side", "client-side"
 
 const (
     DefaultHandshakeTimeout        = 10 * time.Second
@@ -60,17 +70,18 @@ func (c *Conn) Read(b []byte) (int, error)         // io.EOF and timeouts as the
 func (c *Conn) Write(b []byte) (int, error)        // timeouts as they are; else ErrChannelLost
 
 type PeerAttestation struct {
-    Verdict          Verdict        // always VerdictSuccess on a returned connection
+    Verdict          Verdict        // VerdictSuccess, or VerdictNotAttested (see Attestation modes)
     PeerID           string         // hex SHA-256 of the peer's TLS leaf certificate
     Identity         string         // the identity the peer's certificate matched
     Measurements     []Measurement  // verified measurements of the peer's evidence
     AttestedAt       time.Time      // when this end received the verification result
     EvidenceNotAfter time.Time      // validity end of the peer's evidence (zero if none stated)
-    ValidUntil       time.Time      // min(AttestedAt + ChannelLifetime, EvidenceNotAfter)
+    ValidUntil       time.Time      // min(AttestedAt + ChannelLifetime, EvidenceNotAfter); not attested: handshake end + ChannelLifetime
 }
 
 type Verdict string
 const VerdictSuccess Verdict = "success"
+const VerdictNotAttested Verdict = "not_attested" // this end's Mode does not attest the peer
 
 type Measurement struct {
     Evidence string  // evidence type the measurement belongs to
@@ -134,16 +145,65 @@ closes the connection and returns a refusal.
    trust anchors, it carries `ExpectedPeerIdentity`, and its key is ECDSA P-256/P-384 or RSA with
    at least 4096 bits (ZT-50). The peer is identified by `ExpectedPeerIdentity`, not by the host
    name it was dialled at.
-3. **Mutual attestation completed without error.** The attestation mode is always mutual; a peer
-   that asks for another mode is refused.
-4. **Exactly one attestation result exists for this connection, and its verdict is `success`.** A
-   `warn` verdict is a refusal. A missing result means not attested. The result must belong to the
-   certificate of this connection's peer.
+3. **CMC completed the attestation exchange of the configured mode without error.** The mode is
+   `Mode`, mutual unless set; a peer that asks for another mode is refused. A failure to produce
+   this end's own report is not among the errors CMC returns here when the peer claims success
+   (N11, under [Known CMC v0.9.15 limitations](#known-cmc-v0915-limitations)); it costs the peer its
+   assurance about this end, not this end's checks of the peer.
+4. **On an end that attests its peer, exactly one attestation result exists for this connection,
+   and its verdict is `success`.** A `warn` verdict is a refusal. A missing result means not
+   attested. The result must belong to the certificate of this connection's peer. On an end whose
+   mode does not attest its peer (the server in `ModeServer`, the client in `ModeClient`) no result
+   may exist, and the connection's peer carries `VerdictNotAttested`: it is identified by its
+   certificate (points 1 and 2) and nothing else. Points 5 and 6 apply only where the peer is
+   attested.
 5. **The peer's evidence is still valid** at the moment the connection is returned.
 6. **The `PeerVerifier`, if configured, accepted the peer.** Without a verifier, the decision rests
    on points 1 to 5.
 
 A returned connection has no read or write deadline left over from the handshake.
+
+## Attestation modes
+
+ZT-29 lets the attestation request state one of three modes. Both ends set the same `Mode`; CMC
+sends it in its attestation request (`"attest"`: 0 mutual, 1 client-side, 2 server-side) and each
+end refuses a request of another mode with `ErrAttestModeMismatch`.
+
+| `Mode` | Reports presented | Server's view of the client | Client's view of the server |
+|---|---|---|---|
+| `ModeMutual` (default) | both | `VerdictSuccess` | `VerdictSuccess` |
+| `ModeServer` | the server's | `VerdictNotAttested` | `VerdictSuccess` |
+| `ModeClient` | the client's | `VerdictSuccess` | `VerdictNotAttested` |
+
+TLS 1.3 with mutual certificate authentication, the identity check and the channel binding hold in
+every mode: a report that is verified is bound to the session and to its prover's certificate as
+in mutual mode (a report the mode does not ask for is not verified, N10), and the response of an end that presents none carries an empty
+report. A `PeerVerifier` is refused (`ErrConfig`) on an end that does not attest its peer, since
+there is nothing attested for it to judge. `ValidUntil` of a peer that is not attested is the
+moment its handshake finished plus the channel lifetime.
+
+The size rule of ZT-29 and ZT-30 (what a message carries besides the report is smaller than the
+report) is checked for each end: its request against the peer's report that answers it, and its
+response, without its report, against that report. Where the mode asks for no such report, fixed
+bounds apply instead: 128 bytes for a request no report answers, 64 bytes for a response that
+presents none. Such a response carries the version and nothing else; this is the empty report
+ZT-30 allows where none was requested. Handshakes with a populated report cache, whose requests carry cache keys and
+whose reports are shorter, are not covered by these tests.
+
+Two CMC v0.9.15 behaviours of the one-sided modes cannot be enforced by the wrapper, because CMC
+reads and writes the attestation messages itself on the TLS connection: a report the mode does not
+ask for is ignored rather than refused (N10), and an end whose own report cannot be produced is
+still accepted by a peer that claims success (N11). Both are listed under
+[Known CMC v0.9.15 limitations](#known-cmc-v0915-limitations) and pinned by
+`TestOneSidedModeLimitations`.
+
+`TestHandshakeInEachMode` completes a handshake in each mode through the zones' `cmcd` and checks
+which `cmcd` generated and which verified a report; `TestModeOnTheWire` reads the request and the
+response on the wire in each mode from a real listener and `TestClientModeOnTheWire` from a real
+dialer (JSON, the mode stated, a report exactly where the mode asks for one, and everything besides
+the report smaller than it); `TestModesMustMatch` refuses each of the six
+ordered pairs of different modes at both ends; `TestUnattestedRefusesAnyResult` refuses an
+attestation result on an end that does not attest its peer.
 
 ## Refusals
 
@@ -158,7 +218,7 @@ the wrapper reaches the decision today; it is not part of the freeze.
 | `ErrIdentityMismatch` | The peer's certificate is untrusted, lacks the expected identity or uses a key outside the crypto baseline; or the peer refused this end's certificate | wrapper TLS verification; TLS alert text |
 | `ErrPlainTLS` | The peer does not speak attested TLS 1.3: no TLS at all, TLS 1.2 or older, or a malformed first attestation message | TLS error text; CMC error text |
 | `ErrPeerAborted` | The peer completed TLS 1.3 with a valid zone certificate and left before the attestation exchange completed. Typically its attester is down. A TLS 1.3 client that holds a zone certificate and never speaks attestation looks the same | CMC error text of the final handshake exchange, with no attestation result on this end |
-| `ErrAttestModeMismatch` | The peer requested an attestation mode other than mutual | CMC error text |
+| `ErrAttestModeMismatch` | The peer requested an attestation mode other than this end's `Mode` (mutual unless set) | CMC error text |
 | `ErrAttesterUnavailable` | This zone's `cmcd` could not be reached or failed | CMC error text (gRPC / in-process backend) |
 | `ErrHandshakeTimeout` | The handshake did not end within the caller's deadline or `HandshakeTimeout`, or, for `Dial`, no handshake slot became free in time | wrapper deadline; `i/o timeout` from CMC; a channel lifetime that ended before `Accept` took the connection |
 | `ErrPeerRejected` | The `PeerVerifier` refused the attested peer. Its error is wrapped and stays inspectable | wrapper |
@@ -198,7 +258,8 @@ their text.
 ## Lifetime
 
 `ValidUntil` is the earlier of `AttestedAt + ChannelLifetime` and the validity end of the peer's
-evidence. TLS 1.3 does not renegotiate, so evidence never refreshes on a live channel. The owner of
+evidence. For a peer this end does not attest (`VerdictNotAttested`) it is the moment its handshake
+finished plus `ChannelLifetime`. TLS 1.3 does not renegotiate, so evidence never refreshes on a live channel. The owner of
 the channel must re-establish it before `ValidUntil`. The default lifetime of 15 minutes matches
 the channel rotation.
 
@@ -323,6 +384,14 @@ one sentinel.
 - **A removal, a changed signature, a changed default or a changed meaning of a sentinel** needs
   agreement under the interface-freeze process before it is made, and is recorded here with the
   commit and the date.
+- **Recorded changes.**
+    - 2026-11-18, the attestation modes of ZT-29: `Mode`, `ModeMutual`, `ModeServer`, `ModeClient`,
+      `Mode.String`, `Config.Mode` and `VerdictNotAttested` are added. The default stays mutual,
+      and for a `Config` that does not set `Mode` nothing changes. With another mode, guarantee 3
+      refers to the configured mode, guarantees 4 to 6 hold only on the end that attests its peer,
+      `ErrAttestModeMismatch` refers to the configured mode rather than to mutual, and a
+      `PeerVerifier` on an end that does not attest its peer is a configuration error. Those two are changes of meaning and need agreement under the
+      interface-freeze process; agreement is pending.
 - **The listing is never updated alone.** A failing guard is resolved by deciding the change and
   updating the listing together with this document, not by regenerating the listing to make the
   test pass.
@@ -430,7 +499,7 @@ fail and the entry must be revisited.
 | 1 | The listener sets a 10 s read/write deadline for the handshake and never clears it (*tested*) | Accepted connections fail their first read after 10 s | Deadline cleared after a successful handshake | none |
 | 2 | The client bounds only TCP connect and TLS; the attestation phase has no deadline (*tested*) | `Dial` blocks indefinitely against a silent server | `Dial` bounded by context and `HandshakeTimeout` | the abandoned goroutine and socket live until the peer or keep-alive ends them; bounded by the handshake cap |
 | 3 | `Accept` runs TLS and attestation inline | One slow client blocks all other accepts | One goroutine per connection | none |
-| 4 | The result callback fires inside verification, on failure too, and before `Accept`/`Dial` return; `warn` counts as success; some failure paths produce no callback (*tested*) | Callers may trust a result of a failed handshake, or a `warn` | A result is trusted only after a handshake that returned without error; `warn` and missing results are refusals; one callback per connection | none |
+| 4 | The result callback fires inside verification, on failure too, and before `Accept`/`Dial` return; `warn` counts as success; some failure paths produce no callback (*tested*) | Callers may trust a result of a failed handshake, or a `warn` | A result is trusted only after a handshake that returned without error; `warn` is a refusal; on an end that attests its peer a missing result is a refusal and exactly one callback is accepted, on an end that does not, any callback is a refusal | none |
 | N1 | When the peer answers with an error, one goroutine per handshake blocks forever (*tested*) | Goroutine growth under repeated failing handshakes | None in the wrapper: the goroutine outlives the handshake, so the handshake cap does not bound it. Mutual TLS limits who can reach this phase to holders of a zone certificate | leaked goroutines accumulate, one per such handshake; upstream fix needed |
 | N2 | Resource-exhaustion class issue in the attestation message framing, triggerable by a peer | Memory pressure from a single connection | Mutual TLS gates the phase; the handshake cap bounds concurrency; pod memory limits | not fixable in the wrapper (CMC requires the concrete TLS connection type). Details are withheld until coordinated disclosure with the contracting authority |
 | N3 | Channel binding reads only `tls.Config.Certificates[0]` | A dynamic or second certificate breaks the binding | Exactly one static certificate required; certificate callbacks refused (`ErrConfig`) | none |
@@ -439,6 +508,8 @@ fail and the entry must be revisited.
 | N6 | Attestation messages carry no type. When one side fails before sending its request, the other side parses its handshake-complete message as the request | The protocol desynchronises until CMC's 10 s deadline | `HandshakeTimeout` bounds the listener side | none beyond the timeout |
 | N7 | CMC returns the real handshake error only when the handshake-complete exchange succeeds | A peer that leaves early hides the cause (for example a peer whose attester is down, or a plain-TLS peer) | Complete-stage failure without an attestation result on this side is reported as `ErrPeerAborted`; with a result, as `ErrNotAttested` | the precise cause is lost for peers that leave early |
 | N8 | The client does not close the TLS connection when attestation fails (code reading) | Socket held until garbage collection | none possible; the peer closes its end | upstream fix needed |
+| N10 | In a one-sided mode, the end that does not verify parses a report it did not ask for and ignores it (*tested*) | A peer can send a report, and its size, where the mode asks for none | The report is never verified or reported; the peer stays `VerdictNotAttested` | not refusable in the wrapper, which does not see the messages |
+| N11 | When this end's own report cannot be produced, CMC writes the error only into the response to the peer and completes locally on the peer's success (*tested*); this holds in mutual mode too | An honest peer refuses and the channel fails at both ends; a peer that claims success anyway gets a channel without this end's evidence | Only the peer loses assurance, and only by its own choice; this end's guarantees about the peer are unchanged | upstream fix needed for this end to refuse on its own failure |
 | N9 | A failed TLS dial dereferences the certificate's parsed leaf without a nil check (code reading) | A certificate without a parsed leaf panics the dialing goroutine | The wrapper always sets the parsed leaf | none |
 
 Findings 1 to 4 and N1 were first established by reading the code; the regression tests confirmed

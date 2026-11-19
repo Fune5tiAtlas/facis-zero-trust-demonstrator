@@ -17,7 +17,7 @@ import (
 // the caller is not accepting.
 const refusalBuffer = 64
 
-// Listener accepts mutually attested TLS 1.3 channels. Each incoming connection is handshaken in
+// Listener accepts attested TLS 1.3 channels in the configured Mode. Each incoming connection is handshaken in
 // its own goroutine, at most Config.MaxConcurrentHandshakes at a time, so one slow peer does not
 // delay the others. The listener takes a handshake slot before it accepts a TCP connection: while
 // every slot is busy, further connections wait in the kernel backlog and cost the process nothing.

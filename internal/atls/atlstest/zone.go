@@ -52,6 +52,7 @@ type Zone struct {
 
 	cmcdOnce sync.Once
 	cmcdAddr string
+	calls    cmcdCalls
 }
 
 // ZoneOption adjusts a zone.

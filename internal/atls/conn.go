@@ -19,7 +19,7 @@ const (
 	bindingLen   = 32
 )
 
-// Conn is an established, mutually attested TLS 1.3 connection.
+// Conn is an established, attested TLS 1.3 connection with mutual certificate authentication.
 type Conn struct {
 	net.Conn
 	tls     *tls.Conn
@@ -123,15 +123,15 @@ func (g *gate) release() {
 // dialGate is shared by all Dial calls of the process: the dialer side of the channel.
 var dialGate = newGate()
 
-// cmcConfig builds the per-connection CMC configuration: this zone's attester, mutual
-// attestation over mTLS, JSON handshake messages, and a callback bound to this connection only.
+// cmcConfig builds the per-connection CMC configuration: this zone's attester, the configured
+// attestation mode over mTLS, JSON handshake messages, and a callback bound to this connection only.
 func (p *prepared) cmcOptions(rec *recorder) ([]attestedtls.ConnectionOption[attestedtls.CmcConfig], error) {
 	ser, err := jsonSerializer()
 	if err != nil {
 		return nil, err
 	}
 	opts := []attestedtls.ConnectionOption[attestedtls.CmcConfig]{
-		attestedtls.WithAttest(attestedtls.Attest_Mutual),
+		attestedtls.WithAttest(p.cmcMode()),
 		attestedtls.WithMtls(true),
 		attestedtls.WithSerializer(ser),
 		attestedtls.WithResultCb(rec.callback),
@@ -184,7 +184,15 @@ func (p *prepared) accept(ctx context.Context, tc *tls.Conn, rec *recorder) (*Co
 	if len(peers) == 0 {
 		return nil, refuse(ErrNotAttested, "peer presented no certificate", nil)
 	}
-	peer, err := judge(rec, peers[0], p.lifetime, time.Now())
+	var (
+		peer PeerAttestation
+		err  error
+	)
+	if p.attestsPeer() {
+		peer, err = judge(rec, peers[0], p.lifetime, time.Now())
+	} else {
+		peer, err = unattested(rec, peers[0], p.lifetime, time.Now())
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -207,9 +215,10 @@ func (p *prepared) accept(ctx context.Context, tc *tls.Conn, rec *recorder) (*Co
 	return &Conn{Conn: tc, tls: tc, binding: binding, peer: peer}, nil
 }
 
-// Dial opens a mutually attested TLS 1.3 channel to addr. It returns only when the server's
-// certificate carries the expected identity, both attestations verified with verdict success,
-// the peer's evidence is valid and the PeerVerifier (if any) accepted the peer. The handshake,
+// Dial opens an attested TLS 1.3 channel to addr. It returns only when the server's
+// certificate carries the expected identity and the attestation of the configured Mode
+// completed; when the Mode attests the server, also when its attestation verified with verdict
+// success, its evidence is valid and the PeerVerifier (if any) accepted it. The handshake,
 // peer verification included, is bounded by ctx and Config.HandshakeTimeout, whichever ends first.
 func Dial(ctx context.Context, addr string, cfg Config) (*Conn, error) {
 	p, err := cfg.prepare(roleClient)
