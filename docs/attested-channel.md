@@ -390,8 +390,8 @@ one sentinel.
       and for a `Config` that does not set `Mode` nothing changes. With another mode, guarantee 3
       refers to the configured mode, guarantees 4 to 6 hold only on the end that attests its peer,
       `ErrAttestModeMismatch` refers to the configured mode rather than to mutual, and a
-      `PeerVerifier` on an end that does not attest its peer is a configuration error. Those two are changes of meaning and need agreement under the
-      interface-freeze process; agreement is pending.
+      `PeerVerifier` on an end that does not attest its peer is a configuration error. These are
+      changes of meaning, agreed by the Project Leader on 2026-11-18 (commit `fcf5381`).
 - **The listing is never updated alone.** A failing guard is resolved by deciding the change and
   updating the listing together with this document, not by regenerating the listing to make the
   test pass.
