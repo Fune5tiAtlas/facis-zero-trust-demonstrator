@@ -108,46 +108,45 @@ the chart puts no checksum of it on the pod, and the chart gate fails if declari
 would change anything in the pod template. The kubelet refreshes the mounted declaration (within
 about a minute), and the sidecar, polling every `bundle.pollSeconds`:
 
-1. asks the TSA which revision it evaluates with (an evaluation of an empty input, which the policy
-   denies naming its revision); if that is not the last bundle it activated (the TSA restarted
-   empty), it imports that bundle again from its cache; if the declared reference and revision are
-   the pair it activated, nothing more happens — a new digest under the same revision is a new
-   declaration;
-2. fetches the declared reference — only a digest reference under `bundle.repository` — and
+1. checks that the active revision still answers under its own key (below); if the TSA no longer
+   holds it (three unanswered probes in a row: it restarted empty), it imports it again from its
+   cache; if the declared reference and revision are the active pair, nothing more happens;
+2. refuses a revision that was already imported as another reference (a revision names one bundle
+   for good), and a declaration that failed after import in the last 5 minutes;
+3. fetches the declared reference — only a digest reference under `bundle.repository` — and
    verifies its cosign signature by the trust root (the admission verifier's code,
    `internal/cosignverify`), then reads the manifest and its single bundle layer by digest;
-3. verifies the bundle (`internal/tsabundle`): exactly the two entries the TSA imports, the bundle
-   signature by the trust root, `metadata.json` first and naming the pod-local trust-root URL and
-   the configured policy, nothing beside `policy.rego` and `data.json` (no `data-config.json`, which
-   would make the TSA fetch data from wherever it names), and `data.bundle.revision` equal to the
-   declared revision;
-4. only then stops forwarding evaluations (they fail closed for the moment of the swap) and imports
-   it into the TSA, which checks the bundle signature again with the key it fetches from the sidecar
-   (`http://127.0.0.1:8080/trust-root.json`, the trust root as a JWK set);
-5. counts it active once an evaluation reports the declared revision, caches it as the last
-   verified bundle, forwards evaluations again and logs `bundle activated` with the reference, the
-   revision and the previous revision. If no evaluation reports that revision within 30 s — a
-   correctly signed bundle whose Rego does not answer with its own revision — it imports the cached
-   previous bundle again (`previous bundle restored`) before refusing. That declaration is not
-   imported again for 5 minutes, since each attempt stops evaluations for the swap.
+4. verifies the bundle (`internal/tsabundle`): exactly the two entries the TSA imports, the bundle
+   signature by the trust root, `metadata.json` first and naming the pod-local trust-root URL, the
+   configured policy and the declared revision as its version, nothing beside `policy.rego` and
+   `data.json` (no `data-config.json`, which would make the TSA fetch data from wherever it names),
+   and `data.bundle.revision` equal to the declared revision;
+5. only then imports it into the TSA, which checks the bundle signature again with the key it
+   fetches from the sidecar (`http://127.0.0.1:8080/trust-root.json`, the trust root as a JWK set);
+6. evaluates an empty input under the new revision's key; if the answer names the declared
+   revision, it switches the key it forwards evaluations to — the activation, one atomic step — and
+   logs `bundle activated` with the reference, the revision and the previous revision.
 
-Before importing, the sidecar waits for the evaluations it already forwarded to finish, and it
-imports again whenever the previous revision is still answering after 5 s. Both answer a race in the
-TSA (v1.1.4): it drops its policy cache asynchronously after an import, and an evaluation that read
-the old policy before the swap can put it back into the cache, where it stays until the next change.
-The proof on kind hit it once before this was added: the new revision did not answer for 30 s, the
-sidecar restored the previous one, and the next poll activated it. Evaluations fail closed for the
-length of a swap — seconds normally, up to 30 s for a bundle that never answers with its revision.
+Each revision is stored in the TSA under its own key, `/policy/policies/facis/guard/<revision>`,
+beside the active one; the adapters keep calling the configured path (`…/guard/1.0/evaluation`) and
+the sidecar forwards it to the active revision's key. Replacing a policy in place is avoided on
+purpose: the TSA (v1.1.4) drops its policy cache through a change notification that is lost when the
+import request ends first, so a replaced policy can keep answering indefinitely. The proof on kind
+showed it: with in-place replacement a refused candidate kept answering after the previous bundle
+had been imported again. With one key per revision a new key has no cache entry, and nothing that
+was not switched to is ever forwarded to.
 
-Any failure is logged as `bundle refused` with the reason and the revision still active. A bundle
-refused at steps 2 and 3 is never imported; one refused at step 5 is replaced by the previous one.
-The sidecar tries again at the next poll. The TSA replaces a policy under a lock and recompiles it on the next evaluation, so each
-decision is taken entirely under one revision, and it says which.
+Any failure is logged as `bundle refused` with the reason and the revision still active, and the
+active revision keeps serving throughout: a bundle refused before import never reaches the TSA, one
+refused after import (a correctly signed bundle whose Rego does not answer with its own revision)
+stays under its own key and is never forwarded to. Each decision is taken entirely under one
+revision, and says which.
 
 ### Rolling back
 
 Declare the previous reference and revision again (revert the declaring pull request) and sync. The
-previous bundle is verified like any other and activated without a restart. Bundles are never
+previous bundle is verified like any other, imported under its key again and switched to, without a
+restart. Bundles are never
 deleted from the registry, so every revision ever declared can be restored and audited. Which
 revision was active when is in Git (what was declared) and in the sidecar's and evaluator's logs
 (what was activated and used).
@@ -177,7 +176,7 @@ bundles published with `publish-tsa-bundle.sh` and an ephemeral key:
    (`m3-scope-withdrawn`, v2) and no pod was replaced or restarted;
 3. an unsigned bundle, one signed by another key, v2 with its policy altered after signing (with a
    valid artefact signature) and a correctly signed v4 whose Rego answers with revision v2 are each
-   refused; v2 stays active, and after the last it is restored;
+   refused, and v2 keeps serving;
 4. v1 is declared again: allowed under v1, still without a restart;
 5. every decision the evaluator answered is in its log with the same `rule_id` and
    `bundle_revision`.
