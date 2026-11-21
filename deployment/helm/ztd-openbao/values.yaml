@@ -56,8 +56,10 @@ openbao:
     extraLabels:
       spiffe.io/spire-managed-identity: "true"
     # affinity: the upstream default, a pod anti-affinity between server replicas; no node affinity.
-    # The Kubernetes auth method is not used yet (deferred with the ZT-11 signing flow), so the
-    # cluster-wide auth-delegator binding is not created.
+    # The cluster-wide auth-delegator binding (ClusterRoleBinding to system:auth-delegator for the
+    # server's ServiceAccount ztd-openbao) lets the server ask the API server's TokenReview about a
+    # login's service-account token. Required, and only rendered, with kubernetesAuth.enabled: the
+    # chart refuses the one without the other.
     authDelegator:
       enabled: false
     standalone:
@@ -81,6 +83,29 @@ openbao:
 # cause leaves the server sealed until scripts/secrets/unseal.sh is run (docs/secrets.md).
 bootstrap:
   image: docker.io/curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b
+
+# The Kubernetes auth method (docs/secrets.md#kubernetes-auth): workloads log in with a projected,
+# audience-bound service-account token instead of holding an OpenBao token. Off by default. With it
+# on (and openbao.server.authDelegator.enabled), the bootstrap enables auth/kubernetes/, points it at
+# the in-cluster API server (the server's own CA and rotating service-account token review the
+# logins), and writes one policy and one role per entry of roles, named after the entry: the role
+# admits only the named ServiceAccount of the named namespace, with a token for the named audience,
+# and issues a token with that policy alone (and OpenBao's default policy) that lives ttl. Under
+# Cilium the chart opens the server's lane to the kube-apiserver entity. The bootstrap configures
+# all this while it holds the root token, at the first install; a store configured earlier (root
+# revoked) refuses an upgrade that turns it on or changes its roles until an administrator has
+# applied it (docs/secrets.md#kubernetes-auth).
+kubernetesAuth:
+  enabled: false
+  roles: []
+  # - name: ztd-connector          # role and policy name
+  #   namespace: ztd-data          # the workload's namespace
+  #   serviceAccount: ztd-connector
+  #   audience: openbao            # the projected token's audience
+  #   ttl: 1h                      # token_ttl and token_max_ttl of the issued token
+  #   policy: |
+  #     path "transit/keys/connector-at" { capabilities = ["read"] }
+  #     path "transit/sign/connector-at" { capabilities = ["update"] }
 
 # An OpenBao the zone does not own, such as the one the XFSC ArgoCD deployment installs. When
 # `address` is set, openbao.server.enabled must be false: nothing is installed or initialised, and
