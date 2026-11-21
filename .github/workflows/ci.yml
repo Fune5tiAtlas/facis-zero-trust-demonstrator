@@ -138,6 +138,9 @@ jobs:
       - name: Test the enforcement check
         run: scripts/admission/enforced_test.sh
 
+      - name: Test the digest allow-list parsing
+        run: scripts/admission/allowed-digests_test.sh
+
       - name: Test the data-plane preflight
         run: scripts/admission/preflight-data-plane_test.sh
 

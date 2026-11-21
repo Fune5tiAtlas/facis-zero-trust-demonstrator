@@ -12,7 +12,12 @@
 #   [ALLOWED_DIGESTS="host/repository@sha256:<digest> ..."] [REGISTRY_AUTH_SECRET=<dockerconfigjson Secret>] \
 #   scripts/admission/install.sh
 #
-#   BIN=... RESTORE=1 [RESTORE_FROM=<file>] [GATEKEEPER_REPLICAS=n] [PROVIDER_REPLICAS=n] scripts/admission/install.sh
+#   BIN=... RESTORE=1 [RESTORE_FROM=<file>] [GATEKEEPER_REPLICAS=n] [PROVIDER_REPLICAS=n] [PREFLIGHT=1] scripts/admission/install.sh
+#
+# PREFLIGHT=1 checks that the install could run and changes nothing: the inputs, the Gatekeeper
+# archive against GATEKEEPER_CHART_SHA256 (scripts/tools/pins.env, checked on every run), and a
+# server-side dry run of the Gatekeeper release (with the webhook-scope post-renderer) and of the
+# provider release; the fault cases run it before they inject anything.
 #
 # RESTORE_FROM is a snapshot that admission_installed_provider wrote earlier (the fault cases take one
 # before they change anything); without it the settings are read when this runs.
@@ -46,6 +51,9 @@ cd "$root"
 : "${BIN:?set BIN}"
 chart="$BIN/gatekeeper-$GATEKEEPER_CHART_VERSION.tgz"
 [ -f "$chart" ] || { echo "Gatekeeper chart not found: $chart" >&2; exit 2; }
+chart_sha=$(if command -v sha256sum >/dev/null; then sha256sum "$chart"; else shasum -a 256 "$chart"; fi | cut -d' ' -f1)
+[ "$chart_sha" = "$GATEKEEPER_CHART_SHA256" ] ||
+  { echo "Gatekeeper chart $chart: digest $chart_sha is not the pinned $GATEKEEPER_CHART_SHA256" >&2; exit 2; }
 [ "${FROM_UMBRELLA:-}" != 1 ] || RESTORE=1
 # The provider's values, as a values file: as installed (RESTORE=1), or from the inputs.
 values_dir="$(mktemp -d)"
@@ -64,15 +72,31 @@ else
   : "${PROVIDER_IMAGE:?set PROVIDER_IMAGE}" "${TRUST_REPOSITORY:?set TRUST_REPOSITORY}" "${TRUST_KEY:?set TRUST_KEY}"
   case "$PROVIDER_IMAGE" in *@sha256:*) ;; *) echo "PROVIDER_IMAGE must be a digest reference" >&2; exit 2 ;; esac
   grep -qs "BEGIN PUBLIC KEY" "$TRUST_KEY" || { echo "TRUST_KEY is not a PEM public key file: $TRUST_KEY" >&2; exit 2; }
-  for d in ${ALLOWED_DIGESTS:-}; do
-    [[ "$d" =~ ^[a-z0-9.:-]+/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]] || { echo "ALLOWED_DIGESTS entry '$d' is not host/repository@sha256:<digest>" >&2; exit 2; }
-  done
+  allowed_json=$(admission_allowed_json "${ALLOWED_DIGESTS:-}") || exit 2
   jq -n --arg image "$PROVIDER_IMAGE" --argjson replicas "${PROVIDER_REPLICAS:-2}" --arg repository "$TRUST_REPOSITORY" \
-    --rawfile keys "$TRUST_KEY" --arg allowed "${ALLOWED_DIGESTS:-}" --arg plain "${PLAIN_HTTP_REGISTRY:-}" \
+    --rawfile keys "$TRUST_KEY" --argjson allowed "$allowed_json" --arg plain "${PLAIN_HTTP_REGISTRY:-}" \
     --arg auth "${REGISTRY_AUTH_SECRET:-}" '
     {replicas: $replicas, image: {repository: ($image | split("@")[0]), digest: ($image | split("@")[1])},
      insecurePlainHTTPRegistry: $plain, registryAuth: {secretName: $auth},
-     trust: {repositories: [$repository], publicKeys: $keys, allowedDigests: ($allowed | split(" ") | map(select(. != "")))}}' > "$provider_file"
+     trust: {repositories: [$repository], publicKeys: $keys, allowedDigests: $allowed}}' > "$provider_file"
+fi
+
+# The webhook-scope post-renderer is a Helm plugin; it lives in this run's own Helm directory.
+helm_home="$values_dir/helm"
+admission_helm_home "$helm_home"
+gatekeeper_values=(-f deployment/admission/gatekeeper-values.yaml --set replicas="${GATEKEEPER_REPLICAS:-2}"
+  --set image.release="${GATEKEEPER_IMAGE#*:}"
+  --set preInstall.crdRepository.image.repository="${GATEKEEPER_CRDS_IMAGE%%:*}"
+  --set preInstall.crdRepository.image.tag="${GATEKEEPER_CRDS_IMAGE#*:}"
+  --set postInstall.labelNamespace.image.tag="${GATEKEEPER_CRDS_IMAGE#*:}"
+  --set postUpgrade.labelNamespace.image.tag="${GATEKEEPER_CRDS_IMAGE#*:}"
+  --set postInstall.probeWebhook.enabled=false --post-renderer ztd-webhook-scope)
+
+if [ "${PREFLIGHT:-}" = 1 ]; then
+  helm upgrade --install gatekeeper "$chart" -n gatekeeper-system "${gatekeeper_values[@]}" --dry-run=server >/dev/null
+  helm upgrade --install admission deployment/helm/admission -n gatekeeper-system -f "$provider_file" --dry-run=server >/dev/null
+  echo "preflight: the Gatekeeper archive is the pinned one; Gatekeeper and the provider dry-run on the server"
+  exit 0
 fi
 
 # The rollback is resumable: with FROM_UMBRELLA=1 every release here adopts (--take-ownership) on
@@ -91,18 +115,7 @@ elif [ "$(admission_layout)" = umbrella ]; then
   exit 1
 fi
 
-# The webhook-scope post-renderer is a Helm plugin; it lives in this run's own Helm directory.
-helm_home="$values_dir/helm"
-admission_helm_home "$helm_home"
-
 echo "== Gatekeeper"
-gatekeeper_values=(-f deployment/admission/gatekeeper-values.yaml --set replicas="${GATEKEEPER_REPLICAS:-2}"
-  --set image.release="${GATEKEEPER_IMAGE#*:}"
-  --set preInstall.crdRepository.image.repository="${GATEKEEPER_CRDS_IMAGE%%:*}"
-  --set preInstall.crdRepository.image.tag="${GATEKEEPER_CRDS_IMAGE#*:}"
-  --set postInstall.labelNamespace.image.tag="${GATEKEEPER_CRDS_IMAGE#*:}"
-  --set postUpgrade.labelNamespace.image.tag="${GATEKEEPER_CRDS_IMAGE#*:}"
-  --set postInstall.probeWebhook.enabled=false --post-renderer ztd-webhook-scope)
 unpinned=$(helm template gatekeeper "$chart" -n gatekeeper-system "${gatekeeper_values[@]}" | grep -E '^\s*image:' | grep -v '@sha256:' || true)
 [ -z "$unpinned" ] || { echo "Gatekeeper images not pinned by digest:" >&2; echo "$unpinned" >&2; exit 1; }
 helm upgrade --install gatekeeper "$chart" -n gatekeeper-system --create-namespace "${gatekeeper_values[@]}" ${adopt[@]+"${adopt[@]}"} --wait --timeout 8m >/dev/null

@@ -75,6 +75,19 @@ admission_helm_home() {
   helm plugin install "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/deployment/admission/webhook-scope" >/dev/null
 }
 
+# admission_allowed_json <list>: the digest allow-list - entries separated by any whitespace (spaces,
+# tabs, newlines) - as a JSON array, each entry checked to be host/repository@sha256:<digest>; the
+# array printed is the one checked. Fails, naming the entry, on anything else.
+admission_allowed_json() {
+  local entries=() d
+  read -r -d '' -a entries <<<"${1:-}" || true
+  for d in ${entries[@]+"${entries[@]}"}; do
+    [[ "$d" =~ ^[a-z0-9.:-]+/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]] ||
+      { echo "ALLOWED_DIGESTS entry '$d' is not host/repository@sha256:<digest>" >&2; return 1; }
+  done
+  printf '%s\n' ${entries[@]+"${entries[@]}"} | jq -Rsc 'split("\n") | map(select(. != ""))'
+}
+
 # admission_installed_provider: the provider's settings as installed, read from its live objects in
 # either layout (and halfway through a rollback): image, replicas, request timeout, the plain-http
 # registry, registryAuth.secretName and the whole trust policy (repositories, publicKeys,
