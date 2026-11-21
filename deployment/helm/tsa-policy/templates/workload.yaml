@@ -78,6 +78,10 @@ spec:
       containers:
         - name: tsa
           image: "{{ .Values.images.tsa.repository }}@{{ .Values.images.tsa.digest }}"
+          # The TSA clones into ./temp and removes it again, so its working directory is a writable
+          # emptyDir rather than the image's /opt.
+          command: ["/opt/policy"]
+          workingDir: /work
           # Loopback only: import, lock, export and admin are never reachable from outside the pod.
           env:
             - {name: HTTP_HOST, value: "127.0.0.1"}
@@ -89,7 +93,7 @@ spec:
             - {name: OCM_ADDR, value: "http://127.0.0.1:9"}
             - {name: LOG_LEVEL, value: "info"}
           volumeMounts:
-            - {name: clone, mountPath: /opt/temp}
+            - {name: work, mountPath: /work}
             - {name: tmp, mountPath: /tmp}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
@@ -119,7 +123,7 @@ spec:
           configMap: {name: tsa-policy-bundle}
         - name: git
           emptyDir: {sizeLimit: 8Mi}
-        - name: clone
+        - name: work
           emptyDir: {sizeLimit: 8Mi}
         - name: tmp
           emptyDir: {sizeLimit: 32Mi}
