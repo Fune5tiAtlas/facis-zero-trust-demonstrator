@@ -126,9 +126,17 @@ about a minute), and the sidecar, polling every `bundle.pollSeconds`:
    (`http://127.0.0.1:8080/trust-root.json`, the trust root as a JWK set);
 5. counts it active once an evaluation reports the declared revision, caches it as the last
    verified bundle, forwards evaluations again and logs `bundle activated` with the reference, the
-   revision and the previous revision. If no evaluation reports that revision within 10 s — a
+   revision and the previous revision. If no evaluation reports that revision within 30 s — a
    correctly signed bundle whose Rego does not answer with its own revision — it imports the cached
    previous bundle again (`previous bundle restored`) before refusing.
+
+Before importing, the sidecar waits for the evaluations it already forwarded to finish, and it
+imports again whenever the previous revision is still answering after 5 s. Both answer a race in the
+TSA (v1.1.4): it drops its policy cache asynchronously after an import, and an evaluation that read
+the old policy before the swap can put it back into the cache, where it stays until the next change.
+The proof on kind hit it once before this was added: the new revision did not answer for 30 s, the
+sidecar restored the previous one, and the next poll activated it. Evaluations fail closed for the
+length of a swap — seconds normally, up to 30 s for a bundle that never answers with its revision.
 
 Any failure is logged as `bundle refused` with the reason and the revision still active. A bundle
 refused at steps 2 and 3 is never imported; one refused at step 5 is replaced by the previous one.
