@@ -320,14 +320,17 @@ check to its refusals.
 That a signing workflow refuses an unauthorised trigger cannot be asserted inside the protected job:
 a job the environment refuses never starts. `signing-environment-audit.yml` proves it from outside,
 started by hand: its `Environment audit` job (no secret; `contents: write` for a disposable branch,
-`actions: write` to dispatch, `checks: read` for annotations) creates `audit/env-probe-<run id>` at the
-current commit, or takes the `probe_ref` input, dispatches the same workflow on it in probe mode,
+`actions: write` to dispatch, `checks: read` for annotations) creates a branch it owns,
+`audit/env-probe-<run id>-<attempt>`, at the current commit, or takes the `probe_ref` input, dispatches the same workflow on it in probe mode,
 waits for that run and decides with `scripts/supplychain/env-audit.sh`: **refused** when the
 `Environment probe` job — which names the `release` environment and holds nothing — failed with
-GitHub's "not allowed to deploy" annotation before any step ran; **admitted** when a step ran;
+GitHub's "not allowed to deploy" annotation — read from the job's check run, `check_run_url` — before
+any step ran; **admitted** when a step ran;
 **inconclusive** otherwise (for example, the job waiting for a reviewer). Only *refused* passes. The
-record, `env-audit.json`, is the run's artefact and is the evidence for FZTD-57; the disposable
-branch is deleted. An allowlisted ref (`main`, `candidate/*`, `v*`) is refused as a probe.
+record, `env-audit.json`, is the run's artefact and is the evidence for FZTD-57. Annotations that
+cannot be read fail the audit. The owned branch's deletion is armed before the branch is created,
+retried, and counts a branch already gone as deleted; a branch it cannot delete fails the audit, so
+none is left behind silently. A `probe_ref` given by hand is never deleted. An allowlisted ref (`main`, `candidate/*`, `v*`) is refused as a probe.
 
 Activation: apply the environment allowlist ([Release tags and the release environment](#release-tags-and-the-release-environment)),
 then run the workflow from `main` and keep the artefact. Two points are *inferred, not yet observed*:
