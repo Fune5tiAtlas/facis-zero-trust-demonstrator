@@ -123,15 +123,27 @@ gatekeeper=deploy/gatekeeper-controller-manager
 provider_replicas=$(admin -n gatekeeper-system get "$provider" -o jsonpath='{.spec.replicas}')
 gatekeeper_replicas=$(admin -n gatekeeper-system get "$gatekeeper" -o jsonpath='{.spec.replicas}')
 [ -n "$provider_replicas" ] && [ -n "$gatekeeper_replicas" ] || { echo "admission path not installed" >&2; exit 1; }
+# The installed digest allow-list (the provider's trust policy and the ztd-allowed-repositories
+# constraint must hold the same one), passed to every reinstall so a restore never drops it; the
+# installed list wins over any ALLOWED_DIGESTS in the environment.
+allowed_provider=$(admin -n gatekeeper-system get configmap ztd-admission-provider-trust -o jsonpath='{.data.policy\.json}' | jq -r '.allowedDigests // [] | sort | join(" ")')
+allowed_constraint=$(admin get k8sztdallowedrepositories ztd-allowed-repositories -o json | jq -r '.spec.parameters.allowedDigests // [] | sort | join(" ")')
+[ "$allowed_provider" = "$allowed_constraint" ] ||
+  { echo "allowedDigests differ: provider [$allowed_provider], constraint [$allowed_constraint]; reinstall first" >&2; exit 1; }
 other="$(mktemp)"
-# install.sh, or the umbrella release upgraded with its own values, with the recorded replica counts,
-# so a restore never changes them.
+# install.sh, or the umbrella release upgraded with its own values, with the recorded replica counts
+# and allow-list, so a restore never changes them. In the umbrella layout the allow-list is the
+# provider's trust.allowedDigests, from which the release renders the constraint's too (where it
+# owns the constraint; where Argo CD does, the constraint is Argo CD's and left alone).
 reinstall() {
   if [ "$layout" = standalone ]; then
-    KUBECONFIG="$ADMIN_KUBECONFIG" GATEKEEPER_REPLICAS="$gatekeeper_replicas" PROVIDER_REPLICAS="$provider_replicas" scripts/admission/install.sh
+    KUBECONFIG="$ADMIN_KUBECONFIG" GATEKEEPER_REPLICAS="$gatekeeper_replicas" PROVIDER_REPLICAS="$provider_replicas" \
+      ALLOWED_DIGESTS="$allowed_provider" scripts/admission/install.sh
   else
     KUBECONFIG="$ADMIN_KUBECONFIG" admission_umbrella_upgrade --set gatekeeper.replicas="$gatekeeper_replicas" \
-      --set admissionProvider.replicas="$provider_replicas" --wait --timeout 8m &&
+      --set admissionProvider.replicas="$provider_replicas" \
+      --set-json "admissionProvider.trust.allowedDigests=$(jq -Rc 'split(" ") | map(select(. != ""))' <<<"$allowed_provider")" \
+      --wait --timeout 8m &&
       KUBECONFIG="$ADMIN_KUBECONFIG" admission_wait_enforced
   fi
 }

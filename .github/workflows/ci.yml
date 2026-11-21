@@ -138,6 +138,9 @@ jobs:
       - name: Test the enforcement check
         run: scripts/admission/enforced_test.sh
 
+      - name: Test the data-plane preflight
+        run: scripts/admission/preflight-data-plane_test.sh
+
   # The trust-framework DNS inspector against local NSD servers that each break one thing it must
   # catch (a wrong DS digest, an unsigned server, a diverging NS set, a resolver without the URI),
   # and through a signed parent zone and a validating Unbound for the delegation path. The servers
@@ -328,6 +331,16 @@ jobs:
           if helm template deployment/helm/ztd -f deployment/helm/ztd/ci/values.yaml --set-string 'planes.namespaceLabels.facis\.ztd/admission-proof=true' >/dev/null 2>&1; then
             echo "planes.namespaceLabels accepted the admission label" >&2; exit 1
           fi
+          # With the opt-in on, a data-plane namespace that is a system namespace, the management
+          # namespace or an extra plane namespace is refused before anything renders.
+          for data in kube-system gatekeeper-system istio-system spire-system ztd-mgmt ztd-data-2; do
+            if helm template deployment/helm/ztd -f deployment/helm/ztd/ci/values.yaml --set-json "$extra" \
+                --set admission.enforceDataPlane=true --set planes.data.namespace=$data >/dev/null 2>"$RUNNER_TEMP/err"; then
+              echo "enforceDataPlane rendered with planes.data.namespace=$data" >&2; exit 1
+            fi
+            grep -q 'admission.enforceDataPlane: planes.data.namespace' "$RUNNER_TEMP/err" ||
+              { echo "planes.data.namespace=$data refused for another reason:" >&2; cat "$RUNNER_TEMP/err" >&2; exit 1; }
+          done
 
       # The umbrella's admission release, rendered the way the zone installer installs it: the kind
       # zone with admission.install and the provider settings of ci/admission-values.yaml. Release
