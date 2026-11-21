@@ -144,11 +144,17 @@ func (g *Guard) Evaluate(ctx context.Context, req Request) Outcome {
 	if err == nil {
 		err = dec.Validate()
 	}
-	if err != nil {
-		return g.refuse(id, Refusal{Error: "policy_unavailable", ReasonCode: ReasonPDPUnavailable}, err.Error())
+	// The v2 decision fields: who asked for what, and once policy answered, under which rule and bundle.
+	seen := EventPayload{CallerSPIFFEID: source, Resource: method + " " + g.cfg.PublishedBaseURL + path}
+	if in.Token.Present {
+		seen.TokenSubject = in.Token.Sub
 	}
+	if err != nil {
+		return g.refuse(id, Refusal{Error: "policy_unavailable", ReasonCode: ReasonPDPUnavailable}, err.Error(), seen)
+	}
+	seen.RuleID, seen.BundleRevision = dec.RuleID, dec.BundleRevision
 	if !dec.Allow {
-		return g.refuse(id, Refusal{Error: dec.DenyBody.Error, ReasonCode: dec.ReasonCode, RuleID: dec.RuleID, OID4VPLink: dec.DenyBody.OID4VPLink}, "")
+		return g.refuse(id, Refusal{Error: dec.DenyBody.Error, ReasonCode: dec.ReasonCode, RuleID: dec.RuleID, OID4VPLink: dec.DenyBody.OID4VPLink}, "", seen)
 	}
 
 	set := []Header{{HeaderRequestID, id}}
@@ -166,20 +172,21 @@ func (g *Guard) Evaluate(ctx context.Context, req Request) Outcome {
 		if err != nil {
 			var refusal *RefusalError
 			if errors.As(err, &refusal) {
-				return g.refuse(id, Refusal{Error: "substitution_refused", ReasonCode: refusal.ReasonCode}, err.Error())
+				return g.refuse(id, Refusal{Error: "substitution_refused", ReasonCode: refusal.ReasonCode}, err.Error(), seen)
 			}
-			return g.refuse(id, Refusal{Error: "token_store_unavailable", ReasonCode: ReasonTokenStoreUnavailable}, err.Error())
+			return g.refuse(id, Refusal{Error: "token_store_unavailable", ReasonCode: ReasonTokenStoreUnavailable}, err.Error(), seen)
 		}
 		set = append(set, Header{"Authorization", sub.Authorization}, Header{"DPoP", sub.DPoP})
 	} else {
 		remove = append(remove, "Authorization", "DPoP")
 	}
-	g.emit(id, EventPayload{State: "allowed", RuleID: dec.RuleID})
+	seen.State = "allowed"
+	g.emit(id, seen)
 	return Outcome{Allowed: true, CorrelationID: id, RuleID: dec.RuleID, SetHeaders: sortHeaders(set), RemoveHeaders: sortNames(remove)}
 }
 
-// refuse builds the refusal the caller receives and records the denial.
-func (g *Guard) refuse(id string, r Refusal, detail string) Outcome {
+// refuse builds the refusal the caller receives and records the denial with what was seen.
+func (g *Guard) refuse(id string, r Refusal, detail string, seen EventPayload) Outcome {
 	body, err := json.Marshal(r)
 	if err != nil { // a Refusal holds strings only
 		panic(err)
@@ -187,7 +194,8 @@ func (g *Guard) refuse(id string, r Refusal, detail string) Outcome {
 	if len(detail) > 512 {
 		detail = detail[:512]
 	}
-	g.emit(id, EventPayload{State: "denied", ReasonCode: r.ReasonCode, RuleID: r.RuleID, Detail: detail})
+	seen.State, seen.ReasonCode, seen.RuleID, seen.Detail = "denied", r.ReasonCode, r.RuleID, detail
+	g.emit(id, seen)
 	return Outcome{
 		Allowed: false, CorrelationID: id, Status: StatusFor(r.ReasonCode), ReasonCode: r.ReasonCode, RuleID: r.RuleID,
 		SetHeaders: sortHeaders([]Header{{"Content-Type", ContentTypeJSON}, {HeaderReasonCode, r.ReasonCode}, {HeaderRequestID, id}}),
@@ -222,9 +230,11 @@ func sortNames(names []string) []string {
 	return out
 }
 
-// Event is one security-state event (docs/contracts/if01-event.v1.schema.json), written as a
-// JSON log line. The guard emits a decision event per request; it carries no token.
+// Event is one security-state event (docs/contracts/if01-event.v1.schema.json, or v2 when
+// Version is 2), written as a JSON log line. The guard emits a decision event per request; it
+// carries no token.
 type Event struct {
+	Version       int          `json:"version,omitempty"`
 	RunID         string       `json:"run_id"`
 	Seq           uint64       `json:"seq"`
 	TS            string       `json:"ts"`
@@ -234,12 +244,31 @@ type Event struct {
 	Payload       EventPayload `json:"payload"`
 }
 
-// EventPayload is the state a decision event reports.
+// EventPayload is the state a decision event reports. The members after Detail are the v2
+// decision fields (docs/contracts/if01-event.v2.schema.json); a v1 sink drops them.
 type EventPayload struct {
-	State      string `json:"state"`
-	ReasonCode string `json:"reason_code,omitempty"`
-	RuleID     string `json:"rule_id,omitempty"`
-	Detail     string `json:"detail,omitempty"`
+	State          string `json:"state"`
+	ReasonCode     string `json:"reason_code,omitempty"`
+	RuleID         string `json:"rule_id,omitempty"`
+	Detail         string `json:"detail,omitempty"`
+	CallerSPIFFEID string `json:"caller_spiffe_id,omitempty"`
+	TokenSubject   string `json:"token_subject,omitempty"`
+	Resource       string `json:"resource,omitempty"`
+	BundleRevision string `json:"bundle_revision,omitempty"`
+}
+
+// NotEvaluated is the v2 value of a decision field the request never reached: refused before
+// authentication, before policy, or with no caller identity.
+const NotEvaluated = "not_evaluated"
+
+// v2 returns p with every unset decision field written as NotEvaluated.
+func (p EventPayload) v2() EventPayload {
+	for _, f := range []*string{&p.CallerSPIFFEID, &p.TokenSubject, &p.RuleID, &p.BundleRevision} {
+		if *f == "" {
+			*f = NotEvaluated
+		}
+	}
+	return p
 }
 
 // EventSink receives the guard's decision events.
@@ -249,24 +278,39 @@ type EventSink interface {
 
 // LogSink writes decision events as JSON lines, one per call, numbered per source.
 type LogSink struct {
-	mu     sync.Mutex
-	w      io.Writer
-	source string
-	runID  string
-	seq    uint64
+	mu      sync.Mutex
+	w       io.Writer
+	source  string
+	runID   string
+	seq     uint64
+	version int
 }
 
-// NewLogSink returns a sink writing to w for the given source (for example guard-a) and run.
+// NewLogSink returns a sink writing v1 events to w for the given source (for example guard-a) and run.
 func NewLogSink(w io.Writer, source, runID string) *LogSink {
-	return &LogSink{w: w, source: source, runID: runID}
+	return &LogSink{w: w, source: source, runID: runID, version: 1}
+}
+
+// NewLogSinkV2 returns a sink writing v2 events: every decision field present, NotEvaluated where
+// the request never reached it.
+func NewLogSinkV2(w io.Writer, source, runID string) *LogSink {
+	return &LogSink{w: w, source: source, runID: runID, version: 2}
 }
 
 // Emit implements EventSink.
 func (s *LogSink) Emit(correlationID string, p EventPayload) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.version == 2 {
+		p = p.v2()
+	} else {
+		p = EventPayload{State: p.State, ReasonCode: p.ReasonCode, RuleID: p.RuleID, Detail: p.Detail}
+	}
 	e := Event{RunID: s.runID, Seq: s.seq, TS: time.Now().UTC().Format(time.RFC3339Nano), Source: s.source,
 		Kind: "decision", CorrelationID: correlationID, Payload: p}
+	if s.version == 2 {
+		e.Version = 2
+	}
 	s.seq++
 	if b, err := json.Marshal(e); err == nil {
 		_, _ = s.w.Write(append(b, '\n'))

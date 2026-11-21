@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -16,7 +17,7 @@ import (
 )
 
 func testConfig(endpoint string) Config {
-	return Config{Issuer: "https://issuer.example", JWKSURL: endpoint + "/jwks", InboundAudience: "guard", UpstreamAudience: "resource", PublishedBaseURL: "https://resource.example", PeerZone: "test", PolicyURL: endpoint, StoreURL: endpoint, AllowedCallers: []string{"spiffe://test/ns/demo/sa/participant"}, ScopeTenants: map[string]string{"report:read": "read", "report:summary": "summary"}}
+	return Config{Issuer: "https://issuer.example", JWKSURL: endpoint + "/jwks", InboundAudience: "guard", UpstreamAudience: "resource", PublishedBaseURL: "https://resource.example", PeerZone: "test", PolicyURL: endpoint, StoreURL: endpoint, AllowedCallers: []string{"spiffe://test/ns/demo/sa/participant"}, ScopeTenants: map[string]string{"report:read": "read", "report:summary": "summary"}, EventSource: "guard-b"}
 }
 
 func TestNewRejectsInvalidConfiguration(t *testing.T) {
@@ -34,9 +35,9 @@ func TestHostAndRouteRefusedBeforeDependencies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct{ method, path, host, reason string }{{"POST", "/demo", "foreign.example", "host_denied"}, {"POST", "/other", "resource.example", "route_denied"}, {"GET", "/demo", "resource.example", "route_denied"}} {
+	for _, tc := range []struct{ method, path, host, reason string }{{"POST", "/demo", "foreign.example", "POL-RULE-DENY"}, {"POST", "/other", "resource.example", "POL-RULE-DENY"}, {"GET", "/demo", "resource.example", "POL-RULE-DENY"}} {
 		got := r.Evaluate(t.Context(), hook.Request{Method: tc.method, Path: tc.path, Host: tc.host, Headers: http.Header{}})
-		if got.Allowed || got.Status != 403 || got.ReasonCode != tc.reason {
+		if got.Allowed || got.Status != 403 || got.ReasonCode != tc.reason || got.RuleID != guardRule {
 			t.Fatalf("unexpected refusal: %s/%d", got.ReasonCode, got.Status)
 		}
 	}
@@ -147,13 +148,54 @@ func TestHostCaseAndPortBoundaries(t *testing.T) {
 		}
 		for _, host := range []string{authority, strings.ToUpper(authority), "resource.example:443", "resource.example:9090", "foreign.example"} {
 			got := r.Evaluate(t.Context(), hook.Request{Method: "POST", Path: "/demo", Host: host, Headers: http.Header{}})
-			want := "host_denied"
+			want := "POL-RULE-DENY"
 			if strings.EqualFold(host, authority) {
-				want = "mesh_caller_denied"
+				want = "MESH-PAIR-DENIED"
 			}
 			if got.ReasonCode != want {
 				t.Fatalf("host variant reason %s, want %s", got.ReasonCode, want)
 			}
+		}
+	}
+}
+
+// TestRefusalsUseTheRegistry keeps every guard refusal on a registered code with the registry's
+// status (a family without an HTTP status of its own, MESH, answers 403).
+func TestRefusalsUseTheRegistry(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/contracts/reason-codes.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reg struct {
+		Families map[string]struct {
+			HTTP  *int `json:"http"`
+			Codes map[string]struct {
+				HTTP *int `json:"http"`
+			} `json:"codes"`
+		} `json:"families"`
+	}
+	if err := json.Unmarshal(raw, &reg); err != nil {
+		t.Fatal(err)
+	}
+	for runtimeCode, entry := range registry {
+		family, ok := reg.Families[strings.SplitN(entry.code, "-", 2)[0]]
+		code, registered := family.Codes[entry.code]
+		if !ok || !registered {
+			t.Fatalf("%s maps to unregistered %s", runtimeCode, entry.code)
+		}
+		want := http.StatusForbidden
+		if code.HTTP != nil {
+			want = *code.HTTP
+		} else if family.HTTP != nil {
+			want = *family.HTTP
+		}
+		if entry.status != want {
+			t.Fatalf("%s: %s answers %d, registry %d", runtimeCode, entry.code, entry.status, want)
+		}
+	}
+	for _, code := range []string{"token_absent", "proof_absent", "token_malformed", "signature_invalid", "token_expired", "issuer_mismatch", "audience_mismatch", "scope_insufficient", "key_binding_mismatch", "proof_invalid", "proof_replayed", "key_set_unavailable", "request_invalid", "replay_unavailable", "unclassified"} {
+		if _, ok := registry[code]; !ok {
+			t.Fatalf("verifier code %s unmapped", code)
 		}
 	}
 }

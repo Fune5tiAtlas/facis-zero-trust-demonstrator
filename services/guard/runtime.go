@@ -36,6 +36,8 @@ type Config struct {
 	PolicyURL        string            `json:"policy_url"`
 	StoreURL         string            `json:"store_url"`
 	AllowedCallers   []string          `json:"allowed_callers"`
+	// EventSource names this guard on the IF-01 feed: guard-a or guard-b.
+	EventSource string `json:"event_source"`
 }
 
 type Runtime struct {
@@ -58,6 +60,9 @@ func New(cfg Config, events hook.EventSink) (*Runtime, error) {
 			return nil, errors.New("guard requires configured base URLs")
 		}
 	}
+	if cfg.EventSource != "guard-a" && cfg.EventSource != "guard-b" {
+		return nil, errors.New("guard requires event_source guard-a or guard-b")
+	}
 	if cfg.PeerZone == "" || len(cfg.AllowedCallers) == 0 || cfg.ScopeTenants["report:read"] == "" || cfg.ScopeTenants["report:summary"] == "" || cfg.ScopeTenants["report:read"] == cfg.ScopeTenants["report:summary"] {
 		return nil, errors.New("guard requires peer zone and allowed mesh callers")
 	}
@@ -77,21 +82,74 @@ func New(cfg Config, events hook.EventSink) (*Runtime, error) {
 	return &Runtime{cfg: cfg, verifier: verifier, callers: callers, clients: clients, events: events}, nil
 }
 
+// resource is the v2 event's resource: the method and the configured target, never the caller's
+// Host, bounded and without whitespace.
+func resource(method, base, path string) string {
+	method = strings.ToUpper(method)
+	if len(method) < 3 || len(method) > 7 || strings.IndexFunc(method, func(c rune) bool { return c < 'A' || c > 'Z' }) >= 0 {
+		method = "UNKNOWN"
+	}
+	target := base + path
+	if len(target) > 512 || strings.IndexFunc(target, unicode.IsSpace) >= 0 {
+		target = base + "/"
+	}
+	return method + " " + target
+}
+
 // verifiedClaims is constructed only after the cryptographic verifier succeeds for this request.
 type verifiedClaims struct{ token hook.Token }
 
 func (v verifiedClaims) Authenticate(string, string) hook.Token { return v.token }
 
-func (r *Runtime) refuse(reason string, status int) hook.Outcome {
+// registry maps the guard's own refusals (before policy) to the reason-code registry
+// (docs/contracts/reason-codes.json) and the status the registry gives the code. The runtime
+// code stays in the decision event's detail, so two causes under one code remain distinguishable.
+var registry = map[string]struct {
+	code   string
+	status int
+}{
+	"route_denied":         {hook.ReasonRuleDeny, http.StatusForbidden},
+	"host_denied":          {hook.ReasonRuleDeny, http.StatusForbidden},
+	"mesh_caller_denied":   {"MESH-PAIR-DENIED", http.StatusForbidden},
+	"token_absent":         {"TOK-MISSING", http.StatusUnauthorized},
+	"token_malformed":      {"TOK-INVALID", http.StatusUnauthorized},
+	"signature_invalid":    {"TOK-INVALID", http.StatusUnauthorized},
+	"issuer_mismatch":      {"TOK-INVALID", http.StatusUnauthorized},
+	"audience_mismatch":    {"TOK-INVALID", http.StatusUnauthorized},
+	"token_expired":        {"TOK-EXPIRED", http.StatusUnauthorized},
+	"proof_absent":         {"TOK-PROOF-INVALID", http.StatusUnauthorized},
+	"proof_invalid":        {"TOK-PROOF-INVALID", http.StatusUnauthorized},
+	"key_binding_mismatch": {"TOK-JKT-MISMATCH", http.StatusUnauthorized},
+	"proof_replayed":       {"TOK-REPLAY", http.StatusUnauthorized},
+	"scope_insufficient":   {"TOK-SCOPE", http.StatusForbidden},
+	"request_invalid":      {"TOK-REQUEST-INVALID", http.StatusBadRequest},
+	"replay_unavailable":   {hook.ReasonTokenStoreUnavailable, http.StatusServiceUnavailable},
+	"key_set_unavailable":  {"TOK-SERVER-ERROR", http.StatusInternalServerError},
+	"unclassified":         {"TOK-SERVER-ERROR", http.StatusInternalServerError},
+}
+
+// guardRule names the guard's own route allow-list when it refuses a route or host.
+const guardRule = "guard-route-allowlist"
+
+func (r *Runtime) refuse(runtimeCode string, seen hook.EventPayload) hook.Outcome {
+	entry, ok := registry[runtimeCode]
+	if !ok {
+		entry = registry["unclassified"]
+	}
 	var raw [16]byte
 	_, _ = rand.Read(raw[:])
 	id := hex.EncodeToString(raw[:])
-	if r.events != nil {
-		r.events.Emit(id, hook.EventPayload{State: "denied", ReasonCode: reason})
+	refusal := hook.Refusal{Error: "request_refused", ReasonCode: entry.code}
+	if entry.code == hook.ReasonRuleDeny {
+		refusal.RuleID = guardRule
 	}
-	body, _ := json.Marshal(map[string]string{"error": "request_refused", "reason_code": reason})
-	return hook.Outcome{CorrelationID: id, Status: status, ReasonCode: reason, Body: body,
-		SetHeaders: []hook.Header{{Name: "content-type", Value: "application/json"}, {Name: hook.HeaderRequestID, Value: id}}}
+	if r.events != nil {
+		seen.State, seen.ReasonCode, seen.RuleID, seen.Detail = "denied", entry.code, refusal.RuleID, runtimeCode
+		r.events.Emit(id, seen)
+	}
+	body, _ := json.Marshal(refusal)
+	return hook.Outcome{CorrelationID: id, Status: entry.status, ReasonCode: entry.code, RuleID: refusal.RuleID, Body: body,
+		SetHeaders: []hook.Header{{Name: "content-type", Value: "application/json"}, {Name: hook.HeaderReasonCode, Value: entry.code}, {Name: hook.HeaderRequestID, Value: id}}}
 }
 
 // Evaluate validates the incoming proof before policy or substitution, so replay cannot be hidden
@@ -99,29 +157,28 @@ func (r *Runtime) refuse(reason string, status int) hook.Outcome {
 func (r *Runtime) Evaluate(ctx context.Context, in hook.Request) hook.Outcome {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
+	path, _, _ := strings.Cut(in.Path, "?")
+	seen := hook.EventPayload{Resource: resource(in.Method, r.cfg.PublishedBaseURL, path)}
 	if in.Method != http.MethodPost || in.Path != "/demo" {
-		return r.refuse("route_denied", http.StatusForbidden)
+		return r.refuse("route_denied", seen)
 	}
 	target, _ := url.Parse(r.cfg.PublishedBaseURL)
 	if !strings.EqualFold(in.Host, target.Host) {
-		return r.refuse("host_denied", http.StatusForbidden)
+		return r.refuse("host_denied", seen)
 	}
 	req, err := http.NewRequestWithContext(ctx, in.Method, r.cfg.PublishedBaseURL+"/demo", nil)
 	if err != nil {
-		return r.refuse("route_denied", http.StatusForbidden)
+		return r.refuse("route_denied", seen)
 	}
 	req.Header = in.Headers.Clone()
 	peer, err := r.callers.Authenticate(req)
 	if err != nil {
-		return r.refuse("mesh_caller_denied", http.StatusForbidden)
+		return r.refuse("mesh_caller_denied", seen)
 	}
+	seen.CallerSPIFFEID = peer.SPIFFEID
 	id, err := r.verifier.Verify(req)
 	if err != nil {
-		status := http.StatusUnauthorized
-		if errors.Is(err, tokenverify.ErrKeySetUnavailable) || tokenverify.ReasonCode(err) == "replay_unavailable" {
-			status = http.StatusServiceUnavailable
-		}
-		return r.refuse(tokenverify.ReasonCode(err), status)
+		return r.refuse(tokenverify.ReasonCode(err), seen)
 	}
 	in.Scheme = target.Scheme
 	in.Host = target.Host // canonical configured authority for the policy input
