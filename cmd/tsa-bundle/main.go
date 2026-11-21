@@ -21,7 +21,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/signal"
@@ -125,6 +124,7 @@ type config struct {
 	PlainHTTP  []string              `json:"plain_http_registries"`
 	PollSecs   int                   `json:"poll_seconds"`
 	Policy     tsabundle.Coordinates `json:"policy"`
+	StateDir   string                `json:"state_dir"`
 }
 
 func readJSON(path string, v any) error {
@@ -150,7 +150,7 @@ func serve(args []string) error {
 		return err
 	}
 	tsa, err := url.Parse(cfg.TSAURL)
-	if err != nil || tsa.Host == "" || cfg.Repository == "" || cfg.PollSecs < 1 || cfg.Policy.Validate() != nil {
+	if err != nil || tsa.Host == "" || cfg.Repository == "" || cfg.PollSecs < 1 || cfg.StateDir == "" || cfg.Policy.Validate() != nil {
 		return errors.New("configuration incomplete")
 	}
 	pemData, err := os.ReadFile(cfg.TrustRoot)
@@ -163,11 +163,10 @@ func serve(args []string) error {
 	}
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("component", "tsa-bundle")
 	client := &http.Client{Timeout: 10 * time.Second}
-	s := &tsabundle.Syncer{TSA: strings.TrimRight(cfg.TSAURL, "/"), Policy: cfg.Policy, Key: key, HTTP: client, Log: log,
+	s := &tsabundle.Syncer{TSA: strings.TrimRight(cfg.TSAURL, "/"), Policy: cfg.Policy, Key: key, HTTP: client, Log: log, Dir: cfg.StateDir,
 		Fetch: tsabundle.RegistryFetch(ociclient.New(ociclient.Options{HTTPClient: client, PlainHTTP: cfg.PlainHTTP}), key, cfg.Repository)}
 
 	evaluation := cfg.Policy.EvaluationPath()
-	proxy := &httputil.ReverseProxy{Rewrite: func(r *httputil.ProxyRequest) { r.SetURL(tsa) }}
 	jwks := tsabundle.JWKS(key)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -184,16 +183,7 @@ func serve(args []string) error {
 	})
 	// Only the policy's evaluation leaves the pod, forwarded to the active revision's key; import,
 	// lock, export and admin stay on loopback.
-	mux.HandleFunc("POST "+evaluation, func(w http.ResponseWriter, r *http.Request) {
-		path := s.EvaluationPath()
-		if path == "" {
-			http.Error(w, "no verified policy bundle is active", http.StatusServiceUnavailable)
-			return
-		}
-		r.URL.Path, r.URL.RawPath = path, ""
-		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
-		proxy.ServeHTTP(w, r)
-	})
+	mux.Handle("POST "+evaluation, s.Gate())
 	server := &http.Server{Addr: ":8080", Handler: mux, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 10 * time.Second}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -201,19 +191,19 @@ func serve(args []string) error {
 	failed := make(chan error, 1)
 	go func() { failed <- server.ListenAndServe() }()
 	go func() {
-		for {
-			var d tsabundle.Desired
-			if err := readJSON(cfg.Desired, &d); err != nil {
-				log.Error("desired bundle unreadable", "reason", err.Error(), "active_revision", s.Active())
-			} else {
-				_ = s.Reconcile(ctx, d)
-			}
+		// The ledger survives a restart of this container; until the TSA answers there is nothing to do.
+		for err := s.Open(ctx); err != nil; err = s.Open(ctx) {
+			log.Error("ledger not opened", "reason", err.Error())
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(time.Duration(cfg.PollSecs) * time.Second):
+			case <-time.After(2 * time.Second):
 			}
 		}
+		s.Run(ctx, time.Duration(cfg.PollSecs)*time.Second, func() (tsabundle.Desired, error) {
+			var d tsabundle.Desired
+			return d, readJSON(cfg.Desired, &d)
+		})
 	}()
 	select {
 	case <-ctx.Done():
