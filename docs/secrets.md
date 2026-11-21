@@ -27,7 +27,7 @@ The IONOS cluster, which runs the visualization only, does not.
 | Namespace | the management plane (`ztd-mgmt`, the umbrella's `planes.management.namespace`) |
 | Names | StatefulSet `ztd-openbao`, pod `ztd-openbao-0`, Services `ztd-openbao` and `ztd-openbao-internal`, ServiceAccount `ztd-openbao` |
 | Engines | KV version 2 at `secret/`, transit at `transit/` |
-| Not used | the agent injector, the Kubernetes auth method and its cluster-wide auth-delegator binding (they come with the ZT-11 signing flow), high availability |
+| Not used | the agent injector, high availability; the Kubernetes auth method and its cluster-wide auth-delegator binding only with `kubernetesAuth.enabled` ([Kubernetes auth](#kubernetes-auth)) |
 
 The chart version and the server version are different numbers: 0.28.3 is the upstream Helm chart, v2.5.4
 the OpenBao it ships. The OpenBao 2.7.0 image in `scripts/tools/pins.env` is a separate pin, used only by
@@ -150,6 +150,73 @@ next run replaces it, so its log can be collected (`kubectl -n ztd-mgmt logs job
 **Token expiry.** If the verification token expires, the hook fails. Recovery: generate a root token
 with the unseal key (`bao operator generate-root`), issue a new periodic token with the `ztd-verify`
 policy, write it to the Secret's `verify-token`, and revoke the root token again.
+
+### Kubernetes auth
+
+The connector and the token store sign with transit and the store keeps its upstream tokens in KV,
+so each needs an OpenBao token. Until M3 that token was issued by an administrator as a scoped,
+periodic token with a hard ceiling (168 hours) and mounted from a Secret; renewal could not pass the
+ceiling, and when the pair expired on zone B (18 November 2026) the guarded path stayed down until
+the tokens were reissued. With the Kubernetes auth method no OpenBao token is stored anywhere: each
+service logs in with its own service-account identity and gets a short-lived token.
+
+**The server side** (`ztd-openbao`, `kubernetesAuth`, off by default). With
+`kubernetesAuth.enabled` and `openbao.server.authDelegator.enabled` (the chart refuses one without the
+other) the release binds the server's ServiceAccount `ztd-openbao` to `system:auth-delegator`, so the
+server may create TokenReviews; under Cilium it opens the server's lane to the `kube-apiserver`
+entity (`CiliumNetworkPolicy ztd-openbao-kube-api`); with another CNI the umbrella's
+`networkPolicy.kubeApi` lane must be open, and the server needs DNS for `kubernetes.default.svc`. The
+bootstrap, while it holds the root token (the first install, `state=initialized`), enables
+`auth/kubernetes/`, sets `kubernetes_host` to `https://kubernetes.default.svc` (the server then uses
+its own pod's CA and its own rotating service-account token to review logins, rereading the token)
+and writes, per entry of `kubernetesAuth.roles`, a policy and a role of the entry's name: the role
+admits only the named ServiceAccount (`bound_service_account_names`) of the named namespace
+(`bound_service_account_namespaces`) presenting a token for the named `audience`, and issues a token
+with that policy (and OpenBao's `default`) whose `token_ttl` and `token_max_ttl` are the entry's
+`ttl`. The policies are the services' least-privilege ones, the same paths the scoped tokens had
+([Token store: key custody](token-store.md#key-custody)). The bootstrap records the hash of what it
+applied in the Secret key `kubernetes-auth`.
+
+**A store configured earlier.** Once the root token is revoked the bootstrap cannot change auth
+methods, policies or roles. An upgrade that turns `kubernetesAuth` on, or changes a role, therefore
+fails the bootstrap Job with `the Kubernetes auth configuration is not applied to this store` rather
+than leaving the roles silently unapplied. An administrator applies the same configuration with a
+token that may (`sys/auth/kubernetes`, `auth/kubernetes/config`, `auth/kubernetes/role/<name>`,
+`sys/policies/acl/<name>`): the bodies are the ConfigMap `ztd-openbao-bootstrap-kubernetes-auth`
+the release renders (`config.json`, `policy-<name>.json`, `role-<name>.json`), and the hash the
+failed Job names goes into the Secret's `kubernetes-auth` key. On the participant zones the root
+token is revoked by design and no reviewed procedure issues such a token for this purpose yet; that
+is an administrator action, not something the release improvises.
+
+**The workload side** (`openbao.auth` in the `connector` and `token-store` charts). `method: token`
+(the default) keeps the token file. `method: kubernetes` with `role` mounts a projected
+service-account token for `audience` (`expirationSeconds`, 600 by default, rotated by the kubelet
+before it expires) at `/var/run/secrets/openbao/token`; the pods still mount no API token
+(`automountServiceAccountToken: false`), and a token for the `openbao` audience is refused by the
+API server. The services take `--openbao-auth-role` (`CONNECTOR_OPENBAO_AUTH_ROLE`,
+`TOKEN_STORE_OPENBAO_AUTH_ROLE`), exclusive with the token file, with `--openbao-auth-mount`
+(default `kubernetes`) and `--openbao-jwt-file`. The login sits behind the per-call token source of
+the OpenBao client (`internal/transit.KubernetesAuth`): the first call logs in; the token is used
+until half its lease, when the next call logs in again with the token file read anew (the kubelet's
+rotation is picked up); a failed re-login keeps the current token until five seconds before its
+lease ends and then fails the call. A failed call is the services' readiness: the connector's and
+the store's `signing_key` check answers `unreachable` and the pod leaves Ready, without a restart,
+and comes back on the next successful login. The token-store's operator commands (`acquire`,
+`keys`) keep the token file. Errors name the HTTP status only, never the JWT or the answer.
+
+**Mesh and network.** The login is a call to the server's API port 8200, the same lane the services
+already use for transit and KV: the allow matrix rows `connector-to-openbao` and
+`token-store-to-openbao` ([Architecture §6](architecture.md#allow-matrix-data-plane-management-plane)).
+
+**Migration.** A zone switches per service, by value: provision the roles (above), set
+`openbao.auth.method: kubernetes` and `openbao.auth.role`, and roll the Deployment. Rollback is the
+same value set back to `token` with a valid token file in the credentials Secret. Short role ttls in
+the proofs show re-login and expiry; they are not a soak. A restarted OpenBao server still comes up
+sealed and needs `scripts/secrets/unseal.sh` ([After a restart](#after-a-restart-manual-unseal)):
+Kubernetes auth removes the token expiry, not the manual unseal. Proofs:
+`scripts/verify-openbao-kubernetes-auth/verify.sh` (the release on kind, a projected-token login, the
+client against the real server and API server, wrong ServiceAccount, namespace and audience refused,
+and the refused upgrade) and the Kubernetes-auth stage of `scripts/verify-token-store/verify.sh`.
 
 ### Placement
 

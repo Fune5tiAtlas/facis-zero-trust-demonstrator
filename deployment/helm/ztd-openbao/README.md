@@ -77,7 +77,10 @@ helm upgrade --install ztd-openbao deployment/helm/ztd-openbao -n ztd-mgmt \
 | `openbao.server.extraLabels` | the identity label | Labels of the server pods; the identity label makes them declared workloads under `zone-policy` |
 | `openbao.server.affinity` | the upstream anti-affinity | Not set by this chart: the upstream default, a pod anti-affinity between server replicas; no node affinity |
 | `openbao.server.updateStrategyType` | `RollingUpdate` | Not the upstream `OnDelete`: an upgrade that changes the pod template restarts the server, and the rerun bootstrap unseals it |
-| `openbao.*` | see `values.yaml` | Passed to the upstream chart: standalone, file storage, one replica, image pinned by digest, no injector, no auth-delegator |
+| `openbao.server.authDelegator.enabled` | `false` | The server's ClusterRoleBinding to `system:auth-delegator`, for TokenReviews; must equal `kubernetesAuth.enabled` |
+| `openbao.*` | see `values.yaml` | Passed to the upstream chart: standalone, file storage, one replica, image pinned by digest, no injector |
+| `kubernetesAuth.enabled` | `false` | The bootstrap enables `auth/kubernetes/` against the in-cluster API server and writes the roles; under Cilium the server's API lane is opened ([Secrets: Kubernetes auth](../../../docs/secrets.md#kubernetes-auth)) |
+| `kubernetesAuth.roles` | `[]` | Per entry (`name`, `namespace`, `serviceAccount`, `audience`, `ttl`, `policy`): a policy and a role admitting only that ServiceAccount of that namespace with a token for that audience; applied only while the bootstrap holds the root token, an upgrade that changes them on a configured store fails |
 | `bootstrap.image` | `curlimages/curl` by digest | Image of the bootstrap Job and the verification hook |
 | `external.address` | `""` | An OpenBao the zone does not own, `https://` only (the hook sends its token there); exclusive with `openbao.server.enabled` |
 | `external.verifyTokenSecret` | `""` | Secret in the management namespace with its `verify-token`; required with `external.address` |
