@@ -22,8 +22,8 @@ and is declared as such in [Specification changes](specifications.md#readings-an
 | `.github/workflows/ci.yml` | every pull request, push to `main`, published release, manual | Go lint and tests, image build with the Linux assertion and a Trivy scan, chart lint and dry-run render; on a published release, the chart gate once more and the chart packaging and publication (see [Chart release](#chart-release)) |
 | `.github/workflows/release.yml` | manual, push to a `candidate/**` branch | Release candidate: the chart gate (see [Chart gate](#chart-gate)), then builds, pushes, signs and attests every image by digest and verifies each one (see [Image signing](#image-signing)); beside it the secrets baseline (see [Secrets](secrets.md#the-baseline-proof-tdr-bdd-08)) |
 | `.github/workflows/measurement-determinism.yml` | pull request and push to `main` touching the check, manual | Measures one fixture on a hosted runner, in a container, and on a deliberately divergent checkout, and requires the normalised measurement to be the same on all three |
-| `.github/workflows/policy-hook.yml` | pull requests touching the policy-hook probe, its script, the pinned Envoy image or the policy fixtures; manual | Runs the guard policy-hook proofs (`scripts/verify-policy-hook/verify.sh`) against Envoy from the pinned image, uploads the records as an artefact and writes the verdict and the latency numbers to the job summary |
 | `.github/workflows/token-store.yml` | pull requests touching the token store, the connector, the Participant, the Protected Resource (their services and their `cmd/` entry points), the shared `internal/` packages, the images of the token store, the connector, the Participant and the Protected Resource, the chart or the pinned images; pushes to `main`; manual | Runs the whole token path against a PostgreSQL and an OpenBao from the pinned images, once with opaque and once with signed access tokens, and fails on any skipped test: the schema migrations and queries, the store (replay check, acquisition and its recovery, substitution, renewal) with the real connector binary as the peer zone, the connector's conformance suite on the database stores, the shared packages, and the Participant and Protected Resource end to end through the real connector, their `cmd/` entry points included; then the chart's lifecycle (install, upgrade, uninstall) and the service's readiness against PostgreSQL and OpenBao on kind; the records are the run's artefact and the verdict goes to the job summary |
+| `.github/workflows/policy-hook.yml` | pull requests touching the policy-hook probe, its script, the pinned Envoy image or the policy fixtures; manual | Runs the guard policy-hook proofs (`scripts/verify-policy-hook/verify.sh`) against Envoy from the pinned image, uploads the records as an artefact and writes the verdict and the latency numbers to the job summary |
 | `.github/workflows/connector.yml` | pull requests touching the connector service, the shared client and DPoP packages, the images of the connector and the token store, either chart, the proof or the pinned images; pushes to `main`; manual | Installs the token-store and connector charts on kind against a PostgreSQL and an OpenBao from the pinned images, waits for the connector to be ready on all four checks, registers a client through the registrar with the connector's own image, has the policy refuse a registration with its specific error, and reads both decisions back from the audit trail and the security-state feed; the records are the run's artefact and the verdict goes to the job summary |
 
 ## The service pipeline
@@ -222,6 +222,23 @@ Both jobs stay off until the repository variable `BDD_CLUSTER_ENABLED` is `true`
 (the read-only observer identity — never an administrator credential), `BDD_<KEY>_ORCE_URL`,
 `BDD_<KEY>_ORCE_READ_TOKEN`, `BDD_<KEY>_ORCE_HTTP_USER` and `BDD_<KEY>_ORCE_HTTP_PASS`, and as a
 repository variable `BDD_<KEY>_ORCE_LOGS_CMD`, plus its entry in the job's matrix.
+
+## Cluster reachability
+
+The `cluster-reachability` job checks, for each client cluster (IONOS, OSC zone A, OSC zone B), that
+the API server answers the pipeline and that the observer identity authenticates (`kubectl version`,
+`kubectl auth whoami`). It runs on pushes to `main`, on releases and on demand, never on pull requests,
+and does not depend on `BDD_CLUSTER_ENABLED`. A target is checked once its secret
+`BDD_<KEY>_OBSERVER_KUBECONFIG` is set (`IONOS`, `ZONE_A`, `ZONE_B`); until then the run says it was
+not checked, and never that it was reachable.
+
+The OSC zones have no BDD pool, so their observer is the service account in
+[deployment/ci/reachability-observer.yaml](https://github.com/eclipse-xfsc/facis-zero-trust-demonstrator/blob/main/deployment/ci/reachability-observer.yaml): the
+manifest grants it nothing, so it holds only what every authenticated identity is bound to by default
+(API discovery, the server version, a review of its own access). A cluster administrator applies it,
+checks its effective rights (`kubectl auth can-i --list --as=system:serviceaccount:ztd-ci:ztd-ci-observer`),
+builds the kubeconfig from the token in `ztd-ci/ztd-ci-observer-token` and hands it to a maintainer
+for the secret. The token does not expire; deleting that Secret revokes it.
 
 ## Image scan exceptions
 

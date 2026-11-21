@@ -51,6 +51,7 @@ No record is committed. The workflow `.github/workflows/policy-hook.yml` runs th
 pull request that touches the hook, uploads the records as an artefact and writes the verdict to
 the job summary; those are the numbers of a Linux host. `envoy/` holds the three bootstrap
 templates the probe renders.
+
 ## Token-store chart lifecycle and readiness (`verify-token-store/`)
 
 `verify.sh` proves the token-store chart's lifecycle and the service's readiness on a throwaway
