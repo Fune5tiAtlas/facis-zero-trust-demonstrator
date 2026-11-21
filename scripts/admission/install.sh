@@ -41,12 +41,22 @@ for d in ${ALLOWED_DIGESTS:-}; do
 done
 allowed_json=$(printf '%s\n' ${allowed_digests[@]+"${allowed_digests[@]}"} | jq -Rsc 'split("\n") | map(select(. != ""))')
 
+# The rollback is resumable: with FROM_UMBRELLA=1 every release here adopts (--take-ownership) on
+# every run, so a run interrupted after Gatekeeper but before the provider or the pool is re-run as
+# it is; the umbrella's records are dropped only while release gatekeeper is still the umbrella's,
+# and only once the inputs are checked.
 adopt=()
-if [ "$(admission_layout)" = umbrella ]; then
-  [ "${FROM_UMBRELLA:-}" = 1 ] || { echo "the admission stack is release gatekeeper of the umbrella chart (scripts/install-zone/install.sh); FROM_UMBRELLA=1 rolls it back to this layout" >&2; exit 1; }
-  echo "== Rollback from the umbrella layout: dropping release gatekeeper's records, keeping its objects"
-  admission_forget gatekeeper
+if [ "${FROM_UMBRELLA:-}" = 1 ]; then
+  [ -f "$chart" ] || { echo "Gatekeeper chart not found: $chart" >&2; exit 2; }
+  grep -qs "BEGIN PUBLIC KEY" "$TRUST_KEY" || { echo "TRUST_KEY is not a PEM public key file: $TRUST_KEY" >&2; exit 2; }
   adopt=(--take-ownership)
+  if [ "$(admission_layout)" = umbrella ]; then
+    echo "== Rollback from the umbrella layout: dropping release gatekeeper's records, keeping its objects"
+    admission_forget gatekeeper
+  fi
+elif [ "$(admission_layout)" = umbrella ]; then
+  echo "the admission stack is release gatekeeper of the umbrella chart (scripts/install-zone/install.sh); FROM_UMBRELLA=1 rolls it back to this layout" >&2
+  exit 1
 fi
 
 # The webhook-scope post-renderer is a Helm plugin; it lives in this run's own Helm directory.
