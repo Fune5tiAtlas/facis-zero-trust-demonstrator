@@ -78,6 +78,10 @@ Without a mesh (the secrets baseline on kind's own CNI) the label is inert: the 
 proxy, the chart renders no `AuthorizationPolicy` (`mesh.mode` is `none`, its default) and the
 release installs the same way.
 
+The token store's outbound signing key is a transit key of this store, referenced from PostgreSQL by
+version and thumbprint, never copied; its two policies, the operator commands that create and rotate
+it and the startup assertion are in [Token store: key custody](token-store.md#key-custody).
+
 ### Bootstrap
 
 A sealed OpenBao is not ready, and with `--wait` Helm runs post-install hooks only once every regular
