@@ -404,23 +404,19 @@ chain (`_scheme._trust.<zone>` → trust list, [TRAIN DNS zone](train-dns.md)) f
 releases are signed with. The key material stays where the [key source](#key-source) keeps it — in
 OpenBao's transit engine with `openbao-transit`; only the public key is published.
 
-The host is not decided here. The names in use for the TRAIN zone and TSPA, `trust.facis.cloud` and
-`did:web:tspa.facis.cloud`, are not yet recorded in this repository ([TRAIN DNS zone](train-dns.md)
-writes `<zone>`), so both are to be confirmed. Reusing them has limits:
+The anchor's place is decided by the project lead: the image-signing trust anchor is
+`did:web:tspa.facis.cloud:ztd:release-keys`, served at
+`https://tspa.facis.cloud/ztd/release-keys/did.json`, next to TSPA. TSPA keeps its own root DID,
+`did:web:tspa.facis.cloud` at `/.well-known/did.json`; the path form keeps the two documents apart,
+since one host has one root document. `cmd/didweb` maps that DID to that URL (path form, not
+`.well-known`), held by its test.
 
-- `did:web:tspa.facis.cloud` is TSPA's own DID, and one host has one `/.well-known/did.json`. The
-  signing key cannot take that path without replacing or merging into TSPA's document. A path on
-  the same host — `tspa.facis.cloud/ztd/release-keys`, giving
-  `did:web:tspa.facis.cloud:ztd:release-keys` — avoids the collision if TSPA's web server can serve
-  a static file there.
-- `trust.facis.cloud` is the DNS zone the zone manager (NSD) serves on port 53; it has no HTTPS
-  server. Using it means an HTTPS host inside the zone, for example `keys.trust.facis.cloud`,
-  served by something else.
-
-A dedicated name the client controls (for example `keys.<client domain>`) keeps the signing anchor
-independent of TSPA's lifecycle. Activation: choose and confirm the host, set `SIGNING_DID_WEB`, cut a
-release, serve its `did.json` at the printed URL, check it resolves
-(`curl -fsS <url> | cmp - did.json`), and register the DID in the trust list through TSPA.
+Activation: set the repository variable `SIGNING_DID_WEB` to `tspa.facis.cloud/ztd/release-keys`;
+cut a release; have TSPA's web server serve the release's `did.json`, unchanged, at
+`https://tspa.facis.cloud/ztd/release-keys/did.json`; check it
+(`curl -fsS https://tspa.facis.cloud/ztd/release-keys/did.json | cmp - did.json`); and register
+`did:web:tspa.facis.cloud:ztd:release-keys` in the trust list through TSPA. A new signing key (a change
+of key source) means a new `did.json` from the next release, served in place of the old one.
 
 ### Image registry
 

@@ -30,6 +30,8 @@ func TestDIDWeb(t *testing.T) {
 		"trust.example.org":                 {"did:web:trust.example.org", "https://trust.example.org/.well-known/did.json"},
 		"trust.example.org:8443":            {"did:web:trust.example.org%3A8443", "https://trust.example.org:8443/.well-known/did.json"},
 		"tspa.example.org/ztd/release-keys": {"did:web:tspa.example.org:ztd:release-keys", "https://tspa.example.org/ztd/release-keys/did.json"},
+		// The image-signing trust anchor the project lead fixed: a path next to TSPA, not its root DID.
+		"tspa.facis.cloud/ztd/release-keys": {"did:web:tspa.facis.cloud:ztd:release-keys", "https://tspa.facis.cloud/ztd/release-keys/did.json"},
 	} {
 		did, url, err := didWeb(location)
 		if err != nil || did != want[0] || url != want[1] {
