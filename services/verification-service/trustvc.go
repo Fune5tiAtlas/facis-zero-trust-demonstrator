@@ -47,7 +47,7 @@ var contextFiles embed.FS
 // The @context documents a trust-list VC may name, pinned: fetched once on 2026-11-21 and embedded
 // (contexts/), never loaded from the network.
 var pinnedContexts = map[string]string{
-	"https://www.w3.org/2018/credentials/v1":          "contexts/credentials-v1.jsonld",
+	"https://www.w3.org/2018/credentials/v1":           "contexts/credentials-v1.jsonld",
 	"https://w3id.org/security/suites/ed25519-2020/v1": "contexts/ed25519-2020-v1.jsonld",
 	"https://w3id.org/security/suites/jws-2020/v1":     "contexts/jws-2020-v1.jsonld",
 }
