@@ -72,7 +72,7 @@ jobs:
     environment: ionos
     permissions:
       contents: read # downloads the release assets
-      packages: read # reads the ORCE image's signature from GHCR
+      packages: read # reads the ORCE image's signature from GHCR (Harbor: the read robot)
     env:
       TAG: ${{ needs.release.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
@@ -110,27 +110,37 @@ jobs:
           scripts/tools/install.sh "$RUNNER_TEMP/bin" cosign kubectl
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
-      - name: Log in to GHCR
-        if: steps.kubeconfig.outputs.ready == 'true'
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-
       # The manifest is signed by the release job; everything deployed is taken from it and checked
-      # against it, so nothing reaches the cluster that the release did not list.
+      # against it, so nothing reaches the cluster that the release did not list. The key is the one
+      # the manifest names, accepted only from the allow-list of keys committed in
+      # docs/contracts/keys/ (a manifest without publicKey predates it and was signed with the interim
+      # key), and the same key then verifies the image. The registry login follows the image's host:
+      # the job token for GHCR, the Harbor read robot (HARBOR_READ_USER/PASSWORD of this environment)
+      # for the Harbor host HARBOR_HOST - never another registry's credentials.
       - name: Verify the release and the ORCE image
         id: verify
         if: steps.kubeconfig.outputs.ready == 'true'
         env:
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          HARBOR_HOST: ${{ vars.HARBOR_HOST }}
+          GHCR_TOKEN: ${{ github.token }}
+          HARBOR_READ_USER: ${{ secrets.HARBOR_READ_USER }}
+          HARBOR_READ_PASSWORD: ${{ secrets.HARBOR_READ_PASSWORD }}
         run: |
           dir="$RUNNER_TEMP/release"
           version="${TAG#v}"
           gh release download "$TAG" --dir "$dir" \
             --pattern release-manifest.json --pattern release-manifest.json.sig --pattern "orce-$version.tgz"
-          cosign verify-blob --key docs/contracts/keys/interim-cosign.pub --insecure-ignore-tlog=true \
-            --signature "$dir/release-manifest.json.sig" "$dir/release-manifest.json"
           manifest="$dir/release-manifest.json"
+          key=$(jq -r '.publicKey // "docs/contracts/keys/interim-cosign.pub"' "$manifest")
+          case "$key" in
+            docs/contracts/keys/interim-cosign.pub | docs/contracts/keys/client-cosign.pub | docs/contracts/keys/openbao-transit-cosign.pub) ;;
+            *) echo "::error::the manifest names the key '$key', which is not on the allow-list of committed keys"; exit 1 ;;
+          esac
+          [ -f "$key" ] || { echo "::error::the manifest names $key, which is not committed"; exit 1; }
+          cosign verify-blob --key "$key" --insecure-ignore-tlog=true \
+            --signature "$dir/release-manifest.json.sig" "$manifest"
+          echo "manifest verified with $key"
           [ "$(jq -r .tag "$manifest")" = "$TAG" ] || { echo "::error::the manifest is not for $TAG"; exit 1; }
           if [ -n "$RUN_SHA" ] && [ "$(jq -r .revision "$manifest")" != "$RUN_SHA" ]; then
             echo "::error::the manifest's revision is not the commit the release run built"; exit 1
@@ -141,7 +151,17 @@ jobs:
           repository=$(jq -r '.images[] | select(.name == "orce") | .repository' "$manifest")
           digest=$(jq -r '.images[] | select(.name == "orce") | .digest' "$manifest")
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::the release lists no ORCE image by digest"; exit 1; }
-          cosign verify --key docs/contracts/keys/interim-cosign.pub --insecure-ignore-tlog=true "$repository@$digest" >/dev/null
+          host="${repository%%/*}"
+          if [ "$host" = ghcr.io ]; then
+            REGISTRY_KIND=ghcr REGISTRY_HOST=ghcr.io REGISTRY_USER="$GITHUB_ACTOR" REGISTRY_PASSWORD="$GHCR_TOKEN" \
+              scripts/supplychain/registry-login.sh
+          elif [ -n "$HARBOR_HOST" ] && [ "$host" = "$HARBOR_HOST" ]; then
+            REGISTRY_KIND=harbor REGISTRY_HOST="$HARBOR_HOST" REGISTRY_USER="$HARBOR_READ_USER" REGISTRY_PASSWORD="$HARBOR_READ_PASSWORD" \
+              scripts/supplychain/registry-login.sh
+          else
+            echo "::error::the ORCE image is on $host, neither GHCR nor the Harbor host HARBOR_HOST"; exit 1
+          fi
+          cosign verify --key "$key" --insecure-ignore-tlog=true "$repository@$digest" >/dev/null
           echo "cosign verified $repository@$digest"
           {
             echo "chart=$dir/orce-$version.tgz"

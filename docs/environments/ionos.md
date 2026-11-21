@@ -243,8 +243,10 @@ admission-pool admission gatekeeper -n gatekeeper-system`.
 ## Deploying from the pipeline
 
 `.github/workflows/deploy-ionos.yml` deploys ORCE after every successful release of a tag `v*`, or by
-hand for a given release tag. It verifies the release manifest's signature and the ORCE image's
-signature against the committed key (`docs/contracts/keys/interim-cosign.pub`), takes the chart
+hand for a given release tag. It verifies the release manifest's signature with the key the manifest
+names - accepted only from the allow-list of keys committed in `docs/contracts/keys/` (interim,
+client, OpenBao transit; a manifest without `publicKey` predates it and is verified with the interim
+key) - and the ORCE image's signature with the same key, takes the chart
 package and the image digest from the manifest, runs `helm upgrade --install --rollback-on-failure`
 with a deployer identity that holds rights in `ztd-orce` only, one run at a time, and then checks the
 rollout, the running digest and HTTPS on the host. Until it is switched on, a run deploys nothing and
@@ -271,6 +273,11 @@ To switch it on:
    secret `IONOS_DEPLOY_KUBECONFIG`, and sets the repository variable `IONOS_DEPLOY_ENABLED` to `true`.
 5. If the release's GHCR package is private, a docker-registry Secret in `ztd-orce` and
    `imagePullSecrets` in the chart's values, or the package made public.
+6. With Harbor selected (repository variables `HARBOR_HOST` and `HARBOR_PROJECT`), the environment
+   `ionos` also holds the Harbor read robot account as the secrets `HARBOR_READ_USER` and
+   `HARBOR_READ_PASSWORD`: the workflow logs in to the registry the release's image is on, with that
+   registry's read credentials only (the job token for GHCR), so an image in a private Harbor project
+   can be verified; the cluster pulls it with an `imagePullSecrets` Secret as in step 5.
 
 The first run on a cluster that still holds the hand-installed ORCE is started by hand with
 `take_ownership` set (see stage 3). The token does not expire; deleting the Secret
