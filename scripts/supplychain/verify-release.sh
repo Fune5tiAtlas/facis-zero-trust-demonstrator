@@ -4,6 +4,8 @@
 # as release-set.sh wrote it and the release job signed it:
 #
 #   - release-manifest.json names that public key, and release-manifest.json.sig verifies;
+#   - the upload set is exactly the signed list: every asset of the manifest is in assets/ with the
+#     SHA-256 the manifest gives, and assets/ holds nothing the manifest does not list;
 #   - assets/sbom.json.sig verifies for assets/sbom.json;
 #   - every image of the manifest, by digest: the cosign signature and both attestations (the SBOM and
 #     the mock attestation), read with VERIFY_DOCKER_CONFIG's credentials when it is set.
@@ -26,6 +28,14 @@ manifest="$dir/release-manifest.json"
 [ "$(jq -r '.publicKey // empty' "$manifest")" = "$public" ] || refuse "the manifest names another key than $public"
 "$cosign" verify-blob --key "$public" --insecure-ignore-tlog=true --signature "$manifest.sig" "$manifest" >/dev/null 2>&1 \
   || refuse "release-manifest.json.sig does not verify"
+# The upload set is the signed list, byte for byte, and nothing else.
+while read -r name sha; do
+  [ -f "$dir/assets/$name" ] || refuse "the manifest lists $name, which is not in the upload set"
+  [ "$(sha256sum "$dir/assets/$name" | cut -d' ' -f1)" = "$sha" ] || refuse "$name does not match its signed SHA-256"
+done < <(jq -r '.assets[] | .name + " " + .sha256' "$manifest")
+while read -r name; do
+  jq -e --arg name "$name" 'any(.assets[]; .name == $name)' "$manifest" >/dev/null || refuse "$name is in the upload set but not in the signed manifest"
+done < <(cd "$dir/assets" && find . -mindepth 1 -maxdepth 1 | sed 's|^\./||')
 [ -s "$dir/assets/sbom.json" ] && [ -s "$dir/assets/sbom.json.sig" ] || refuse "the repository SBOM or its signature is missing"
 "$cosign" verify-blob --key "$public" --insecure-ignore-tlog=true --signature "$dir/assets/sbom.json.sig" "$dir/assets/sbom.json" >/dev/null 2>&1 \
   || refuse "sbom.json.sig does not verify"

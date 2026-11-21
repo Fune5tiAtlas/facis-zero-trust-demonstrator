@@ -254,7 +254,9 @@ The release job, in order:
 5. the manifest signed with the selected key (`cosign sign-blob`, the profile of the images) and
    verified;
 6. `scripts/supplychain/verify-release.sh` — the last gate: the manifest must name the selected
-   source's public key and its signature must verify, `sbom.json.sig` must verify, and every image of
+   source's public key and its signature must verify; the upload set must be exactly the signed
+   list — every asset of the manifest present with its signed SHA-256, nothing it does not list;
+   `sbom.json.sig` must verify, and every image of
    the manifest must carry, by digest, a signature and both attestations that verify against that
    key, read with the job's read credentials. One that does not stops the job: the tag stays without
    a release (`scripts/supplychain/verify-release_test.sh` holds it to that);
