@@ -187,6 +187,8 @@ installed, so the guard's own token path, mTLS and the TSA pod's AuthorizationPo
 this proof. `go test ./internal/tsabundle ./services/policyevaluator` covers the refusals one by one
 and the adapter's fail-closed answers, including a TSA slower than the bound.
 
+The records of the last run are in [`evidences/tsa-policy/`](evidences/tsa-policy/README.md).
+
 ```sh
 BIN=<dir with a linux cosign and istio-crds/> scripts/verify-tsa-policy/verify.sh   # writes .dev/tsa-policy-evidence/
 ```

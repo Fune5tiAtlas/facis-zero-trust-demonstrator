@@ -1,0 +1,6 @@
+  v1 kind-registry-tsa:5000/tsa-bundles@sha256:ab26be99bdcc5a839848a0508dab751add12f6df2a2d757ea37cabf4a28a6396
+  v2 kind-registry-tsa:5000/tsa-bundles@sha256:1acb587276042756f9b54e746c7fefe1059bb3ab25aa88fbce697e74e8728c5c
+  other kind-registry-tsa:5000/tsa-bundles@sha256:34f9e98159d42609ae0c7926c4aa1c205fd2da30368deef6ae4323410281931d
+  unsigned kind-registry-tsa:5000/tsa-bundles@sha256:e6c1a7f48d387330a052b4f50f20e83974966fe040af7ad69b5d6cbbddb6e8aa
+  tampered kind-registry-tsa:5000/tsa-bundles@sha256:229de1393554600e3dbe1560f26c89e20aa77f63bd0ff55fcf7057c07ef3188b
+  lying kind-registry-tsa:5000/tsa-bundles@sha256:8575a4e381e6f5547f6bb4babe023eb014a42350e97ba61c465cb7a6616d55f9

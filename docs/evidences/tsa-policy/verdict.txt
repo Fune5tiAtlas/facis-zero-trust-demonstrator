@@ -1,0 +1,15 @@
+PASS  v1 active, entitled summary request: {"allow":true,"rule_id":"m3-report-summary","bundle_revision":"v1","obligations":["substitute_upstream_token"]}
+PASS  v2 declared, same request: {"allow":false,"reason_code":"POL-RULE-DENY","rule_id":"m3-scope-withdrawn","bundle_revision":"v2","deny_body":{"error":"access_denied"}}
+PASS  no pod replaced or restarted: [{"pod":"tsa-policy-engine-86b5cdf7c5-7ldk4","uid":"6e68469c-ad58-4886-8dba-19543c0338ef","restarts":{"bundle":0,"tsa":0,"nats":0,"git":0}},{"pod":"ztd-policy-evaluator-54d86c58fc-bp4bd","uid":"be62cb52-aa0c-48dc-b146-76bc5f5147a7","restarts":{"policy-evaluator":0}}]
+PASS  unsigned bundle refused: ADM-UNSIGNED: no valid signature by a trusted key for kind-registry-tsa:5000/tsa-bundles@sha256:e6c1a7f48d387330a052b4f50f20e83974966fe040af7ad69b5d6cbbddb6e8aa
+PASS  after the unsigned bundle: {"allow":false,"reason_code":"POL-RULE-DENY","rule_id":"m3-scope-withdrawn","bundle_revision":"v2","deny_body":{"error":"access_denied"}}
+PASS  other bundle refused: ADM-UNSIGNED: no valid signature by a trusted key for kind-registry-tsa:5000/tsa-bundles@sha256:34f9e98159d42609ae0c7926c4aa1c205fd2da30368deef6ae4323410281931d
+PASS  after the other bundle: {"allow":false,"reason_code":"POL-RULE-DENY","rule_id":"m3-scope-withdrawn","bundle_revision":"v2","deny_body":{"error":"access_denied"}}
+PASS  tampered bundle refused: bundle signature does not verify with the trust root
+PASS  after the tampered bundle: {"allow":false,"reason_code":"POL-RULE-DENY","rule_id":"m3-scope-withdrawn","bundle_revision":"v2","deny_body":{"error":"access_denied"}}
+PASS  lying bundle refused: imported bundle evaluates as revision "v2", not "v4"
+PASS  after the lying bundle: {"allow":false,"reason_code":"POL-RULE-DENY","rule_id":"m3-scope-withdrawn","bundle_revision":"v2","deny_body":{"error":"access_denied"}}
+PASS  v1 declared again: {"allow":true,"rule_id":"m3-report-summary","bundle_revision":"v1","obligations":["substitute_upstream_token"]}
+PASS  still no pod replaced or restarted
+PASS  49 decisions logged, each with its rule_id and bundle_revision
+VERDICT PASS
