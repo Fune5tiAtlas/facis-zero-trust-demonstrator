@@ -1,10 +1,11 @@
 name: Admission fixtures
 
 # The admission test images for a real cluster (the IONOS proof): a runnable image signed and attested
-# with the selected key (SIGNING_KEY_SOURCE, interim by default), and one image per refusal case - unsigned, signed by an untrusted key, missing
-# the SBOM, missing the mock attestation, non-Linux, an image index - published under
-# ghcr.io/<owner>/<repository>/fixtures/ and each checked against its expected verdict with the
-# admission provider's own code. Started by hand or by pushing a branch named fixtures/<anything>.
+# with the selected key (SIGNING_KEY_SOURCE, interim by default), and one image per refusal case -
+# unsigned, signed by an untrusted key, missing the SBOM, missing the mock attestation, non-Linux, an
+# image index - published under ghcr.io/<owner>/<repository>/fixtures/ (or under the Harbor project the
+# HARBOR_* variables name) and each checked against its expected verdict with the admission provider's
+# own code. Started by hand or by pushing a branch named fixtures/<anything>.
 on:
   workflow_dispatch:
   push:
@@ -75,14 +76,21 @@ jobs:
           VAULT_TOKEN: ${{ secrets.SIGNING_VAULT_TOKEN }}
         run: scripts/supplychain/check-key.sh
 
-      - name: Log in to GHCR
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-
-      - name: Image repository
+      # GHCR by default; the Harbor project HARBOR_HOST/HARBOR_PROJECT once those variables are set.
+      - name: Image registry
         id: repo
-        run: echo "path=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+        env:
+          HARBOR_HOST: ${{ vars.HARBOR_HOST }}
+          HARBOR_PROJECT: ${{ vars.HARBOR_PROJECT }}
+        run: scripts/supplychain/registry.sh >> "$GITHUB_OUTPUT"
+
+      # Push credentials: the job token for GHCR, the Harbor robot account allowed to push otherwise.
+      - name: Log in to the registry
+        env:
+          REGISTRY_HOST: ${{ steps.repo.outputs.host }}
+          REGISTRY_USER: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_PUSH_USER || github.actor }}
+          REGISTRY_PASSWORD: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_PUSH_PASSWORD || github.token }}
+        run: printf '%s' "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin
 
       - name: Publish, sign and check every fixture
         env:
@@ -90,8 +98,8 @@ jobs:
           COSIGN_CLIENT_KEY: ${{ secrets.COSIGN_CLIENT_KEY }}
           COSIGN_PASSWORD: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || secrets.COSIGN_INTERIM_PASSWORD }}
           VAULT_TOKEN: ${{ secrets.SIGNING_VAULT_TOKEN }}
-          IMAGEVERIFY_FLAGS: -registry-username ${{ github.actor }}
-          IMAGEVERIFY_PASSWORD: ${{ github.token }}
+          IMAGEVERIFY_FLAGS: -registry-username ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_READ_USER || github.actor }}
+          IMAGEVERIFY_PASSWORD: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_READ_PASSWORD || github.token }}
         run: scripts/admission/publish-fixtures.sh "${{ steps.repo.outputs.path }}" fixtures.txt
 
       - name: Summary

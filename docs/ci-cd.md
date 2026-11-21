@@ -132,8 +132,10 @@ and Harbor. The job creates no tag and no release.
 It checks the key before it builds anything: the secret must be set and must be the private half of
 the committed public key, so a missing environment, secret or key file stops the job before an image
 is pushed. GHCR creates new packages as private; the job verifies them with its own token, but a
-cluster pulls and verifies anonymously, so the candidate packages must be made public in the package
-settings (once per package) before a cluster can admit them.
+cluster pulls and verifies anonymously unless the admission provider is given read credentials, so
+the candidate packages must be made public in the package settings (once per package) before such a
+cluster can admit them. With Harbor ([Image registry](#image-registry)) the push and the checks use
+two different robot accounts.
 
 ## Release SBOM
 
@@ -332,6 +334,27 @@ Activation, per source: commit the source's public key under `docs/contracts/key
 committed public key is the only verification key of the source: the release manifest and notes,
 `sbom.yml` and the did:web anchor all read it from there. `scripts/supplychain/keys_test.sh` holds the
 selection, the key check and the SBOM key set to their refusals.
+
+### Image registry
+
+The images and their signatures go to this repository's GHCR namespace until the repository
+variables `HARBOR_HOST` (a host, optional `:port`, no scheme) and `HARBOR_PROJECT` name a Harbor
+project; `scripts/supplychain/registry.sh` then answers `<HARBOR_HOST>/<HARBOR_PROJECT>` for the
+candidate images, the release job and the admission fixtures. Two Harbor robot accounts, as
+secrets of the `release` environment:
+
+| Secrets | Used for |
+|---|---|
+| `HARBOR_PUSH_USER`, `HARBOR_PUSH_PASSWORD` | the push of the images, their signatures and attestations |
+| `HARBOR_READ_USER`, `HARBOR_READ_PASSWORD` | every check after the push: `cmd/imageverify`, `cosign verify` and `verify-attestation` (a Docker config of their own, `VERIFY_DOCKER_CONFIG`), and the release job, which only reads |
+
+On GHCR both roles are the job token, as before. Activation: create the project and the two robot
+accounts in Harbor (push: push and pull on the project; read: pull only), add the four secrets,
+set the two variables, and add the Harbor path to the admission chart's `trust.repositories`. A
+cluster that pulls from a private project needs the read account as well: an image pull secret for
+the workloads, and `registryAuth.secretName` for the admission provider (the `admission` chart,
+`deployment/helm/admission/README.md`).
+`scripts/supplychain/registry_test.sh` holds the selection to its refusals.
 
 ## Lifecycle scenarios on the client targets
 

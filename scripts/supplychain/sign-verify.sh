@@ -9,7 +9,9 @@
 #
 # The public key is the selected source's (SIGNING_PUBLIC_KEY, from key-source.sh), the interim key's
 # by default; PUBLIC_KEY overrides both (tests only). IMAGEVERIFY_FLAGS and
-# COSIGN_VERIFY_FLAGS pass registry options for a local test registry.
+# COSIGN_VERIFY_FLAGS pass registry options for a local test registry. VERIFY_DOCKER_CONFIG names a
+# Docker config directory holding read-only credentials: the cosign checks then read the registry with
+# those, not with the push credentials that signed.
 set -euo pipefail
 
 [ $# -eq 3 ] || { echo "usage: $0 <registry/path> <images.txt> <out-dir>" >&2; exit 2; }
@@ -30,14 +32,16 @@ for image in "${images[@]}"; do
   "$here/sign-attest.sh" "$image" "$out/$name.cdx.json" "$out/mock.json"
 done
 
+verify=()
+[ -z "${VERIFY_DOCKER_CONFIG:-}" ] || verify=(env "DOCKER_CONFIG=$VERIFY_DOCKER_CONFIG")
 # shellcheck disable=SC2086 # the flags are word lists on purpose
 go run ./cmd/imageverify -key "$public" -repository "$repository" ${IMAGEVERIFY_FLAGS:-} "${images[@]}"
 for image in "${images[@]}"; do
   # shellcheck disable=SC2086
-  "$cosign" verify --key "$public" --insecure-ignore-tlog=true ${COSIGN_VERIFY_FLAGS:-} "$image" >/dev/null
+  "${verify[@]}" "$cosign" verify --key "$public" --insecure-ignore-tlog=true ${COSIGN_VERIFY_FLAGS:-} "$image" >/dev/null
   for type in https://cyclonedx.org/bom https://facis.eu/ztd/mock-attestation/v1; do
     # shellcheck disable=SC2086
-    "$cosign" verify-attestation --key "$public" --insecure-ignore-tlog=true --type "$type" ${COSIGN_VERIFY_FLAGS:-} "$image" >/dev/null
+    "${verify[@]}" "$cosign" verify-attestation --key "$public" --insecure-ignore-tlog=true --type "$type" ${COSIGN_VERIFY_FLAGS:-} "$image" >/dev/null
   done
   echo "cosign verified $image"
 done

@@ -1,12 +1,14 @@
 name: Release
 
 # The two stages of the release. The candidate stage: every image built, pushed to this repository's
-# GHCR namespace, signed and attested by digest with the selected key (SIGNING_KEY_SOURCE, interim by default; the
-# Grype-enriched SBOM and the mock attestation), and verified by digest with the admission provider's own
-# code and with cosign against the source's committed public key; it creates no tag and no release. The release stage, on a tag vX.Y.Z: the
-# same jobs with the tag's version as the image tag, then the charts packaged at that version by the
-# gate, the repository SBOM signed, the BDD suite run for the tag, and the GitHub release created with
-# every artefact and the notes that list each one with its digest (scripts/supplychain/release-set.sh).
+# GHCR namespace (or the Harbor project the HARBOR_* variables name), signed and attested by digest with
+# the selected key (SIGNING_KEY_SOURCE, interim by default; the Grype-enriched SBOM and the mock
+# attestation), and verified by digest, with read credentials, with the admission provider's own code
+# and with cosign against the source's committed public key; it creates no tag and no release.
+# The release stage, on a tag vX.Y.Z: the same jobs with the tag's version as the image tag, then the
+# charts packaged at that version by the gate, the repository SBOM signed, the BDD suite run for the
+# tag, and the GitHub release created with every artefact and the notes that list each one with its
+# digest (scripts/supplychain/release-set.sh).
 # A piece missing or at another version refuses the set, so a release never carries less than the set.
 #
 # Nothing is built unless the chart gate (TDR-BDD-11) passed. A later job that publishes charts or
@@ -124,7 +126,7 @@ jobs:
     environment: release
     permissions:
       contents: read
-      packages: write # pushes the images and their signatures to GHCR
+      packages: write # pushes the images and their signatures to GHCR (unused once Harbor is the registry)
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -157,15 +159,33 @@ jobs:
           VAULT_TOKEN: ${{ secrets.SIGNING_VAULT_TOKEN }}
         run: scripts/supplychain/check-key.sh
 
-      - name: Log in to GHCR
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-
-      # GHCR names are lower case; the repository owner may not be.
-      - name: Image repository
+      # GHCR by default; the Harbor project HARBOR_HOST/HARBOR_PROJECT once those variables are set.
+      - name: Image registry
         id: repo
-        run: echo "path=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+        env:
+          HARBOR_HOST: ${{ vars.HARBOR_HOST }}
+          HARBOR_PROJECT: ${{ vars.HARBOR_PROJECT }}
+        run: scripts/supplychain/registry.sh >> "$GITHUB_OUTPUT"
+
+      # Push credentials: the job token for GHCR, the Harbor robot account allowed to push otherwise.
+      - name: Log in to the registry
+        env:
+          REGISTRY_HOST: ${{ steps.repo.outputs.host }}
+          REGISTRY_USER: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_PUSH_USER || github.actor }}
+          REGISTRY_PASSWORD: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_PUSH_PASSWORD || github.token }}
+        run: printf '%s' "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin
+
+      # Read credentials for every check after the push, in a Docker config of their own: verification
+      # reads the registry with the read-only robot account (the job token for GHCR), not the pusher's.
+      - name: Log in to the registry for verification
+        env:
+          REGISTRY_HOST: ${{ steps.repo.outputs.host }}
+          REGISTRY_USER: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_READ_USER || github.actor }}
+          REGISTRY_PASSWORD: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_READ_PASSWORD || github.token }}
+        run: |
+          printf '%s' "$REGISTRY_PASSWORD" |
+            docker --config "$RUNNER_TEMP/verify-docker" login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin
+          echo "VERIFY_DOCKER_CONFIG=$RUNNER_TEMP/verify-docker" >> "$GITHUB_ENV"
 
       # The release version on a tag, so the images carry the version the charts and the release do;
       # the commit on a candidate branch.
@@ -187,9 +207,9 @@ jobs:
           COSIGN_CLIENT_KEY: ${{ secrets.COSIGN_CLIENT_KEY }}
           COSIGN_PASSWORD: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || secrets.COSIGN_INTERIM_PASSWORD }}
           VAULT_TOKEN: ${{ secrets.SIGNING_VAULT_TOKEN }}
-          # New GHCR packages are private: the provider-code check reads them with the job token.
-          IMAGEVERIFY_FLAGS: -registry-username ${{ github.actor }}
-          IMAGEVERIFY_PASSWORD: ${{ github.token }}
+          # New packages are private: the provider-code check reads them with the read credentials.
+          IMAGEVERIFY_FLAGS: -registry-username ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_READ_USER || github.actor }}
+          IMAGEVERIFY_PASSWORD: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_READ_PASSWORD || github.token }}
         run: scripts/supplychain/sign-verify.sh "${{ steps.repo.outputs.path }}" images.txt candidate
 
       - name: Summary
@@ -370,10 +390,21 @@ jobs:
         with:
           path: ${{ runner.temp }}/run
 
-      - name: Log in to GHCR
+      # GHCR by default; the Harbor project HARBOR_HOST/HARBOR_PROJECT once those variables are set.
+      - name: Image registry
+        id: repo
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          HARBOR_HOST: ${{ vars.HARBOR_HOST }}
+          HARBOR_PROJECT: ${{ vars.HARBOR_PROJECT }}
+        run: scripts/supplychain/registry.sh >> "$GITHUB_OUTPUT"
+
+      # This job only reads the registry: the read-only robot account for Harbor, the job token for GHCR.
+      - name: Log in to the registry with read credentials
+        env:
+          REGISTRY_HOST: ${{ steps.repo.outputs.host }}
+          REGISTRY_USER: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_READ_USER || github.actor }}
+          REGISTRY_PASSWORD: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_READ_PASSWORD || github.token }}
+        run: printf '%s' "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin
 
       # The images were pushed under the release version and signed by digest; the version tag of each
       # must still name the digest that was signed, or the release would list images it did not verify.
