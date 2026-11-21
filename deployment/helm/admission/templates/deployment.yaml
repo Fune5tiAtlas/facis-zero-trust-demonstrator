@@ -20,6 +20,10 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        {{- if .Values.registryAuth.secretName }}
+        # The registry credential is mounted 0440: owned by root, readable through this group only.
+        fsGroup: 65532
+        {{- end }}
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -93,6 +97,7 @@ spec:
         - name: registry-auth
           secret:
             secretName: {{ . }}
+            defaultMode: 0440
             items:
               - key: .dockerconfigjson
                 path: config.json
