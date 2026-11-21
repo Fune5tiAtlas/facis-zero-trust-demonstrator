@@ -108,11 +108,9 @@ the chart puts no checksum of it on the pod, and the chart gate fails if declari
 would change anything in the pod template. The kubelet refreshes the mounted declaration (within
 about a minute), and the sidecar, polling every `bundle.pollSeconds`:
 
-1. checks that the active revision still answers under its own key (below); if the TSA no longer
-   holds it (three unanswered probes in a row: it restarted empty), it imports it again from its
-   cache; if the declared reference and revision are the active pair, nothing more happens;
-2. refuses a revision that was already imported as another reference (a revision names one bundle
-   for good), and a declaration that failed after import in the last 5 minutes;
+1. does nothing if the declared reference and revision are the active pair;
+2. refuses a revision the ledger records under another reference (a revision names one bundle for
+   good), and a declaration that failed after import in the last 5 minutes;
 3. fetches the declared reference — only a digest reference under `bundle.repository` — and
    verifies its cosign signature by the trust root (the admission verifier's code,
    `internal/cosignverify`), then reads the manifest and its single bundle layer by digest;
@@ -136,6 +134,22 @@ showed it: with in-place replacement a refused candidate kept answering after th
 had been imported again. With one key per revision a new key has no cache entry, and nothing that
 was not switched to is ever forwarded to.
 
+Independently of the declaration — also while it cannot be read, or a fetch is slow — the sidecar
+checks every poll that the active revision still answers under its key; after three unanswered
+probes in a row (the TSA restarted empty) it imports the active bundle again from its state
+directory. Readiness is that check's result.
+
+The sidecar's ledger (`/var/lib/tsa-bundle`, an emptyDir that survives a restart of the sidecar
+container) records every revision ever imported with its reference, the declarations that failed
+and when, and the bundles of the revisions it keeps. A sidecar that starts without a ledger records
+every key the TSA already holds as taken. The TSA has no delete: beyond the active, the previous and
+the two most recent other revisions, older keys are locked in the TSA (no longer evaluable) and stay
+in the ledger, so their revisions remain taken; a TSA restart frees them, after which only the
+active revision is imported again.
+
+The gate passes an answer on only if its decision names the active revision: a policy that answers
+the probe correctly but real input under another revision is refused with 503, never forwarded.
+
 Any failure is logged as `bundle refused` with the reason and the revision still active, and the
 active revision keeps serving throughout: a bundle refused before import never reaches the TSA, one
 refused after import (a correctly signed bundle whose Rego does not answer with its own revision)
@@ -151,7 +165,7 @@ deleted from the registry, so every revision ever declared can be restored and a
 revision was active when is in Git (what was declared) and in the sidecar's and evaluator's logs
 (what was activated and used).
 
-If the TSA container restarts it comes back empty; the sidecar notices at its next poll and imports
+If the TSA container restarts it comes back empty; the health check notices it within three polls and imports
 the declared bundle again, and decisions fail closed in between.
 
 ### Trust root
