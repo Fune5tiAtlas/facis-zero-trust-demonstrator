@@ -11,7 +11,11 @@
 # digest. <archives-dir> is where the archives were built (default <chart-dir>/charts). Passes only
 # when it holds exactly the archives listed, each a regular file with its committed digest, and
 # nothing else: Helm also loads an unpacked chart directory (or a symbolic link) found in charts/,
-# so any other entry, hidden ones included, is refused as unpinned. Used by
+# so any other entry, hidden ones included, is refused as unpinned. The one exception is the archive
+# of a dependency from this repository (repository: file://... in Chart.lock, as the umbrella's
+# admission charts): Helm packages it from the checkout, so there is no download to pin, and its bytes
+# carry the files' modification times, so there is no stable digest to commit; it may be there
+# unlisted, as a regular file named <name>-<version>.tgz. Used by
 # scripts/ci/check-charts.sh, scripts/install-zone/install.sh and scripts/secrets/baseline.sh after
 # every `helm dependency build`, before the chart is rendered or installed.
 set -euo pipefail
@@ -35,8 +39,11 @@ while read -r want name; do
   listed=$((listed + 1))
 done <"$pins"
 [ "$listed" -gt 0 ] || fail "dependencies.sha256 lists no archive"
+# The archives of the chart's file:// dependencies, from its Chart.lock (name, repository, version).
+local_archives=" $(awk '/^- name:/ { n = $3 } /^  repository:/ { r = $2 } /^  version:/ && r ~ /^file:\/\// { printf "%s-%s.tgz ", n, $2 }' "$chart/Chart.lock" 2>/dev/null || true)"
 shopt -s nullglob dotglob
 for built in "$archives"/*; do
+  if [[ "$local_archives" == *" ${built##*/} "* ]] && [ -f "$built" ] && [ ! -L "$built" ]; then continue; fi
   awk -v n="${built##*/}" '$2 == n { found = 1 } END { exit !found }' "$pins" \
     || fail "${built##*/} is in $archives but is not an archive with a committed digest (Helm would load it as a dependency)"
 done

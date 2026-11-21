@@ -29,8 +29,13 @@ trap 'rm -f "$lane"' EXIT
 "$root/scripts/secrets/kind-api-lane.sh" > "$lane"
 
 helm repo add openbao https://openbao.github.io/openbao-helm >/dev/null 2>&1 || true
-helm dependency build "$store" >/dev/null
-"$root/scripts/ci/verify-chart-dependencies.sh" "$store"
+helm repo add gatekeeper https://open-policy-agent.github.io/gatekeeper/charts >/dev/null 2>&1 || true
+# The umbrella's dependencies (the admission stack, off here) must be in its charts/ for Helm to
+# install it at all.
+for chart in "$umbrella" "$store"; do
+  helm dependency build "$chart" >/dev/null
+  "$root/scripts/ci/verify-chart-dependencies.sh" "$chart"
+done
 # up: the umbrella, then the store into the management namespace the umbrella created. A second up
 # with the same values renders the same bootstrap Job name, so no bootstrap runs; the verification
 # hook runs on every upgrade.

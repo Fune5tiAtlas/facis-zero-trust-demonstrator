@@ -12,7 +12,7 @@ documents its values in its own README.
 | Connector | `deployment/helm/connector` | standalone DCR, DPoP token issuance and JWKS; live proof pending | [connector/README.md](connector/README.md) |
 | Application service | `deployment/helm/application-service` | in use (OSC shared namespace) | [application-service/README.md](application-service/README.md) |
 | Lifecycle fixture (test data, never released) | `features/fixtures/charts/lifecycle-fixture` | in use by the acceptance scenarios | [README](../../features/fixtures/charts/lifecycle-fixture/README.md) |
-| ORCE | — | planned; until then ORCE is installed from `deployment/orce-minimal/` | — |
+| ORCE | `deployment/helm/orce` | new; ORCE on IONOS behind the public ingress, deployed by `deploy-ionos.yml` | [orce/README.md](orce/README.md) |
 | Umbrella chart for a zone | `deployment/helm/ztd` | in use on kind; design in [docs/umbrella-chart.md](../../docs/umbrella-chart.md) | [ztd/README.md](ztd/README.md) |
 | Zone policy | `deployment/helm/zone-policy` | in use on kind | the workloads' registration with SPIRE, mesh-wide STRICT mTLS, the mesh default deny with one allow rule per declared pair by identity and the denial log, the identity-band checks |
 | Secret store (OpenBao) | `deployment/helm/ztd-openbao` | in use on kind; the eighth release of a zone | [ztd-openbao/README.md](ztd-openbao/README.md): `managementNamespace`, `cilium.enabled`, `openbao.*` (upstream chart 0.28.3, locked), `bootstrap.image`, `external.address`, `external.verifyTokenSecret` |
