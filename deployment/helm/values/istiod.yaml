@@ -16,22 +16,6 @@ meshConfig:
   # asserts it and scripts/verify-mesh-identity/verify.sh shows TLS 1.3 accepted, TLS 1.2 refused.
   meshMTLS:
     minProtocolVersion: TLSV1_3
-  # Caller identity over X-Forwarded-Client-Cert, mesh-wide: every inbound sidecar replaces any XFCC
-  # a client sent with the one it builds from the client certificate it verified (SANITIZE_SET), and
-  # puts only the caller's SPIFFE ID in it. The guard and the token store authenticate their callers
-  # by that header (internal/meshcaller); a pod in a plane namespace may not set it for itself
-  # (zone-policy refuses proxy.istio.io/config and any PROXY_CONFIG but {}), so it is set here, by the
-  # zone's administrator, for every proxy. scripts/verify-mesh-identity/verify.sh sends a forged
-  # header and checks that the receiver sees only the caller's own identity.
-  defaultConfig:
-    proxyHeaders:
-      forwardedClientCert: SANITIZE_SET
-      setCurrentClientCertDetails:
-        uri: true
-        cert: false
-        chain: false
-        subject: false
-        dns: false
   # The denial log of the mesh authorization (docs/workload-identity.md, "Mesh authorization"): an
   # Envoy file access log to the proxy's stdout, one JSON line per entry. Defined here, enabled by
   # zone-policy's Telemetry `mesh-default` for denied requests and connections only (its

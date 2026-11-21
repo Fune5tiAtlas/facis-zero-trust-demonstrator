@@ -141,6 +141,10 @@ TD=$(yaml_get "$ZONE_VALUES" zone trustDomain)
 SPIRE_NS=spire-system; ISTIO_NS=istio-system
 images_spire=""; images_istio=""; images_proxy=""
 RELEASES="ztd:ztd-system spire-crds:$SPIRE_NS spire:$SPIRE_NS istio-base:$ISTIO_NS istiod:$ISTIO_NS istio-cni:$ISTIO_NS zone-policy:$ISTIO_NS ztd-openbao:$MGMT"
+# The eight releases of the mesh, installed by name: a participant zone's telemetry releases
+# (otel-node, otel-gateway) need a client certificate from the demonstrator cluster and have their own
+# proof (scripts/verify-observability), as in the observability CI job.
+MESH_RELEASES=$(for r in $RELEASES; do printf '%s ' "${r%%:*}"; done)
 # The caller's own SPIFFE ID: every stand-in that runs a proxy or fetches an SVID has a service
 # account of its own, named after the pod (fixtures/stand-ins.yaml).
 SA_ID="spiffe://$TD/ns/$DATA/sa/caller"
@@ -428,16 +432,18 @@ left=$(k get crd -o name | grep -E 'spiffe\.io|istio\.io' || true)
 # --------------------------------------------------------------------------------------------
 section "2. install-order-idempotent: the zone from an empty cluster, twice"
 start=$(date +%s)
-"$INSTALL" install >"$work/install1.log" 2>&1; rc=$?
+# shellcheck disable=SC2086 # one word per release
+"$INSTALL" install $MESH_RELEASES >"$work/install1.log" 2>&1; rc=$?
 check $rc "first installer run from an empty cluster returns 0, no manual step between the releases" "$(( $(date +%s) - start ))s"
 coupling=$(grep -m1 '^pairs coupling:' "$work/install1.log")
 grep -q '^pairs coupling: [0-9][0-9]* allow rules of zone-policy match the [0-9][0-9]* declared pairs' <<<"$coupling"
 check $? "the installer's pairs coupling held before anything was installed: zone-policy renders exactly one allow rule by identity per allow-matrix row and intra-plane pair of the umbrella" "${coupling:-no verdict in the log of the installer}"
-code "$(grep -E '^(  [0-9]/8|step|zone installed)' "$work/install1.log")"
+code "$(grep -E '^(  [0-9]+/[0-9]+|step|installed)' "$work/install1.log")"
 [ $rc -ne 0 ] && code "$(tail -30 "$work/install1.log")"
 for r in $RELEASES; do h get manifest "${r%%:*}" -n "${r#*:}" >"$work/manifest-1-${r%%:*}.yaml" 2>/dev/null; done
 start=$(date +%s)
-"$INSTALL" install >"$work/install2.log" 2>&1; rc=$?
+# shellcheck disable=SC2086 # one word per release
+"$INSTALL" install $MESH_RELEASES >"$work/install2.log" 2>&1; rc=$?
 check $rc "second installer run returns 0" "$(( $(date +%s) - start ))s; $(grep -c 'deployed, revision' "$work/install2.log") releases upgraded in place"
 same=0; diffs=""
 for r in $RELEASES; do
@@ -445,7 +451,14 @@ for r in $RELEASES; do
   if [ -s "$work/manifest-1-${r%%:*}.yaml" ] && diff -q "$work/manifest-1-${r%%:*}.yaml" "$work/manifest-2-${r%%:*}.yaml" >/dev/null; then same=$((same+1)); else diffs="$diffs ${r%%:*}"; fi
 done
 [ "$same" -eq 8 ]; check $? "helm get manifest of every release is identical between the two runs, the bootstrap Job of ztd-openbao included" "$same of 8 identical${diffs:+; differ:$diffs}"
-tail -1 "$work/install2.log" | grep -q '^zone installed: every pod'; check $? "every pod in the plane and control-plane namespaces is Ready (the installer's exit condition)" "$(tail -1 "$work/install2.log")"
+# A run that names its releases leaves the rest of the zone unjudged, so the proof reads every pod itself
+# (finished Job pods aside), as the installer does for a whole zone.
+notready=$(for ns in "$MGMT" "$DATA" "$SPIRE_NS" "$ISTIO_NS"; do k -n "$ns" get pods -o json | jq -r '.items[]
+  | select(.status.phase != "Succeeded")
+  | select((.status.phase == "Failed" and ([.metadata.ownerReferences[]? | select(.kind == "Job")] | length) > 0) | not)
+  | select(([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length) == 0)
+  | "\(.metadata.namespace)/\(.metadata.name)"'; done)
+[ -z "$notready" ]; check $? "every pod in the plane and control-plane namespaces is Ready after the second run" "$(tail -1 "$work/install2.log"); not Ready: ${notready:-none}"
 code "$(h list -A -o json | jq -r '(["RELEASE","NAMESPACE","REVISION","STATUS","CHART"] | join(" ")), (.[] | [.name, .namespace, .revision, .status, .chart] | join(" "))')"
 # The secret store, the eighth release: the bootstrap Job keeps its state in the Secret it owns (only
 # the state field is read here), and the verification hook's log names each check and a hash of the
@@ -460,7 +473,7 @@ code "$bao_log"
 # proof that both of its pairs are served.
 aps=$(k get authorizationpolicy -A -o json 2>/dev/null | jq -r '.items[] | "\(.metadata.namespace)/\(.metadata.name)"' | sort)
 grep -qx "$ISTIO_NS/default-deny" <<<"$aps" && grep -qx "$MGMT/allow-ztd-openbao-bootstrap-to-server" <<<"$aps" && grep -qx "$MGMT/allow-ztd-verify-openbao-to-server" <<<"$aps" \
-  && grep -q '^step 8/8: ztd-openbao deployed' "$work/install1.log" && grep -q '^step 8/8: ztd-openbao deployed' "$work/install2.log"
+  && grep -q '^step 8/[0-9]*: ztd-openbao deployed' "$work/install1.log" && grep -q '^step 8/[0-9]*: ztd-openbao deployed' "$work/install2.log"
 check $? "ztd-openbao installs under the mesh default deny: its --wait-for-jobs succeeded in both runs with $ISTIO_NS/default-deny in place, its bootstrap Job and verification hook admitted to the server by the release's own pairs" "$(paste -sd' ' <<<"${aps:-no AuthorizationPolicy}")"
 images_spire=$(k -n "$SPIRE_NS" get pods -o jsonpath='{.items[*].spec.containers[*].image} {.items[*].spec.initContainers[*].image}' | tr ' ' '\n' | grep . | sort -u | paste -sd, -)
 images_istio=$(k -n "$ISTIO_NS" get pods -o jsonpath='{.items[*].spec.containers[*].image} {.items[*].spec.initContainers[*].image}' | tr ' ' '\n' | grep . | sort -u | paste -sd, -)
@@ -479,9 +492,10 @@ hooked=$(h get manifest zone-policy -n "$ISTIO_NS" | python3 -c 'import sys,yaml
 print(sum(1 for d in yaml.safe_load_all(sys.stdin) if d and d["kind"]=="ClusterSPIFFEID" and "helm.sh/hook" in (d["metadata"].get("annotations") or {})))')
 [ "$hooked" = 0 ] && k get clusterspiffeid plane-workloads >/dev/null 2>&1; check $? "the ClusterSPIFFEID is a regular resource of the release, not a hook" "ClusterSPIFFEIDs with a hook annotation: $hooked"
 
-out=$(STEP_TIMEOUT=1s "$INSTALL" install 2>&1); rc=$?
+# shellcheck disable=SC2086 # one word per release
+out=$(STEP_TIMEOUT=1s "$INSTALL" install $MESH_RELEASES 2>&1); rc=$?
 line=$(grep -m1 'FAILED' <<<"$out")
-[ $rc -ne 0 ] && grep -q 'step 1/8 FAILED: release ztd' <<<"$out" && ! grep -q 'step 2/8' <<<"$out"
+[ $rc -ne 0 ] && grep -q 'step 1/[0-9]* FAILED: release ztd' <<<"$out" && ! grep -q 'step 2/' <<<"$out"
 check $? "a release that does not reach a ready state within its timeout (here 1 s) stops the installer at that step, non-zero, naming the release" "$line"
 st=$(h status ztd -n ztd-system -o json | jq -r .info.status)
 [ "$st" = deployed ]; check $? "the failed release was rolled back by the lifecycle step" "ztd: $st, $(h history ztd -n ztd-system --max 1 -o json | jq -r '.[0].description')"
@@ -496,6 +510,10 @@ done
 code "$(for ns in "$SPIRE_NS" "$ISTIO_NS"; do k -n "$ns" get networkpolicy,ciliumnetworkpolicy -o custom-columns=NAMESPACE:.metadata.namespace,KIND:.kind,NAME:.metadata.name,OPENING:.metadata.annotations.ztd\\.facis\\.io/declared-opening --no-headers; done | sed 's/  */ /g')"
 pols() { { k -n "$1" get networkpolicy -o name; k -n "$1" get ciliumnetworkpolicy -o name; } | sed 's#.*/##' | sort | tr '\n' ' ' | sed 's/ $//'; }
 want_spire="allow-control-plane-openings allow-dns-egress allow-intra-plane allow-kube-api-egress default-deny"
+# The zone gateway's scrape of the SPIRE server's metrics, a declared opening when the zone enables it
+# (networkPolicy.observabilityScrape, docs/adr/0017-central-observability-backends.md).
+[ "$(yaml_get "$ZONE_VALUES" networkPolicy observabilityScrape enabled 2>/dev/null)" = True ] \
+  && want_spire="allow-control-plane-openings allow-dns-egress allow-intra-plane allow-kube-api-egress allow-observability-scrape-ingress default-deny"
 want_istio="allow-control-plane-openings allow-dns-egress allow-intra-plane allow-kube-api-egress allow-mesh-control-plane-ingress default-deny"
 [ "$(pols "$SPIRE_NS")" = "$want_spire" ]; check $? "$SPIRE_NS holds only the default deny, the DNS bypass, the intra-plane lane, the API lane and the entity-sourced openings (webhook, agents)" "$(pols "$SPIRE_NS")"
 [ "$(pols "$ISTIO_NS")" = "$want_istio" ]; check $? "$ISTIO_NS holds only the default deny, the DNS bypass, the intra-plane lane, the API lane, the webhook opening and the sidecars' xDS opening" "$(pols "$ISTIO_NS")"
@@ -942,7 +960,7 @@ xfcc_id=$(grep -o 'URI=[^;,]*' <<<"$xfcc" | head -1 | sed 's/^URI=//')
 [ "$xfcc_id" = "$SA_ID" ]; check $? "the peer sees the caller's own SPIFFE identity in X-Forwarded-Client-Cert ($SA_ID, the caller's own service account; any other ID fails)" "$xfcc"
 # xfcc-sanitized: the guard and the token store take their caller from this header, so a caller must not
 # be able to write it. A forged element naming another identity must be replaced by the peer's proxy
-# (SANITIZE_SET, mesh-wide in deployment/helm/values/istiod.yaml), not forwarded next to the real one.
+# (SANITIZE_SET, mesh-wide: zone-policy's EnvoyFilter xfcc-sanitize-set), not forwarded next to the real one.
 forged="By=spiffe://$TD/ns/$DATA/sa/peer;URI=spiffe://$TD/ns/$MGMT/sa/forged-caller"
 xfcc=$(k -n "$DATA" exec caller -c app -- curl -sS -m 15 -H "X-Forwarded-Client-Cert: $forged" "http://peer.$DATA.svc:8080/header?key=X-Forwarded-Client-Cert" 2>&1)
 [ "$(grep -o 'URI=[^;,]*' <<<"$xfcc" | sort -u)" = "URI=$SA_ID" ] && ! grep -q forged-caller <<<"$xfcc"
@@ -1656,8 +1674,11 @@ if [ "$keep_zone" != 1 ]; then
   [ "$(wc -w <<<"$CRDS_KEEP")" = 3 ] && ! grep -q '=keep' <<<"$CRDS_KEEP"
   check $? "the three SPIRE CRDs carry no helm.sh/resource-policy keep, so the uninstall of spire-crds removes them through Helm alone (the installer deletes CRDs itself only for istio-base)" "$CRDS_KEEP"
   "$INSTALL" uninstall >"$work/uninstall.log" 2>&1; rc=$?
-  head -1 "$work/uninstall.log" | grep -qx 'uninstall ztd-openbao: done' || rc=1
-  check $rc "the installer uninstalls the eight releases in reverse order, ztd-openbao first" "$(grep -c 'done$' "$work/uninstall.log") releases removed; first: $(head -1 "$work/uninstall.log")"
+  # The first release removed (a participant zone's telemetry releases come later in its order, and
+  # this proof does not install them: the installer reports them not installed).
+  first=$(grep -v ': not installed$' "$work/uninstall.log" | head -1)
+  [ "$first" = 'uninstall ztd-openbao: done' ] || rc=1
+  check $rc "the installer uninstalls the eight releases in reverse order, ztd-openbao first" "$(grep -c 'done$' "$work/uninstall.log") releases removed; first: ${first:-none}"
   code "$(cat "$work/uninstall.log")"
   # The umbrella's release namespace holds nothing once the umbrella is uninstalled; it goes last.
   k delete namespace ztd-system --ignore-not-found --wait=true >/dev/null 2>&1

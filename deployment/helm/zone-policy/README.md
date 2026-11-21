@@ -75,6 +75,13 @@ naming a path, a method, a host or an address:
   the umbrella's `allowMatrix` row, and an intra-plane pair, which names none, records `sidecar`. The
   rules themselves take no L7 decision (no path, method or host); the owner is the destination's
   sidecar, and [the L7 owner rule](#the-l7-owner-rule) keeps Cilium from adding a second one.
+- **Caller identity over XFCC.** `xfcc-sanitize-set`, an `EnvoyFilter` in the root namespace, sets
+  `forward_client_cert_details: SANITIZE_SET` on every inbound sidecar: the destination replaces any
+  `X-Forwarded-Client-Cert` a client sent with the one it builds from the certificate it verified,
+  so the guard and the token store, which take their caller from it, see only the authenticated
+  caller. It is mesh-wide and not per pod because the proxy rule below refuses `proxy.istio.io/config`
+  and any `PROXY_CONFIG` but `{}`; `meshConfig.defaultConfig.proxyHeaders` would be written into
+  every pod's `PROXY_CONFIG` by the injector.
 - **The denial log.** `mesh-default`, a `Telemetry` in the mesh root namespace, enables the
   access-log provider `denialLog.provider` (`denial-log`, defined by the `istiod` release in
   `deployment/helm/values/istiod.yaml`) with the filter

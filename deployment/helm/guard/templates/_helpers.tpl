@@ -16,10 +16,10 @@
 {{- if or (not (get $scopes "report:read")) (not (get $scopes "report:summary")) (eq (get $scopes "report:read") (get $scopes "report:summary")) -}}{{ fail "full-report and summary scope tenants must be distinct" }}{{- end -}}
 {{- end -}}
 
-{{/* XFCC sanitization is mesh-wide (deployment/helm/values/istiod.yaml, meshConfig.defaultConfig.proxyHeaders):
+{{/* XFCC sanitization is mesh-wide (zone-policy, EnvoyFilter xfcc-sanitize-set):
 zone-policy refuses a per-pod proxy configuration in a plane namespace, and native sidecars start the
 proxy before the application without holdApplicationUntilProxyStarts. */}}
 {{- define "guard.annotations" -}}
-{{- if hasKey .Values.podAnnotations "proxy.istio.io/config" -}}{{ fail "podAnnotations: proxy.istio.io/config is refused at admission in a plane namespace (zone-policy); XFCC sanitization is set mesh-wide in deployment/helm/values/istiod.yaml" }}{{- end -}}
+{{- if hasKey .Values.podAnnotations "proxy.istio.io/config" -}}{{ fail "podAnnotations: proxy.istio.io/config is refused at admission in a plane namespace (zone-policy); XFCC sanitization is mesh-wide, the EnvoyFilter xfcc-sanitize-set of zone-policy" }}{{- end -}}
 {{- toYaml .Values.podAnnotations -}}
 {{- end -}}

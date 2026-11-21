@@ -172,7 +172,7 @@ func check(root, chart string) error {
 		return err
 	}
 	// The caller's identity comes from the sidecar's XFCC, sound only if the sidecar replaces a client's:
-	// SANITIZE_SET is mesh-wide in the istiod values, as zone-policy refuses a per-pod proxy configuration.
+	// SANITIZE_SET is mesh-wide (zone-policy's EnvoyFilter), as zone-policy refuses a per-pod proxy configuration.
 	for _, d := range append([]object{deployment}, docs...) {
 		if d["kind"] == "Deployment" || d["kind"] == "Job" {
 			if err := need(at(d, "spec", "template", "metadata", "annotations", "proxy.istio.io/config") == nil, "runtime pods may not set proxy.istio.io/config (refused by zone-policy)"); err != nil {
@@ -180,15 +180,14 @@ func check(root, chart string) error {
 			}
 		}
 	}
-	data, err := os.ReadFile(filepath.Join(root, "deployment/helm/values/istiod.yaml"))
+	mesh, err := render(filepath.Join(root, "deployment/helm/zone-policy"), false)
 	if err != nil {
 		return err
 	}
-	var istiod object
-	if yaml.Unmarshal(data, &istiod) != nil {
-		return errors.New("invalid istiod values")
-	}
-	return need(at(istiod, "meshConfig", "defaultConfig", "proxyHeaders", "forwardedClientCert") == "SANITIZE_SET", "the mesh must sanitize caller identity (istiod meshConfig.defaultConfig.proxyHeaders)")
+	patches := list(at(find(mesh, "EnvoyFilter", "xfcc-sanitize-set"), "spec", "configPatches"))
+	sanitized := len(patches) == 1 && at(patches[0], "match", "context") == "SIDECAR_INBOUND" &&
+		at(patches[0], "patch", "value", "typed_config", "forward_client_cert_details") == "SANITIZE_SET"
+	return need(sanitized, "the mesh must sanitize caller identity on every inbound sidecar (zone-policy EnvoyFilter xfcc-sanitize-set)")
 }
 func main() {
 	if len(os.Args) != 3 {

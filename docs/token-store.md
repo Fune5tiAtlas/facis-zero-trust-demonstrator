@@ -320,9 +320,9 @@ are one proof. Refusals carry the reason code and the correlation id and nothing
 the `X-Forwarded-Client-Cert` its own sidecar sets from the client certificate it verified, and
 admits it only if its SPIFFE ID is on `--replay-callers`; otherwise 403 `TOK-CALLER-DENIED`. That is
 sound only under two deployment prerequisites, which the chart owes when the endpoints are
-deployed: the store's sidecar replaces any such header a client sent (`SANITIZE_SET`, mesh-wide in
-`meshConfig.defaultConfig.proxyHeaders` of `deployment/helm/values/istiod.yaml`, as `zone-policy`
-refuses a per-pod `proxy.istio.io/config`; and no ProxyConfig overriding it), and the API port is reachable only through the sidecar (STRICT mTLS and
+deployed: the store's sidecar replaces any such header a client sent (`SANITIZE_SET`, mesh-wide through
+the `EnvoyFilter` `xfcc-sanitize-set` of `zone-policy`, as `zone-policy` refuses a per-pod
+`proxy.istio.io/config`; and no ProxyConfig overriding it), and the API port is reachable only through the sidecar (STRICT mTLS and
 a NetworkPolicy). As a second line the store accepts exactly one certificate element across every
 header field: a client-supplied element next to the sidecar's, which the default `APPEND_FORWARD`
 would produce, is refused.

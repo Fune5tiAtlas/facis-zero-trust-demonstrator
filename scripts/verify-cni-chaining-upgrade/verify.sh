@@ -214,7 +214,9 @@ check $rc "the cluster $CLUSTER is created with Cilium $FROM chained (cni.exclus
 if [ $rc -ne 0 ]; then code "$(tail -20 "$work/kind.log")"; fi
 image_from=$(k -n kube-system get ds cilium -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)
 server=$(k version -o json 2>/dev/null | jq -r .serverVersion.gitVersion)
-KUBE_CONTEXT=$CONTEXT ZONE_VALUES=$ZONE_VALUES "$INSTALL" install >"$work/install.log" 2>&1; rc=$?
+# The eight releases of the mesh, by name: the kind zone's telemetry releases need the demonstrator's
+# client certificate and have their own proof (scripts/verify-observability).
+KUBE_CONTEXT=$CONTEXT ZONE_VALUES=$ZONE_VALUES "$INSTALL" install ztd spire-crds spire istio-base istiod istio-cni zone-policy ztd-openbao >"$work/install.log" 2>&1; rc=$?
 check $rc "the zone is installed with scripts/install-zone/install.sh" "$(tail -1 "$work/install.log")"
 [ $rc -ne 0 ] && code "$(tail -30 "$work/install.log")"
 stand_ins "$work/stand-ins.yaml"

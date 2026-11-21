@@ -69,11 +69,11 @@ app.kubernetes.io/component: server
 {{- end -}}
 
 {{/* Per-pod overrides, and native sidecars in runtime mode. The inbound XFCC prerequisite (SANITIZE_SET) is
-mesh-wide (deployment/helm/values/istiod.yaml, meshConfig.defaultConfig.proxyHeaders): zone-policy refuses
+mesh-wide (zone-policy, EnvoyFilter xfcc-sanitize-set): zone-policy refuses
 a per-pod proxy configuration in a plane namespace. */}}
 {{- define "token-store.annotations" -}}
 {{- $annotations := deepCopy .Values.podAnnotations -}}
-{{- if hasKey $annotations "proxy.istio.io/config" -}}{{ fail "podAnnotations: proxy.istio.io/config is refused at admission in a plane namespace (zone-policy); XFCC sanitization is set mesh-wide in deployment/helm/values/istiod.yaml" }}{{- end -}}
+{{- if hasKey $annotations "proxy.istio.io/config" -}}{{ fail "podAnnotations: proxy.istio.io/config is refused at admission in a plane namespace (zone-policy); XFCC sanitization is mesh-wide, the EnvoyFilter xfcc-sanitize-set of zone-policy" }}{{- end -}}
 {{- if .Values.runtime.enabled -}}
 {{- $_ := set $annotations "sidecar.istio.io/nativeSidecar" "true" -}}
 {{- end -}}
