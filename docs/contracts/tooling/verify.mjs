@@ -70,8 +70,8 @@ const schemas = new Map(); // stem -> { file, id }
 for (const file of schemaFiles) {
   const schema = readJSON(file);
   // The mock attestation format is fixed by ADR 0011 and versioned with the pinned CMC commit, not as an interface.
-  if (file.startsWith(contracts) && path.basename(file) !== 'mock-attestation.schema.json' && !/\/v1\//.test(schema.$id ?? '') && !/\.v1\.schema\.json$/.test(schema.$id ?? '')) {
-    fail(`${rel(file)}: $id must carry v1`);
+  if (file.startsWith(contracts) && path.basename(file) !== 'mock-attestation.schema.json' && !/\/v[0-9]+\//.test(schema.$id ?? '') && !/\.v[0-9]+\.schema\.json$/.test(schema.$id ?? '')) {
+    fail(`${rel(file)}: $id must carry its version (v1, v2, ...)`);
   }
   ajv.addSchema(schema);
   schemas.set(path.basename(file, '.schema.json'), { file, id: schema.$id });
