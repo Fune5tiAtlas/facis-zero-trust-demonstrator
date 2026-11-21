@@ -7,7 +7,8 @@
 #   COSIGN_KEY=<key file or env://VAR> [COSIGN_PASSWORD=...] [COSIGN=cosign] [TSA_BUNDLE=tsa-bundle] \
 #     scripts/supplychain/publish-tsa-bundle.sh <policy-dir> <revision> <registry/repository> <public-key> [zone-data.json]
 #
-# COSIGN_ALLOW_HTTP_REGISTRY=true lets cosign reach a plain-http test registry (the kind proof only).
+# OUT=<file> keeps a copy of the published bundle. COSIGN_ALLOW_HTTP_REGISTRY=true lets cosign reach a
+# plain-http test registry (the kind proof only).
 set -euo pipefail
 
 [ $# -ge 4 ] && [ $# -le 5 ] || { echo "usage: $0 <policy-dir> <revision> <registry/repository> <public-key> [zone-data.json]" >&2; exit 2; }
@@ -35,5 +36,6 @@ case "$ref" in
   *@sha256:*) ;;
   *) echo "publish-tsa-bundle: upload printed no digest reference" >&2; exit 1 ;;
 esac
+[ -z "${OUT:-}" ] || cp "$work/bundle.zip" "$OUT"
 "$cosign" sign --yes --key "$COSIGN_KEY" --tlog-upload=false --new-bundle-format=false ${http[@]+"${http[@]}"} "$ref" >/dev/null 2>&1
 echo "$ref"
