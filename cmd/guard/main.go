@@ -64,6 +64,7 @@ func run() error {
 	_ = ops.Shutdown(shutdown)
 	return err
 }
+
 // runID names this process's run on the IF-01 feed: one run per process, its seq from 0.
 func runID() string { return "guard-" + time.Now().UTC().Format("20060102T150405.000000000Z") }
 
