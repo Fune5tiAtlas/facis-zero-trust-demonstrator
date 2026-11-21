@@ -157,9 +157,11 @@ PY
 
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
 
+# MESH_SCOPE: "admission-only" while a run renders or installs release gatekeeper alone (zone_mesh).
+MESH_SCOPE=
 plan() {
   zone_file
-  zone_mesh
+  zone_mesh "$MESH_SCOPE"
   say "Zone file: ${ZONE_VALUES#"$REPO"/}   context: $KUBE_CONTEXT"
   local i=0 step release ns chart values facts extra label
   for step in "${STEPS[@]}"; do
@@ -360,7 +362,8 @@ admission_setup() {
 render() {
   local want=("$@") step release ns chart values facts extra path out flags
   zone_file
-  zone_mesh "$(admission_only ${want[@]+"${want[@]}"})"
+  MESH_SCOPE=$(admission_only ${want[@]+"${want[@]}"})
+  zone_mesh "$MESH_SCOPE"
   known_releases ${want[@]+"${want[@]}"}
   # The coupling of zone-policy to istiod is checked whenever either of them is rendered.
   if [ ${#want[@]} -eq 0 ] || [[ " ${want[*]} " == *" istiod "* ]] || [[ " ${want[*]} " == *" zone-policy "* ]]; then
@@ -529,7 +532,8 @@ install_admission() {
 install() {
   local want=("$@")
   zone_file
-  zone_mesh "$(admission_only ${want[@]+"${want[@]}"})"
+  MESH_SCOPE=$(admission_only ${want[@]+"${want[@]}"})
+  zone_mesh "$MESH_SCOPE"
   preflight
   known_releases ${want[@]+"${want[@]}"}
   # Adopting the standalone admission objects is the operator's decision, refused before anything.
