@@ -73,6 +73,8 @@ contract with the component charts:
 | `atls-gateway-to-tcr` | `atls-gateway` | `atls-gateway` | `tcr` |
 | `workloads-to-otel-collector` | every data-plane pod | none: the whole plane (the namespace) | `otel-collector`, ports 4317 and 4318 only |
 | `backend-to-verification-service` | `backend` | `backend` | `verification-service` |
+| `connector-to-openbao` | `ztd-connector` | `ztd-connector` | `openbao` (`component=server`), port 8200 only |
+| `token-store-to-openbao` | `ztd-token-store` (`app.kubernetes.io/component=server`) | `ztd-token-store` | `openbao` (`component=server`), port 8200 only |
 
 `intraPlanePairs` takes entries of the same shape for a pair inside one plane namespace between
 components of different releases. The chart renders nothing for them, as `allow-intra-plane` already

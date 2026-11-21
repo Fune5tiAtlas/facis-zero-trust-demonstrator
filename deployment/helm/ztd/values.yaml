@@ -303,6 +303,28 @@ allowMatrix:
     to: { plane: management, podSelector: { app.kubernetes.io/name: verification-service }, serviceAccount: verification-service }
     enforcedBy: mesh
     l7Owner: sidecar
+  # The connector's and the token store's OpenBao lanes: transit, KV and the Kubernetes auth login
+  # (docs/secrets.md#kubernetes-auth), on the API port only.
+  - name: connector-to-openbao
+    from: { plane: data, podSelector: { app.kubernetes.io/name: ztd-connector }, serviceAccount: ztd-connector }
+    to:
+      plane: management
+      podSelector: { app.kubernetes.io/name: openbao, component: server }
+      serviceAccount: ztd-openbao
+      ports:
+        - { port: 8200, protocol: TCP }
+    enforcedBy: mesh
+    l7Owner: sidecar
+  - name: token-store-to-openbao
+    from: { plane: data, podSelector: { app.kubernetes.io/name: ztd-token-store, app.kubernetes.io/component: server }, serviceAccount: ztd-token-store }
+    to:
+      plane: management
+      podSelector: { app.kubernetes.io/name: openbao, component: server }
+      serviceAccount: ztd-openbao
+      ports:
+        - { port: 8200, protocol: TCP }
+    enforcedBy: mesh
+    l7Owner: sidecar
 
 # --------------------------------------------------------------------------------------------
 # Pairs inside one plane namespace between components of different releases, at the mesh layer
