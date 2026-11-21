@@ -1,7 +1,6 @@
 package tsabundle
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -105,7 +104,7 @@ func TestOpenAcceptsOnlyWhatTheTrustRootSigned(t *testing.T) {
 	}{
 		"other key":         {bundle(t, other, "v1"), expect},
 		"declared revision": {good, Expect{Key: &trusted.PublicKey, Coordinates: coords, Revision: "v2"}},
-		"other policy":      {good, Expect{Key: &trusted.PublicKey, Coordinates: Coordinates{"policies", "facis", "guard", "2.0"}, Revision: "v1"}},
+		"other policy":      {good, Expect{Key: &trusted.PublicKey, Coordinates: Coordinates{"policies", "facis", "other", "1.0"}, Revision: "v1"}},
 		"tampered policy": {rebuild(t, good, func(ps []file) []file {
 			ps[1].body = []byte("package facis.guard\ndecision := {\"allow\": true}\n")
 			return ps
@@ -142,14 +141,13 @@ func TestPackRefusesAPresetRevision(t *testing.T) {
 	}
 }
 
-// fakeTSA imports what it is given and evaluates like the policy does: the revision is
+// fakeTSA keeps one policy per key, as the TSA does, and evaluates like the policy: the revision is
 // data.bundle.revision, unless the Rego writes a literal bundle_revision of its own.
 type fakeTSA struct {
 	mu       sync.Mutex
-	revision string
+	policies map[string]string // evaluation path -> revision it answers with
 	imports  int
-	fail     int  // evaluations still to fail, as a slow or overloaded TSA does
-	stale    bool // the next import is masked by a re-cached old policy, as in the TSA's cache race
+	fail     int // evaluations still to fail, as a slow or overloaded TSA does
 }
 
 var literalRevision = regexp.MustCompile(`"bundle_revision": "([^"]+)"`)
@@ -157,34 +155,38 @@ var literalRevision = regexp.MustCompile(`"bundle_revision": "([^"]+)"`)
 func (f *fakeTSA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	switch r.URL.Path {
-	case "/v1/policy/import":
+	if r.URL.Path == "/v1/policy/import" {
 		body, _ := io.ReadAll(r.Body)
 		files, _ := unzip(body)
 		parts, _ := unzip(files[0].body)
-		f.imports++
-		if f.stale {
-			f.stale = false
-			return
-		}
+		var m metadata
+		_ = json.Unmarshal(parts[0].body, &m)
 		var data struct{ Bundle struct{ Revision string } }
 		_ = json.Unmarshal(parts[2].body, &data)
-		f.revision = data.Bundle.Revision
-		if m := literalRevision.FindSubmatch(parts[1].body); m != nil {
-			f.revision = string(m[1])
+		answer := data.Bundle.Revision
+		if lit := literalRevision.FindSubmatch(parts[1].body); lit != nil {
+			answer = string(lit[1])
 		}
-	case coords.EvaluationPath():
+		f.policies[Coordinates{m.Policy.Repository, m.Policy.Group, m.Policy.Name, m.Policy.Version}.EvaluationPath()] = answer
+		f.imports++
+		return
+	}
+	answer, ok := f.policies[r.URL.Path]
+	if f.fail > 0 || !ok {
 		if f.fail > 0 {
 			f.fail--
-			http.Error(w, "eval_cancel_error", http.StatusInternalServerError)
-			return
 		}
-		if f.revision == "" {
-			http.Error(w, "policy not found", http.StatusInternalServerError)
-			return
-		}
-		_, _ = io.WriteString(w, `{"decision":{"bundle_revision":"`+f.revision+`"}}`)
+		http.Error(w, "policy not found", http.StatusInternalServerError)
+		return
 	}
+	_, _ = io.WriteString(w, `{"decision":{"bundle_revision":"`+answer+`"}}`)
+}
+
+// answers is what the TSA answers under a revision's key ("" when it holds none).
+func (f *fakeTSA) answers(revision string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.policies[coords.At(revision).EvaluationPath()]
 }
 
 // lying is a correctly signed bundle whose data says revision but whose Rego reports claims.
@@ -215,11 +217,11 @@ func lying(t *testing.T, k *ecdsa.PrivateKey, revision, claims string) []byte {
 }
 
 func TestSyncerActivatesVerifiedBundlesOnlyAndRollsBack(t *testing.T) {
-	ActivationWindow, reimportAfter = 2*time.Second, 300*time.Millisecond
+	ActivationWindow = 2 * time.Second
 	trusted, other := newKey(t), newKey(t)
 	store := map[string][]byte{"v1": bundle(t, trusted, "v1"), "v1-resigned": bundle(t, trusted, "v1"), "v2": bundle(t, trusted, "v2"),
 		"forged": bundle(t, other, "v3"), "lying": lying(t, trusted, "v3", "v2")}
-	tsa := &fakeTSA{}
+	tsa := &fakeTSA{policies: map[string]string{}}
 	srv := httptest.NewServer(tsa)
 	defer srv.Close()
 	s := &Syncer{TSA: srv.URL, Policy: coords, Key: &trusted.PublicKey, HTTP: srv.Client(), Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -230,65 +232,61 @@ func TestSyncerActivatesVerifiedBundlesOnlyAndRollsBack(t *testing.T) {
 			return nil, errors.New("not found")
 		}}
 	ctx := context.Background()
-	step := func(d Desired, wantErr bool, want, wantRef string) {
+	step := func(d Desired, wantErr bool, want string) {
 		t.Helper()
 		if err := s.Reconcile(ctx, d); (err != nil) != wantErr {
 			t.Fatalf("%v: error %v", d, err)
 		}
-		if s.Active() != want || tsa.revision != want || s.ref != wantRef {
-			t.Fatalf("%v: active %q (%s), tsa %q, want %q (%s)", d, s.Active(), s.ref, tsa.revision, want, wantRef)
+		if s.Active() != want || s.EvaluationPath() != coords.At(want).EvaluationPath() || tsa.answers(want) != want {
+			t.Fatalf("%v: active %q at %q, tsa answers %q there, want %q", d, s.Active(), s.EvaluationPath(), tsa.answers(want), want)
 		}
 	}
-	step(Desired{"v1", "v1"}, false, "v1", "v1")
-	imports := tsa.imports
-	step(Desired{"v1-resigned", "v1"}, false, "v1", "v1-resigned") // same revision, another digest: re-activated
-	if tsa.imports != imports+1 {
-		t.Fatal("a changed reference with the same revision was not imported")
+	imports := func() int { tsa.mu.Lock(); defer tsa.mu.Unlock(); return tsa.imports }
+	step(Desired{"v1", "v1"}, false, "v1")
+	n := imports()
+	step(Desired{"v1-resigned", "v1"}, true, "v1") // the same revision for another digest: refused
+	step(Desired{"v2", "v2"}, false, "v2")
+	if imports() != n+1 {
+		t.Fatalf("%d imports, want only v2's", imports()-n)
 	}
-	imports = tsa.imports
-	tsa.stale = true // the first import is masked: imported again, then active
-	step(Desired{"v2", "v2"}, false, "v2", "v2")
-	if tsa.imports != imports+2 {
-		t.Fatalf("masked import: %d imports, want 2", tsa.imports-imports)
+	n = imports()
+	step(Desired{"forged", "v3"}, true, "v2")  // signed by another key: refused before import
+	step(Desired{"v1", "v5"}, true, "v2")      // a bundle that is not the declared revision
+	step(Desired{"missing", "v4"}, true, "v2") // registry failure
+	if imports() != n {
+		t.Fatal("a refused bundle reached the TSA")
 	}
-	step(Desired{"forged", "v3"}, true, "v2", "v2")  // signed by another key: refused before import
-	step(Desired{"v1", "v5"}, true, "v2", "v2")      // a bundle that is not the declared revision
-	step(Desired{"missing", "v4"}, true, "v2", "v2") // registry failure
-	// Signed, data says v3, Rego answers v2: imported, found wrong, and the previous bundle restored.
-	imports = tsa.imports
-	step(Desired{"lying", "v3"}, true, "v2", "v2")
-	if tsa.imports < imports+2 {
-		t.Fatalf("lying candidate: %d imports, want the candidate (possibly repeated) and the restore", tsa.imports-imports)
+	// Signed, data says v3, Rego answers v2: imported under its own key, found wrong, never served;
+	// v2 is untouched and keeps serving.
+	step(Desired{"lying", "v3"}, true, "v2")
+	if tsa.answers("v3") != "v2" || imports() != n+1 {
+		t.Fatal("the lying candidate was not imported under its own key")
 	}
-	imports = tsa.imports
-	step(Desired{"lying", "v3"}, true, "v2", "v2") // declared still: not imported again, v2 keeps serving
-	if tsa.imports != imports {
-		t.Fatal("a declaration that failed activation was imported again at once")
+	n = imports()
+	step(Desired{"lying", "v3"}, true, "v2") // still declared: not imported again yet
+	if imports() != n {
+		t.Fatal("a declaration that failed after import was imported again at once")
 	}
-	if !bytes.Equal(s.last, store["v2"]) {
-		t.Fatal("the cached bundle is not the last verified one")
+	step(Desired{"v1", "v1"}, false, "v1") // rollback
+	n = imports()
+	step(Desired{"v1", "v1"}, false, "v1") // already active: no import
+	tsa.fail = 1                           // one unanswered probe: no import, still served
+	step(Desired{"v1", "v1"}, false, "v1")
+	if imports() != n {
+		t.Fatal("an active pair or a single failed probe caused an import")
 	}
-	step(Desired{"v1", "v1"}, false, "v1", "v1") // rollback
-	imports = tsa.imports
-	step(Desired{"v1", "v1"}, false, "v1", "v1") // already active: no import
-	if tsa.imports != imports {
-		t.Fatal("an active pair was imported again")
-	}
-	tsa.fail = 1 // one unanswered probe: no restore, no import, still served
-	step(Desired{"v1", "v1"}, false, "v1", "v1")
-	if tsa.imports != imports {
-		t.Fatal("a single failed probe re-imported the bundle")
-	}
-	step(Desired{"v1", "v1"}, false, "v1", "v1") // answered again: the count starts over
-	// The TSA restarted empty: restored from the cache after lostAfter polls, even while the
+	step(Desired{"v1", "v1"}, false, "v1") // answered again: the count starts over
+	// The TSA restarted empty: re-imported from the cache after lostAfter polls, even while the
 	// declaration is refused.
-	tsa.revision = ""
+	tsa.mu.Lock()
+	tsa.policies = map[string]string{}
+	tsa.mu.Unlock()
 	for i := 1; i < lostAfter; i++ {
-		if err := s.Reconcile(ctx, Desired{"forged", "v3"}); err == nil || tsa.revision != "" {
+		if err := s.Reconcile(ctx, Desired{"forged", "v3"}); err == nil || tsa.answers("v1") != "" {
 			t.Fatalf("poll %d: restored early", i)
 		}
 	}
-	step(Desired{"forged", "v3"}, true, "v1", "v1")
+	step(Desired{"forged", "v3"}, true, "v1")
 	if strings.Contains(string(JWKS(&trusted.PublicKey)), "\"d\"") {
 		t.Fatal("JWKS carries private material")
 	}

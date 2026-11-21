@@ -182,16 +182,15 @@ func serve(args []string) error {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(jwks)
 	})
-	// Only the policy's evaluation leaves the pod; import, lock, export and admin stay on loopback.
+	// Only the policy's evaluation leaves the pod, forwarded to the active revision's key; import,
+	// lock, export and admin stay on loopback.
 	mux.HandleFunc("POST "+evaluation, func(w http.ResponseWriter, r *http.Request) {
-		// Nothing is forwarded while no verified bundle is active, including during a swap. Counted
-		// before the check, so a swap that stopped forwarding sees every request that got through.
-		s.InFlight.Add(1)
-		defer s.InFlight.Add(-1)
-		if s.Active() == "" {
+		path := s.EvaluationPath()
+		if path == "" {
 			http.Error(w, "no verified policy bundle is active", http.StatusServiceUnavailable)
 			return
 		}
+		r.URL.Path, r.URL.RawPath = path, ""
 		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 		proxy.ServeHTTP(w, r)
 	})

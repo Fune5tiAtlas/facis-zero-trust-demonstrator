@@ -40,7 +40,8 @@ const (
 )
 
 // Coordinates name a policy in the TSA: /policy/{repository}/{group}/{name}/{version}/evaluation.
-// The Rego package must be "{group}.{name}".
+// The Rego package must be "{group}.{name}". A bundle's version is its revision (At); the configured
+// version only names the path the sidecar serves to the IF-05 adapters.
 type Coordinates struct {
 	Repository string `json:"repository"`
 	Group      string `json:"group"`
@@ -58,6 +59,14 @@ func (c Coordinates) Validate() error {
 		}
 	}
 	return nil
+}
+
+// At is the policy as one bundle revision is stored in the TSA: the revision is its version. Each
+// revision therefore has its own TSA key and cache entry, and switching revisions never depends on
+// the TSA dropping a cached policy (which it does unreliably, see Syncer).
+func (c Coordinates) At(revision string) Coordinates {
+	c.Version = revision
+	return c
 }
 
 // EvaluationPath is the TSA path that evaluates the policy.
@@ -78,15 +87,13 @@ type metadata struct {
 }
 
 // Pack builds the inner policy_bundle.zip from a policy directory holding policy.rego and data.json:
-// metadata.json first (the TSA requires it), then the policy, then the data with
-// data.bundle.revision set to revision. dataFile, when not empty, replaces the directory's data.json
+// metadata.json first (the TSA requires it, with the revision as the policy version), then the
+// policy, then the data with data.bundle.revision set to revision. dataFile, when not empty, replaces the directory's data.json
 // (a zone's own configuration).
 func Pack(dir, dataFile string, c Coordinates, revision string, now time.Time) ([]byte, error) {
+	c = c.At(revision)
 	if err := c.Validate(); err != nil {
-		return nil, err
-	}
-	if revision == "" {
-		return nil, errors.New("revision is required")
+		return nil, errors.New("coordinates or revision invalid: revisions are [A-Za-z0-9._-], at most 64")
 	}
 	rego, err := os.ReadFile(filepath.Join(dir, "policy.rego"))
 	if err != nil {
@@ -185,7 +192,7 @@ func Open(outer []byte, e Expect) error {
 	switch {
 	case m.PublicKeyURL != KeyURL:
 		return errors.New("bundle names a key URL other than the pod-local trust root")
-	case got != e.Coordinates:
+	case got != e.Coordinates.At(e.Revision):
 		return errors.New("bundle targets another policy")
 	case m.Policy.Locked:
 		return errors.New("bundle is locked")

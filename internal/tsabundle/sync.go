@@ -24,10 +24,15 @@ type Desired struct {
 	Revision string `json:"revision"`
 }
 
-// Syncer keeps the TSA on the desired bundle. Activation is transactional: nothing reaches the TSA's
-// import before Open accepted it; evaluations are not forwarded while a bundle is being swapped; a
-// bundle counts as active only once an evaluation reports its revision; and a candidate that does
-// not is replaced by the last verified bundle, which the Syncer keeps for that purpose.
+// Syncer keeps the TSA on the desired bundle.
+//
+// Each revision is imported under its own TSA key (Coordinates.At), next to the active one, and
+// becomes active only when an evaluation under that key answers with that revision; activation is
+// then the switch of the key the sidecar forwards evaluations to, an atomic step of its own. The
+// TSA's own replace-in-place is avoided on purpose: in v1.1.4 it drops its policy cache through a
+// notification that is lost when the import request ends first, so a replaced policy can keep
+// answering indefinitely. A candidate that is refused, before or after import, is never switched to,
+// so the previous bundle keeps serving throughout.
 type Syncer struct {
 	TSA    string // TSA base URL, pod-local
 	Policy Coordinates
@@ -37,87 +42,60 @@ type Syncer struct {
 	HTTP  *http.Client
 	Log   *slog.Logger
 
-	serving atomic.Bool // the TSA evaluates the last verified bundle; evaluations may be forwarded
-	last    []byte      // the last verified and activated bundle, its reference and revision
-	ref     string
-	rev     atomic.Value // string
-	misses  int          // consecutive probes without an answer
-
-	// failed is the last declaration that was imported and did not answer with its revision; it is
-	// not imported again before RetryFailedAfter, since every attempt stops evaluations for up to
-	// ActivationWindow.
-	failed   Desired
+	active   atomic.Pointer[activeBundle] // what evaluations are forwarded to; nil when nothing is
+	last     *activeBundle                // the last activated bundle, kept to re-import after a TSA restart
+	misses   int                          // consecutive unanswered probes of the active revision
+	failed   Desired                      // the last declaration that failed after import, and when
 	failedAt time.Time
-
-	// InFlight counts evaluations being forwarded to the TSA; the gate keeps it.
-	InFlight atomic.Int64
+	imported map[string]string // revision -> reference of every bundle imported
 }
 
-// ActivationWindow bounds the wait for an imported bundle to answer with its revision: the TSA
-// recompiles the policy on every evaluation, which a loaded node makes slow.
-var ActivationWindow = 30 * time.Second
+type activeBundle struct {
+	ref, revision string
+	outer         []byte
+}
 
-// lostAfter is how many consecutive unanswered probes count as a TSA that lost its policy. A single
-// slow or failed evaluation is not: restoring on it would make the pod flap under load.
+// lostAfter is how many consecutive unanswered probes count as a TSA that lost its policies (it
+// starts empty after a restart). A single slow evaluation is not.
 const lostAfter = 3
 
-// Active is the revision evaluations are served under, "" while none is (startup, a swap, a TSA
-// that lost its policy).
+// ActivationWindow bounds the wait for an imported revision to answer.
+var ActivationWindow = 30 * time.Second
+
+// RetryFailedAfter is how long a declaration that failed after import is left alone.
+var RetryFailedAfter = 5 * time.Minute
+
+// Active is the revision evaluations are forwarded to, "" when none.
 func (s *Syncer) Active() string {
-	if !s.serving.Load() {
-		return ""
+	if a := s.active.Load(); a != nil {
+		return a.revision
 	}
-	v, _ := s.rev.Load().(string)
-	return v
+	return ""
 }
 
-func (s *Syncer) revision() string { v, _ := s.rev.Load().(string); return v }
+// EvaluationPath is the TSA path of the active revision, "" when none.
+func (s *Syncer) EvaluationPath() string {
+	if a := s.active.Load(); a != nil {
+		return s.Policy.At(a.revision).EvaluationPath()
+	}
+	return ""
+}
 
-// Probe evaluates an empty input: the policy denies it, naming the revision it evaluated with. This
-// reads the revision the TSA actually uses, so a TSA restart (which empties it) is noticed. ok is
-// false when the TSA gave no decision at all.
-func (s *Syncer) Probe(ctx context.Context) (revision string, ok bool) {
+// Probe evaluates an empty input under revision's key: the policy denies it, naming the revision it
+// evaluated with. ok is false when the TSA gave no decision.
+func (s *Syncer) Probe(ctx context.Context, revision string) (answered string, ok bool) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	d, err := Evaluate(ctx, s.HTTP, s.TSA+s.Policy.EvaluationPath(), []byte("{}"))
+	d, err := Evaluate(ctx, s.HTTP, s.TSA+s.Policy.At(revision).EvaluationPath(), []byte("{}"))
 	if err != nil {
 		return "", false
 	}
 	return d.BundleRevision, true
 }
 
-// load imports a verified bundle and waits until an evaluation reports its revision.
-//
-// The TSA replaces the policy under a lock but drops its policy cache asynchronously, and an
-// evaluation that read the old policy before the swap can put it back into the cache afterwards,
-// where it stays until the next change. So load first waits for the evaluations it forwarded to
-// finish (the caller has stopped forwarding new ones), and imports again whenever the old revision is
-// still answering after reimportAfter: each import drops the cache again.
+// load imports a verified bundle under its revision's key and waits until that key answers with
+// the revision.
 func (s *Syncer) load(ctx context.Context, outer []byte, revision string) error {
-	for deadline := time.Now().Add(10 * time.Second); s.InFlight.Load() > 0 && time.Now().Before(deadline); {
-		time.Sleep(50 * time.Millisecond)
-	}
-	got := ""
-	for deadline := time.Now().Add(ActivationWindow); time.Now().Before(deadline); {
-		if err := s.importBundle(ctx, outer); err != nil {
-			return err
-		}
-		for retry := time.Now().Add(reimportAfter); time.Now().Before(retry); time.Sleep(200 * time.Millisecond) {
-			if got, _ = s.Probe(ctx); got == revision {
-				return nil
-			}
-		}
-	}
-	return fmt.Errorf("imported bundle evaluates as revision %q, not %q", got, revision)
-}
-
-// RetryFailedAfter is how long a declaration that failed activation is left alone.
-var RetryFailedAfter = 5 * time.Minute
-
-// reimportAfter is how long the previous revision may keep answering before load imports again.
-var reimportAfter = 5 * time.Second
-
-func (s *Syncer) importBundle(ctx context.Context, outer []byte) error {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, s.TSA+"/v1/policy/import", bytes.NewReader(outer))
 	req.Header.Set("Content-Type", "application/zip")
 	resp, err := s.HTTP.Do(req)
@@ -129,46 +107,58 @@ func (s *Syncer) importBundle(ctx context.Context, outer []byte) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("tsa import: %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
+	got := ""
+	for deadline := time.Now().Add(ActivationWindow); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+		var ok bool
+		if got, ok = s.Probe(ctx, revision); ok {
+			break
+		}
+	}
+	if got != revision {
+		return fmt.Errorf("imported bundle evaluates as revision %q, not %q", got, revision)
+	}
 	return nil
-}
-
-// restore puts the last verified bundle back, or leaves nothing served if there is none or it fails.
-func (s *Syncer) restore(ctx context.Context) {
-	if s.last == nil {
-		return
-	}
-	if err := s.load(ctx, s.last, s.revision()); err != nil {
-		s.Log.Error("previous bundle not restored", "bundle", s.ref, "revision", s.revision(), "reason", err.Error())
-		return
-	}
-	s.serving.Store(true)
-	s.Log.Info("previous bundle restored", "bundle", s.ref, "revision", s.revision())
 }
 
 // Reconcile makes the declared reference and revision the active pair.
 func (s *Syncer) Reconcile(ctx context.Context, d Desired) error {
-	// The TSA must still evaluate the last verified bundle: a different revision is restored at once,
-	// no answer only after lostAfter polls in a row (a restarted TSA is empty and keeps failing).
-	got, ok := s.Probe(ctx)
-	if ok {
-		s.misses = 0
-	} else {
-		s.misses++
+	// The active revision must still answer; a restarted TSA is empty: re-import it from the cache.
+	if s.last != nil {
+		got, ok := s.Probe(ctx, s.last.revision)
+		switch {
+		case ok && got == s.last.revision:
+			s.misses = 0
+			s.active.Store(s.last)
+		case !ok:
+			s.misses++
+		}
+		if s.misses >= lostAfter || (ok && got != s.last.revision) {
+			s.active.Store(nil)
+			s.misses = 0
+			if err := s.load(ctx, s.last.outer, s.last.revision); err != nil {
+				s.Log.Error("active bundle not restored", "bundle", s.last.ref, "revision", s.last.revision, "reason", err.Error())
+			} else {
+				s.active.Store(s.last)
+				s.Log.Info("active bundle restored", "bundle", s.last.ref, "revision", s.last.revision)
+			}
+		}
 	}
-	if s.last == nil || (ok && got != s.revision()) || s.misses >= lostAfter {
-		s.serving.Store(false)
-		s.misses = 0
-		s.restore(ctx)
-	}
-	if s.serving.Load() && d.Bundle == s.ref && d.Revision == s.revision() {
+	if s.last != nil && d.Bundle == s.last.ref && d.Revision == s.last.revision {
 		return nil
 	}
 	refuse := func(err error) error {
-		s.Log.Error("bundle refused", "bundle", d.Bundle, "revision", d.Revision, "active_bundle", s.ref, "active_revision", s.Active(), "reason", err.Error())
+		s.Log.Error("bundle refused", "bundle", d.Bundle, "revision", d.Revision, "active_revision", s.Active(), "reason", err.Error())
 		return err
 	}
 	if d.Bundle == "" || d.Revision == "" {
 		return refuse(errors.New("desired bundle and revision are required"))
+	}
+	// A revision names one bundle: its key in the TSA is taken, and decisions only carry the revision.
+	if ref, ok := s.imported[d.Revision]; ok && ref != d.Bundle {
+		return refuse(fmt.Errorf("revision %s was imported as %s; a revision is never reused for another bundle", d.Revision, ref))
+	}
+	if d == s.failed && time.Since(s.failedAt) < RetryFailedAfter {
+		return refuse(fmt.Errorf("failed after import at %s; not retried before %s", s.failedAt.UTC().Format(time.RFC3339), s.failedAt.Add(RetryFailedAfter).UTC().Format(time.RFC3339)))
 	}
 	outer, err := s.Fetch(ctx, d.Bundle)
 	if err != nil {
@@ -177,19 +167,17 @@ func (s *Syncer) Reconcile(ctx context.Context, d Desired) error {
 	if err := Open(outer, Expect{Key: s.Key, Coordinates: s.Policy, Revision: d.Revision}); err != nil {
 		return refuse(err)
 	}
-	if d == s.failed && time.Since(s.failedAt) < RetryFailedAfter {
-		return refuse(fmt.Errorf("failed activation at %s; not retried before %s", s.failedAt.UTC().Format(time.RFC3339), s.failedAt.Add(RetryFailedAfter).UTC().Format(time.RFC3339)))
+	if s.imported == nil {
+		s.imported = map[string]string{}
 	}
-	previous := s.Active()
-	s.serving.Store(false)
+	s.imported[d.Revision] = d.Bundle
 	if err := s.load(ctx, outer, d.Revision); err != nil {
 		s.failed, s.failedAt = d, time.Now()
-		s.restore(ctx)
 		return refuse(err)
 	}
-	s.last, s.ref = outer, d.Bundle
-	s.rev.Store(d.Revision)
-	s.serving.Store(true)
+	previous := s.Active()
+	s.last = &activeBundle{ref: d.Bundle, revision: d.Revision, outer: outer}
+	s.active.Store(s.last)
 	s.Log.Info("bundle activated", "bundle", d.Bundle, "revision", d.Revision, "previous_revision", previous)
 	return nil
 }
