@@ -4,17 +4,32 @@
 # and a local registry holding test images signed and attested with the release script and an
 # ephemeral key. Runs the admission catalogue and fails if any case does not behave as specified.
 #
-#   BIN=<dir with kind kubectl cosign syft and the Gatekeeper chart> scripts/admission/kind-e2e.sh
+#   BIN=<dir with kind kubectl cosign syft and the Gatekeeper chart> [LAYOUT=standalone] scripts/admission/kind-e2e.sh
 #
-# Needs docker and helm. KEEP=1 leaves the cluster and registry running for inspection.
+# LAYOUT is how admission is installed before the catalogue runs:
+#   standalone  scripts/admission/install.sh: releases gatekeeper, admission, admission-pool (default)
+#   umbrella    a clean install of the umbrella's admission release (scripts/install-zone/install.sh
+#               install gatekeeper, with the kind zone file and admission.install)
+#   migrate     standalone, then the umbrella adopts it (ADMISSION_ADOPT=1); the Deployments, the
+#               provider's TLS Secret and the constraints must be the same objects afterwards
+#   rollback    migrate, then back to standalone (scripts/admission/install.sh FROM_UMBRELLA=1), with
+#               the same objects again
+# The trust-removal step changes the provider in whichever layout is installed.
+#
+# Needs docker and helm; python3 with PyYAML for the umbrella layouts. KEEP=1 leaves the cluster and
+# registry running for inspection.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 # shellcheck source=scripts/tools/pins.env disable=SC1091
 . scripts/tools/pins.env
+# shellcheck source=scripts/admission/checks.sh
+. scripts/admission/checks.sh
 bin="$(cd "${BIN:-.tools/bin}" && pwd)"
 export PATH="$bin:$PATH"
+layout=${LAYOUT:-standalone}
+case "$layout" in standalone | umbrella | migrate | rollback) ;; *) echo "LAYOUT must be standalone, umbrella, migrate or rollback" >&2; exit 2 ;; esac
 
 cluster=ztd-admission
 reg_name="kind-registry"
@@ -90,14 +105,71 @@ docker push -q "$host_reg/ztd/admission-provider:e2e" >/dev/null
 provider_digest=$(curl -fsSI -H "Accept: $oci_manifest, $docker_manifest, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json" \
   "http://$host_reg/v2/ztd/admission-provider/manifests/e2e" | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2}')
 
-step "Install (scripts/admission/install.sh, as on a real cluster)"
+step "Install ($layout layout, as on a real cluster)"
 # A third-party image admitted by exact digest (the injected Istio proxy); only dry runs use it.
 allow_listed=docker.io/istio/proxyv2@sha256:d86cba0dd1eb15c00b6901c69ce5ae3d2d5f8427a47751098cf8c3ab2a4a62e9
-ALLOWED_DIGESTS="$allow_listed" BIN="$bin" PROVIDER_IMAGE="$reg/ztd/admission-provider@$provider_digest" TRUST_REPOSITORY="$reg/ztd" TRUST_KEY="$work/cosign.pub" \
-  GATEKEEPER_REPLICAS=2 PROVIDER_REPLICAS=1 PLAIN_HTTP_REGISTRY="$reg" scripts/admission/install.sh
-# The same values, for the trust-removal upgrade below.
-provider_values=(--set replicas=1 --set image.repository="$reg/ztd/admission-provider" --set image.digest="$provider_digest"
-  --set insecurePlainHTTPRegistry="$reg" --set-json "trust.repositories=[\"$reg/ztd\"]" --set-json "trust.allowedDigests=[\"$allow_listed\"]")
+standalone() {
+  ALLOWED_DIGESTS="$allow_listed" BIN="$bin" PROVIDER_IMAGE="$reg/ztd/admission-provider@$provider_digest" TRUST_REPOSITORY="$reg/ztd" TRUST_KEY="$work/cosign.pub" \
+    GATEKEEPER_REPLICAS=2 PROVIDER_REPLICAS=1 PLAIN_HTTP_REGISTRY="$reg" env "$@" scripts/admission/install.sh
+}
+# The kind zone file with admission.install and the same settings as standalone() above.
+umbrella() {
+  python3 - deployment/helm/ztd/ci/values.yaml "$work/zone.yaml" "$reg" "$provider_digest" "$work/cosign.pub" "$allow_listed" <<'PY'
+import sys, yaml
+source, target, reg, digest, key, allowed = sys.argv[1:]
+zone = yaml.safe_load(open(source))
+zone["admission"] = {"install": True}
+zone["gatekeeper"] = {"replicas": 2}
+zone["admissionProvider"] = {
+    "replicas": 1,
+    "image": {"repository": f"{reg}/ztd/admission-provider", "digest": digest},
+    "insecurePlainHTTPRegistry": reg,
+    "trust": {"repositories": [f"{reg}/ztd"], "publicKeys": open(key).read(), "allowedDigests": [allowed]},
+}
+yaml.safe_dump(zone, open(target, "w"), sort_keys=False)
+PY
+  KUBE_CONTEXT="kind-$cluster" ZONE_VALUES="$work/zone.yaml" ADMISSION_ADOPT=1 scripts/install-zone/install.sh install gatekeeper
+}
+# The objects that must survive a change of layout unchanged: the Deployments (same UID - adopted in
+# place, not recreated), the provider's TLS Secret (same CA) and the constraints.
+identity() {
+  {
+    kubectl -n gatekeeper-system get deploy gatekeeper-controller-manager gatekeeper-audit ztd-admission-provider -o jsonpath='{range .items[*]}{.metadata.name} {.metadata.uid}{"\n"}{end}'
+    kubectl -n gatekeeper-system get secret ztd-admission-provider-tls -o jsonpath='{.metadata.uid} {.data.ca\.crt}' | shasum -a 256
+    for c in $admission_constraints; do kubectl get "$c" -o jsonpath='{.metadata.name} {.metadata.uid}{"\n"}'; done
+  }
+}
+releases() { helm list -n gatekeeper-system -o json | jq -r 'map("\(.name)=\(.chart)") | sort | join(" ")'; }
+expect_layout() { # layout releases
+  if [ "$(admission_layout)" = "$1" ] && [ "$(releases)" = "$2" ]; then pass "layout $1: $2"; else fail "layout: $(admission_layout), releases $(releases), expected $1: $2"; fi
+}
+if [ "$layout" != standalone ]; then
+  # The umbrella's dependencies, from its Chart.lock and the local admission charts.
+  helm repo add ztd-openbao https://openbao.github.io/openbao-helm >/dev/null 2>&1 || true
+  helm repo add ztd-gatekeeper https://open-policy-agent.github.io/gatekeeper/charts >/dev/null 2>&1 || true
+  helm dependency build deployment/helm/ztd >/dev/null
+fi
+standalone_releases="admission-pool=admission-pool-0.1.0 admission=admission-0.1.0 gatekeeper=gatekeeper-$GATEKEEPER_CHART_VERSION"
+umbrella_releases="gatekeeper=ztd-$(sed -n 's/^version: *//p' deployment/helm/ztd/Chart.yaml)"
+case "$layout" in
+  standalone) standalone ;;
+  umbrella)
+    umbrella
+    expect_layout umbrella "$umbrella_releases" ;;
+  migrate | rollback)
+    standalone
+    before=$(identity)
+    umbrella
+    expect_layout umbrella "$umbrella_releases"
+    if [ "$(identity)" = "$before" ]; then pass "migrate: the same Deployments, provider CA and constraints"; else fail "migrate: objects replaced: $(diff <(echo "$before") <(identity) || true)"; fi
+    if [ "$layout" = rollback ]; then
+      standalone FROM_UMBRELLA=1
+      expect_layout standalone "$standalone_releases"
+      if [ "$(identity)" = "$before" ]; then pass "rollback: the same Deployments, provider CA and constraints"; else fail "rollback: objects replaced: $(diff <(echo "$before") <(identity) || true)"; fi
+    fi ;;
+esac
+# The webhook-scope post-renderer, for the provider upgrades below in the umbrella layout.
+admission_helm_home "$work/helm-data"
 unscoped=$(kubectl get validatingwebhookconfiguration gatekeeper-validating-webhook-configuration -o json | jq -r '
   .webhooks[] | select(any(.namespaceSelector.matchExpressions[]?; .key == "facis.ztd/admission-proof" and .operator == "In" and .values == ["true"]) | not) | .name')
 if [ -z "$unscoped" ]; then pass "both webhooks scoped to facis.ztd/admission-proof=true"; else fail "webhooks not scoped: $unscoped"; fi
@@ -203,8 +275,7 @@ revisions() { kubectl -n gatekeeper-system logs deploy/ztd-admission-provider 2>
 expect_allowed "signed image, warm cache" "$(pod ztd-signed-3 "$signed")"
 warmed=$(date +%s)
 before=$(revisions | tail -1)
-helm upgrade admission deployment/helm/admission -n gatekeeper-system "${provider_values[@]}" \
-  --set-file trust.publicKeys="$work/other/cosign.pub" --wait --timeout 3m >/dev/null
+admission_provider_upgrade --set-file trust.publicKeys="$work/other/cosign.pub" --wait --timeout 3m >/dev/null
 loaded=
 for _ in $(seq 90); do
   now=$(revisions | tail -1)
@@ -219,8 +290,7 @@ elif [ "$elapsed" -ge 280 ]; then
 else
   expect_denied "trusted key removed ($loaded after ${elapsed}s): next admission" ADM-UNSIGNED "$(pod ztd-signed-3 "$signed")"
 fi
-helm upgrade admission deployment/helm/admission -n gatekeeper-system "${provider_values[@]}" \
-  --set-file trust.publicKeys="$work/cosign.pub" --wait --timeout 3m >/dev/null
+admission_provider_upgrade --set-file trust.publicKeys="$work/cosign.pub" --wait --timeout 3m >/dev/null
 
 step "Gatekeeper down"
 kubectl -n gatekeeper-system scale deploy/gatekeeper-controller-manager --replicas=0 >/dev/null
