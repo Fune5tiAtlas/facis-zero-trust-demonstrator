@@ -1,0 +1,42 @@
+{{- /*
+The admission release (values.yaml, "The admission release only"): the admission policy of
+deployment/admission, read through files/admission (links to it, so the policy has one copy). The
+templates and exemptions go first; the constraints only once Gatekeeper has generated their CRDs
+from the templates, which the zone installer waits for between two upgrades of this release. The
+allowed-repositories constraint takes the provider's allowed repositories and digest allow-list, so
+the two can never disagree. No admission part renders without gatekeeper.enabled, and nothing of
+release ztd renders with it.
+*/ -}}
+{{- $release := .Values.gatekeeper.enabled }}
+{{- $policy := .Values.admissionPolicy }}
+{{- if and (not $release) (or .Values.admissionProvider.enabled .Values.admissionPool.enabled $policy.templates $policy.constraints) }}
+{{- fail "admissionProvider, admissionPool and admissionPolicy render only in the admission release (gatekeeper.enabled), which the zone installer installs as release gatekeeper in gatekeeper-system" }}
+{{- end }}
+{{- if and $release .Values.openbao.enabled }}
+{{- fail "the admission release renders the admission stack only: openbao.enabled must be false in it" }}
+{{- end }}
+{{- if and $policy.constraints (not (and $policy.templates .Values.admissionProvider.enabled)) }}
+{{- fail "admissionPolicy.constraints needs admissionPolicy.templates and admissionProvider.enabled" }}
+{{- end }}
+{{- if $policy.templates }}
+{{- range $path, $_ := .Files.Glob "files/admission/templates/*.yaml" }}
+---
+{{ $.Files.Get $path }}
+{{- end }}
+---
+{{ .Files.Get "files/admission/exemptions.yaml" }}
+{{- end }}
+{{- if $policy.constraints }}
+{{- $trust := .Values.admissionProvider.trust }}
+{{- range $path, $_ := .Files.Glob "files/admission/constraints/*.yaml" }}
+---
+{{- if hasSuffix "/allowed-repositories.yaml" $path }}
+{{- $c := $.Files.Get $path | fromYaml }}
+{{- $_ := set $c.spec.parameters "repositories" $trust.repositories }}
+{{- $_ := set $c.spec.parameters "allowedDigests" ($trust.allowedDigests | default list) }}
+{{ toYaml $c }}
+{{- else }}
+{{ $.Files.Get $path }}
+{{- end }}
+{{- end }}
+{{- end }}

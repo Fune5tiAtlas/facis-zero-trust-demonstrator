@@ -50,7 +50,16 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enforceDataPlane": { "type": "boolean", "description": "label the data-plane namespace (planes.data.namespace only) facis.ztd/admission-proof=true, putting it under the Gatekeeper image policy; default false" }
+        "enforceDataPlane": { "type": "boolean", "description": "label the data-plane namespace (planes.data.namespace only) facis.ztd/admission-proof=true, putting it under the Gatekeeper image policy; default false" },
+        "install": { "type": "boolean", "description": "the zone installer installs and upgrades the admission stack from this chart, as release gatekeeper in gatekeeper-system; default false" }
+      }
+    },
+    "admissionPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "templates": { "type": "boolean", "description": "admission release only: the constraint templates and the exemptions" },
+        "constraints": { "type": "boolean", "description": "admission release only: the four constraints; needs the CRDs Gatekeeper generates from the templates" }
       }
     },
     "mesh": {

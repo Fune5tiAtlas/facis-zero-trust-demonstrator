@@ -1,3 +1,5 @@
+{{- /* Release ztd only; the admission release renders admission-policy.yaml and the admission subcharts. */ -}}
+{{- if not .Values.gatekeeper.enabled }}
 {{- /*
 One namespace per plane entry, labelled with its plane, the zone's planes.namespaceLabels and,
 unless the entry sets mesh: false, the mesh mode. With admission.enforceDataPlane, the data-plane
@@ -37,4 +39,5 @@ metadata:
     {{- if and $meshKey .mesh }}
     {{ $meshKey }}: {{ $meshValue | quote }}
     {{- end }}
+{{- end }}
 {{- end }}
