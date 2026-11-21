@@ -75,6 +75,26 @@ admission_helm_home() {
   helm plugin install "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/deployment/admission/webhook-scope" >/dev/null
 }
 
+# admission_installed_provider: the provider's settings as installed, read from its live objects in
+# either layout (and halfway through a rollback): image, replicas, request timeout, the plain-http
+# registry, registryAuth.secretName and the whole trust policy (repositories, publicKeys,
+# allowedDigests), as deployment/helm/admission values in JSON. Fails when the provider is not there.
+admission_installed_provider() {
+  local deploy policy
+  deploy=$(kubectl -n "$admission_ns" get deploy ztd-admission-provider -o json) || return 1
+  policy=$(kubectl -n "$admission_ns" get configmap ztd-admission-provider-trust -o jsonpath='{.data.policy\.json}') || return 1
+  jq -en --argjson d "$deploy" --argjson p "$policy" '
+    $d.spec.template.spec.containers[0] as $c
+    | def arg($name): [$c.args[]? | select(startswith("--" + $name + "=")) | sub("^[^=]*="; "")][0];
+    {replicas: $d.spec.replicas,
+     image: {repository: ($c.image | split("@")[0]), digest: ($c.image | split("@")[1])},
+     requestTimeout: (arg("request-timeout") // "1s"),
+     insecurePlainHTTPRegistry: (arg("insecure-plain-http-registry") // ""),
+     registryAuth: {secretName: ([$d.spec.template.spec.volumes[]? | select(.name == "registry-auth") | .secret.secretName][0] // "")},
+     trust: {repositories: $p.repositories, publicKeys: $p.publicKeys, allowedDigests: ($p.allowedDigests // [])}}
+    | select(.image.digest != null and (.trust.repositories | length) > 0)'
+}
+
 # admission_umbrella_upgrade <helm args...>: upgrade the umbrella layout's release in place, keeping
 # every value it has (--reuse-values) apart from the ones given. Needs the webhook-scope plugin
 # (admission_helm_home).
