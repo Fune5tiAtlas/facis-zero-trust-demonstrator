@@ -138,6 +138,9 @@ jobs:
       - name: Test the enforcement check
         run: scripts/admission/enforced_test.sh
 
+      - name: Test the data-plane preflight
+        run: scripts/admission/preflight-data-plane_test.sh
+
   # The trust-framework DNS inspector against local NSD servers that each break one thing it must
   # catch (a wrong DS digest, an unsigned server, a diverging NS set, a resolver without the URI),
   # and through a signed parent zone and a validating Unbound for the delegation path. The servers

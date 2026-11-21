@@ -53,7 +53,8 @@ Which namespaces carry the label: the admission pool's `ztd-adm-*` namespaces
 zone's data-plane namespace only. The management plane, `gatekeeper-system`, `istio-system`,
 `spire-system` and `kube-system` never carry it. Before opting the data plane in, run
 `scripts/admission/preflight-data-plane.sh <namespace>`: it lists every image the namespace's pods
-and workload templates use and names those the policy would deny. Meshed pods there need the Istio
+and workload templates use and names those the policy would deny, applying both the provider's and
+the constraint's repository rule and allow-list, and fails when the two allow-lists differ. Meshed pods there need the Istio
 proxy digest of [istiod.yaml](../helm/values/istiod.yaml) in `ALLOWED_DIGESTS`.
 
 [exemptions.yaml](exemptions.yaml) lists what is exempt and why (`kube-system`, `gatekeeper-system`);
