@@ -1,21 +1,8 @@
-# Stand-ins of scripts/verify-connector-routing/verify.sh, in the route namespace __NS__ (the data plane):
+# Stand-in pods of scripts/verify-connector-routing/verify.sh, in the route namespace __NS__ (the data plane).
+# Their service accounts are created by the proof only when missing, and removed only when it created them.
 # - route-backend: the caller the connector gateway admits (its labels and its service account, the zone's
 #   participant backend), and the source of the direct-path, DNS and observability probes;
 # - route-impostor: the same labels under another service account, which the gateway's proxy must refuse.
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: backend
-  namespace: __NS__
-  labels: { app.kubernetes.io/part-of: verify-connector-routing }
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: route-impostor
-  namespace: __NS__
-  labels: { app.kubernetes.io/part-of: verify-connector-routing }
----
 apiVersion: v1
 kind: Pod
 metadata:

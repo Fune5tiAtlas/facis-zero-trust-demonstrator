@@ -1,13 +1,7 @@
 # The observability-export destination, in the management namespace __NS__, created only when no collector
 # of the allow-matrix row workloads-to-otel-collector runs there: its labels and service account, so the
 # row's lanes (NetworkPolicy pair, AuthorizationPolicy allow-workloads-to-otel-collector) admit the export.
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: otel-collector
-  namespace: __NS__
-  labels: { app.kubernetes.io/part-of: verify-connector-routing }
----
+# Its service account otel-collector is created by the proof only when missing.
 apiVersion: v1
 kind: Pod
 metadata:

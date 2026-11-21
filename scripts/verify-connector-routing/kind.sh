@@ -9,7 +9,8 @@
 #     adopted by the chart, while a client outside the cluster calls it every half second; the Service
 #     keeps its UID and node port (the calls lost while the hand-applied pod, which has no preStop
 #     pause, is replaced are recorded), and a later rollout of the chart's entry loses no call;
-#   4 verify.sh against both roles;
+#   4 verify.sh for each role (ROLE=egress, ROLE=ingress), the caller's service account created beforehand,
+#     which the proof must use and leave in place;
 # then removes everything it set up. Exits with verify.sh's status, or 125 when a set-up step fails
 # (1-124: a rehearsal check failed, added to verify.sh's count).
 # Environment: KUBE_CONTEXT (default kind-ztd), ZTD_EVIDENCE_DIR (the run directory, outside the repository).
@@ -147,12 +148,20 @@ codes=$(docker logs "$CLIENT" 2>/dev/null)
 note "  Calls during a rollout of the chart's entry: $(sort <<<"$codes" | uniq -c | paste -sd' ' -)"
 grep -q '^200$' <<<"$codes" && ! grep -qv '^200$' <<<"$codes"; rcheck $? "a rollout of the chart's entry loses no call of the outside client (preStop pause)"
 
-# 4 the routing proof on both roles
-ZTD_EVIDENCE_DIR=$EVID/verify KUBE_CONTEXT=$CONTEXT ROUTE_EXPECT="peer-entry zone-b" \
-  PEER_LOG_CMD="cat '$EVID/peer/access.log'" DIRECT_EXTERNAL="" \
-  DIRECT_TARGETS="$M3/ztd-participant:8080 $M3/ztd-edge:443" \
+# 4 the routing proof on both roles. The caller's service account exists before the proof (as a zone's
+# participant backend's would): the proof must use it and leave it in place.
+k -n "$NS" create serviceaccount backend >/dev/null 2>&1; k -n "$NS" label serviceaccount backend pre-existing=true --overwrite >/dev/null
+ZTD_EVIDENCE_DIR=$EVID/verify-egress KUBE_CONTEXT=$CONTEXT ROLE=egress ROUTE_EXPECT="peer-entry zone-b" \
+  PEER_LOG_CMD="cat '$EVID/peer/access.log'" ./verify.sh
+rc_e=$?
+ZTD_EVIDENCE_DIR=$EVID/verify-ingress KUBE_CONTEXT=$CONTEXT ROLE=ingress \
+  DIRECT_EXTERNAL="$PIP:8443/https" DIRECT_TARGETS="$M3/ztd-participant:8080/http $M3/ztd-edge:443/https" \
   ENTRY_NAMESPACE=$M3 ENTRY_NAME=ztd-edge ./verify.sh
-rc=$?
+rc_i=$?
+[ "$(k -n "$NS" get serviceaccount backend -o jsonpath='{.metadata.labels.pre-existing}' 2>/dev/null)" = true ]
+rcheck $? "the pre-existing service account backend is still in place after both proofs"
+k -n "$NS" delete serviceaccount backend >/dev/null 2>&1
+rc=$(( rc_e >= 125 || rc_i >= 125 ? 125 : rc_e + rc_i ))
 note "" "verify.sh exit $rc; rehearsal failures $fail; records in $EVID"
 total=$((rc + fail)); [ "$rc" -ge 125 ] && total=$rc
 exit $(( total > 124 && rc < 125 ? 124 : total ))
