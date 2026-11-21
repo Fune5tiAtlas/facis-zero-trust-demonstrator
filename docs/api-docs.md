@@ -23,7 +23,8 @@ is the Go interface of `internal/atls`, outside `docs/contracts/` and the `Contr
 
 Internal to a zone, and not a numbered interface: the token store's API,
 [token-store.v1.openapi.yaml](contracts/token-store.v1.openapi.yaml) — substitution for the guard
-and DPoP replay detection for the connector and the guard.
+and DPoP replay detection for the connector and the guard. The database behind it, its schema and
+how the schema is applied are described in [Token store](token-store.md).
 
 Three agreements are conventions rather than interfaces, and are documented where they live:
 
