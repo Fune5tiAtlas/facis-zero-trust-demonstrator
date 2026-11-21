@@ -101,6 +101,60 @@ Met while building and running the lifecycle pack (TDR-BDD-01..06) on kind and I
 ## Logs
 
 Records sent through the ORCE logging API are one JSON object per line
-([ORCE logging](flows.md#orce-logging)); output outside that API is not. The Go services'
-logging convention is set with the observability stack (ZT-27). Correlate by the request identifier
-carried across hops rather than by timestamp.
+([ORCE logging](flows.md#orce-logging)); output outside that API is not. The node collectors read every
+pod's log lines; a line that is an IF-01 event keeps `correlation_id`, `run_id` and `seq` as fields,
+and any other line is kept as it is ([ADR-0017](adr/0017-central-observability-backends.md)).
+Correlate by the request identifier carried across hops rather than by timestamp. The records are
+exported to files on the demonstrator cluster: one file per zone, `/var/lib/ztd-logs/<zone>.jsonl`
+on the receiving collector's volume `otel-entry-logs`, one OTLP JSON object per line, with rotated
+backups next to it. No log query service is installed; read the files from a pod that mounts the
+volume read-only, as the proof's `log-export-reader` fixture does, and search them for the
+`correlation_id`. A zone whose file stops growing is a silent zone, or a zone whose node collectors
+stopped.
+
+## Observability and alerts
+
+The alerts are Prometheus's alerting rules on the demonstrator cluster: an alert is emitted when its
+rule reaches the `firing` state. Read them from
+Prometheus (`kubectl -n ztd-observability port-forward svc/prometheus-server 9090:80`, then
+`/api/v1/alerts`, where `state` is `pending` or `firing`, or the query
+`ALERTS{alertstate="firing",ztd_source="collector"}`); Jaeger (`svc/jaeger`, port 16686) is reached the same way, with
+cluster access only. The proof records each firing alert, with its detection time, as evidence.
+
+**Detection budget.** Every alert fires within 30 seconds of the failure, by construction. The firing
+state is the alert, so no routing delay is added:
+
+| Alert | Built from | Worst case |
+|---|---|---|
+| `SpireServerDown`, `SpireControllerManagerDown`, `SpireAgentDown` (a missing target, `up == 0`) | scrape 5 s + batch 1 s + export at most 2 s + evaluation 5 s + `for` 10 s | 23 s |
+| `ZoneSilent` (no uptime sample of the zone gateway) | absence window 15 s + evaluation 5 s + `for` 5 s | 25 s |
+| `SpireAgentsMissing` (fewer agents report than the zone has ready nodes the agent DaemonSet targets) | window 10 s + evaluation 5 s + `for` 10 s | 25 s |
+| `RevocationEndpointDown` (the probe of the status list fails) | probe 5 s + probe timeout 2 s + batch 1 s + export at most 2 s + evaluation 5 s + `for` 10 s | 25 s |
+
+The silent-zone rule's 15 s window already holds the alert back, so its `for` is 5 s: with 10 s its
+worst case would be 30 s, not below the limit. The export term covers the zone gateway's send, the
+entry's batch and its remote write to Prometheus. The probe's request is bounded by its timeout, below
+the probe interval and the rule's lookback: an unbounded probe that hangs would leave no sample, and
+the alert would never fire. The budget counts from the moment the failed component stops answering.
+The proof measures from the command that injects the failure and polls the alerts every second, so
+its figures also hold the time the stopped component takes to stop answering (a pod's termination,
+the mesh's endpoint update) and the poll; they stay below 30 s as well.
+`scripts/verify-observability/test-alert-rules.sh` checks that the rendered values are these.
+
+| Symptom | Likely cause | Check |
+|---|---|---|
+| `SpireServerDown` or `SpireControllerManagerDown` for a zone | the SPIRE server pod is down, or the lane `observabilityScrape` is missing | `kubectl -n spire-system get pods`; `kubectl -n spire-system get svc spire-server-metrics`; the policies `allow-observability-scrape-*` in `spire-system` and the management namespace |
+| `SpireAgentDown` naming a node | the agent on that node is down or no longer bound to `127.0.0.1:9988` | `kubectl -n spire-system get pods -o wide -l app.kubernetes.io/name=agent` |
+| `SpireAgentsMissing` for a zone, without `SpireAgentDown` | a node collector is gone, so its agent's series vanished | `kubectl -n ztd-otel-node get ds otel-node-agent` (desired against ready) |
+| `ZoneSilent` for a zone | the zone gateway is down, its egress to the entry is cut, the zone's client certificate is missing or expired, or the zone is down | `kubectl -n ztd-mgmt get pods -l app.kubernetes.io/instance=otel-gateway`; `kubectl -n ztd-mgmt get networkpolicy allow-telemetry-export-egress`; `kubectl -n ztd-mgmt get secret ztd-telemetry-client`; the gateway's log for TLS errors |
+| `ZoneSilent` for every zone at once | the entry or Prometheus on the demonstrator cluster is down, or the entry's address changed | `kubectl -n ztd-observability get pods`; `telemetryExport.entry` in the zone files |
+| `RevocationEndpointDown` | the status list does not answer, or answers an error | the alert names the URL (`telemetryExport.revocationStatusListUrl`) |
+| After an outage of the entry, one signal of a zone (often the zone gateway's metrics) arrives a minute later than the others | each signal has its own gRPC connection to the entry, and each reconnects on gRPC's backoff, which grows through the outage (about 40 s apart after a 60 s outage); the buffered data is kept and follows once its connection is back | wait; `otelcol_exporter_queue_size` of the collector falls to 0 once it has sent the backlog, and nothing is lost unless `otelcol_exporter_enqueue_failed_*` or `otelcol_exporter_send_failed_*` grew |
+| A zone's collectors log `certificate required` or `unknown authority` | the zone's client certificate was not copied, or was renewed on the demonstrator side and not copied again | rerun `install.sh telemetry-client-certs` with `TELEMETRY_ZONES`, then restart the zone's collectors (`kubectl -n ztd-otel-node rollout restart ds/otel-node-agent`, `kubectl -n ztd-mgmt rollout restart deploy/otel-gateway`): they read the certificate at start |
+| `install.sh install` stops before `otel-node` | the zone's client certificate is not in the zone yet | run `telemetry-client-certs` from the demonstrator side, then install again ([install-zone](https://github.com/eclipse-xfsc/facis-zero-trust-demonstrator/blob/main/scripts/install-zone/README.md)) |
+
+**Image-signature admission and the upstream images.** Admission by image signature is opt-in per
+namespace today (`deployment/helm/admission-pool`), and neither `ztd-mgmt` nor `ztd-otel-node` is
+covered. The collectors run the upstream OpenTelemetry Collector contrib image, pinned by digest in
+`scripts/tools/pins.env`, which the project does not sign. The change that extends admission to these
+namespaces adds the upstream repositories to its trust policy, or the collectors stop starting there.

@@ -1,7 +1,10 @@
 # install-zone
 
-Installs one zone of the demonstrator, from an empty cluster that already runs its CNI, as eight
-Helm releases (nine with the admission release) in a fixed order, each through the deployment lifecycle step
+Installs one cluster of the demonstrator from its zone file. The zone file's `zone.role` chooses the
+sequence: a **participant zone** (the default; zone A, zone B, kind) or the **demonstrator cluster**
+(IONOS; see [The demonstrator role](#the-demonstrator-role)). A participant zone is installed, from an
+empty cluster that already runs its CNI, as ten Helm releases (eleven with the admission release) in a fixed order, each through the
+deployment lifecycle step
 (`scripts/lifecycle.sh`: a server-side dry run, then `helm upgrade --install --wait` with rollback
 on failure), each waiting on the previous:
 
@@ -15,16 +18,23 @@ on failure), each waiting on the previous:
 | 6 | `istio-cni` | `istio-system` | `cni` 1.31.1 | `deployment/helm/values/istio-cni.yaml` |
 | 7 | `zone-policy` | `istio-system` | `deployment/helm/zone-policy` | chart defaults + zone facts (the trust domain, the plane namespaces and the pairs of the umbrella's `allowMatrix` and `intraPlanePairs`); also waits for its Jobs |
 | 8 | `ztd-openbao` | the management namespace (`ztd-mgmt`) | `deployment/helm/ztd-openbao`, its `openbao` 0.28.3 dependency built from `Chart.lock` | chart defaults + zone facts; also waits for its Jobs, which reach the server through the release's own allow rules |
-| 9 | `gatekeeper` | `gatekeeper-system` | `deployment/helm/ztd`, the admission release; only with `admission.install: true` | the zone file + `deployment/admission/gatekeeper-values.yaml` + the Gatekeeper image pins; in four stages, through the `ztd-webhook-scope` post-renderer |
+| 9 | `otel-node` | `ztd-otel-node` | `opentelemetry-collector` 0.176.1 (pinned in `scripts/tools/pins.env`) | `deployment/helm/values/otel-node.yaml` + derived values |
+| 10 | `otel-gateway` | the management namespace | `opentelemetry-collector` 0.176.1 | `deployment/helm/values/otel-gateway.yaml` + derived values |
+| 11 | `gatekeeper` | `gatekeeper-system` | `deployment/helm/ztd`, the admission release; only with `admission.install: true` | the zone file + `deployment/admission/gatekeeper-values.yaml` + the Gatekeeper image pins; in four stages, through the `ztd-webhook-scope` post-renderer |
 
 The umbrella creates every namespace the later releases install into; the lifecycle step never
-creates one. `ztd-openbao` comes after the mesh so that its server and its jobs are created after
-istiod and the registration rule of `zone-policy`, each with a sidecar, a SPIRE entry and an SVID
-(`docs/secrets.md`). The installer creates two namespaces: the umbrella's release namespace, `ztd-system`, which holds
-the release record and its verification job, and, for release 9, `gatekeeper-system`, Gatekeeper's
-own. Release 9 renders the admission policy (constraint templates, constraints, exemptions) only where
+creates one. `ztd-openbao` and the zone gateway come after istiod and the registration rule of
+`zone-policy`, so their pods are created with a sidecar, a SPIRE entry and an SVID
+(`docs/secrets.md`). The two telemetry releases (the node collectors and the zone gateway,
+`docs/adr/0017-central-observability-backends.md`) export to the demonstrator cluster's entry with
+the zone's client certificate, the Secret `ztd-telemetry-client` in `ztd-otel-node` and the management
+namespace, which the demonstrator role's step `telemetry-client-certs` creates. `install` stops before
+`otel-node` when that Secret is missing, says so and prints the command; the releases before it stay
+installed. The installer creates two namespaces: the umbrella's release namespace, `ztd-system`, which holds
+the release record and its verification job, and, for release 11, `gatekeeper-system`, Gatekeeper's
+own. Release 11 renders the admission policy (constraint templates, constraints, exemptions) only where
 the zone file leaves `admission.policy.managedBy` at `helm` (kind, IONOS); on zone A and zone B
-(`argocd`) Argo CD keeps the policy, and the installer waits for it instead of applying it. Release 9, its stages, and the adoption of an admission stack that `scripts/admission/install.sh`
+(`argocd`) Argo CD keeps the policy, and the installer waits for it instead of applying it. Release 11, its stages, and the adoption of an admission stack that `scripts/admission/install.sh`
 installed (`ADMISSION_ADOPT=1`) are described in
 [docs/umbrella-chart.md](../../docs/umbrella-chart.md#admission-in-the-umbrella). The umbrella's
 dependencies come from `deployment/helm/ztd/charts`: run `helm dependency build deployment/helm/ztd`
@@ -38,6 +48,7 @@ ZONE_VALUES=deployment/helm/ztd/zones/<zone>.yaml KUBE_CONTEXT=<context> scripts
 ZONE_VALUES=deployment/helm/ztd/zones/<zone>.yaml KUBE_CONTEXT=<context> scripts/install-zone/install.sh install [release...]
 ZONE_VALUES=deployment/helm/ztd/zones/<zone>.yaml KUBE_CONTEXT=<context> scripts/install-zone/install.sh uninstall
 scripts/install-zone/install.sh render [release...]     # no cluster: what CI runs
+scripts/install-zone/install.sh install [release...]    # only the named releases, in plan order
 ```
 
 On the local kind cluster the defaults apply (`ZONE_VALUES` is the kind zone,
@@ -57,31 +68,91 @@ scripts/install-zone/install.sh install
 | `INSTALL_ZONE_CACHE` | `~/.cache/ztd-install-zone` | where the pinned charts and the built OpenBao dependency are kept |
 | `ADMISSION_POLICY_TIMEOUT` | `300` | with `admission.policy.managedBy: argocd`, how long each wait for Argo CD's policy (constraint CRDs, then enforced constraints) lasts before the installer stops |
 | `ADMISSION_ADOPT` | unset | `1` lets release `gatekeeper` adopt the objects of `scripts/admission/install.sh`; without it the installer refuses, before anything, a zone that still has them |
+| `TELEMETRY_ZONES` | unset | demonstrator role: `<zone>=<context>[,...]`, the zones whose client certificate `telemetry-client-certs` copies |
+| `TELEMETRY_ZONE_MGMT_NAMESPACE` | `ztd-mgmt` | demonstrator role: the zones' management namespace for that copy |
 
-- **`install`** first renders all the releases (or the ones named) with their zone facts, so a
+- **`install`** first renders all the role's releases (or the ones named) with their zone facts, so a
   missing fact or a failed coupling (below) stops the run before anything is installed, and prints
   the pairs coupling's verdict when `zone-policy` is among them; then installs them in order.
   `install gatekeeper` installs or upgrades the admission release alone, and checks no mesh
   setting (it labels no plane namespace), so a zone without a mesh, such as IONOS, can take it. It stops at the first release
   that does not reach a ready state, exits non-zero and names the release and the lifecycle step's
   error; the failed release is rolled back. It exits 0 only when every pod in the plane and
-  control-plane namespaces is Ready (finished Job pods aside).
+  control-plane namespaces is Ready (finished Job pods aside). With release names it installs only
+  those, in plan order, and judges each by its own release.
 - **Idempotent.** Run again, it upgrades every release in place with identical manifests.
-- **`render`** renders every release, or only the ones named; a name that is not one of the
-  releases (`ztd`, `spire-crds`, `spire`, `istio-base`, `istiod`, `istio-cni`, `zone-policy`,
-  `ztd-openbao`, and `gatekeeper` when the zone opts in) stops it with a non-zero exit and the
-  list of valid names, before anything is rendered.
-- **`plan`** lists the eight steps (nine with the admission release) without touching a cluster; `install` against an unreachable
+- **`render`** renders every release, or only the ones named; a name that is not one of the role's
+  releases (participant: `ztd`, `spire-crds`, `spire`, `istio-base`, `istiod`, `istio-cni`,
+  `zone-policy`, `ztd-openbao`, `otel-node`, `otel-gateway`; either role: `gatekeeper` when the
+  zone opts in) stops it with a non-zero exit and the list of valid names, before anything is rendered.
+- **`plan`** lists the role's steps (with the admission release when the zone opts in) without touching a cluster; `install` against an unreachable
   cluster prints the same list and refuses to continue, changing nothing.
 - Every command first checks that the zone file exists, and stops with `zone file not found:
   <path>` and a non-zero exit when it does not. `help` (or `-h`, `--help`) prints the usage and
   exits 0; any other word prints the usage and `unknown command '<word>'` on stderr and exits 2.
 - **`uninstall`** removes the releases in reverse order (`gatekeeper` when the zone opts in,
-  `ztd-openbao`, `zone-policy`, `istio-cni`, `istiod`, `istio-base`, `spire`, `spire-crds`, then
-  the umbrella, which takes the namespaces, the OpenBao volume and its bootstrap Secret with it) and
+  `otel-gateway`, `otel-node`, `ztd-openbao`, `zone-policy`, `istio-cni`, `istiod`, `istio-base`,
+  `spire`, `spire-crds`, then the umbrella, which takes the namespaces, the OpenBao volume and its
+  bootstrap Secret with it) and
   removes the CRDs each release owned, including the ones Istio's `base` chart marks to be kept by
   Helm. Delete the workloads in the plane namespaces first: a pod that still mounts the SPIFFE CSI
   volume when the driver goes holds its namespace in `Terminating`.
+
+## The demonstrator role
+
+A zone file with `zone.role: demonstrator` (`deployment/helm/ztd/zones/ionos.yaml`; on kind
+`deployment/helm/ztd/ci/demonstrator-values.yaml`, in the same cluster as the kind zone) installs the
+central observability backends, all into `observabilityBackends.namespace` (`ztd-observability`)
+except the umbrella:
+
+| # | Release | Chart | Values |
+|---|---|---|---|
+| 1 | `ztd-demonstrator` (in `ztd-system`) | `deployment/helm/ztd`, demonstrator role: the backends' namespace and its policies only | the zone file |
+| 2 | `telemetry-issuers` | `deployment/helm/telemetry-issuers` (cert-manager resources) | zone facts: the zones, the server name |
+| 3 | `otel-entry` | `opentelemetry-collector` 0.176.1 | `deployment/helm/values/otel-entry.yaml` + derived values: one mutual-TLS listener and its pipelines per zone, one log file per zone on the volume `otel-entry-logs`, the Service's ports and source ranges |
+| 4 | `prometheus` | `prometheus` 29.37.0 | `deployment/helm/values/prometheus.yaml` + zone facts (retention, size bound, volume, storage class) + one silent-zone rule per zone |
+| 5 | `jaeger` | `jaeger` 4.16.1 | `deployment/helm/values/jaeger.yaml` + derived values (volume) |
+
+Then, when `TELEMETRY_ZONES` names the zones, the step **`telemetry-client-certs`** (also a command of
+its own): for each `<zone>=<context>` it waits for the zone's client certificate, and creates or
+updates the Secret `ztd-telemetry-client` (`tls.crt`, `tls.key`, and `ca.crt` the telemetry root's
+certificate, never its key) in `ztd-otel-node` and the management namespace of that context. The
+material passes through a temporary directory readable by the user alone and removed on exit, and
+the Secret is applied server-side, so no copy lands in a `last-applied` annotation. A zone namespace
+that does not exist stops the step: install the zone's umbrella first. The collectors read the
+certificate at start: after a copy that replaced one (a renewal, or the demonstrator role
+reinstalled with a new CA), restart them (`kubectl -n ztd-otel-node rollout restart
+ds/otel-node-agent`, `kubectl -n ztd-mgmt rollout restart deploy/otel-gateway`). On kind an
+`uninstall` of the demonstrator role followed by an `install` left no release behind and reinstalled
+every release (2026-10-21). The logs of every zone end in files on the entry's volume
+`otel-entry-logs` (`/var/lib/ztd-logs/<zone>.jsonl`, OTLP JSON lines, rotated by size with nine
+backups; the installer sizes the rotation so that every zone's files fit in
+`observabilityBackends.volumes.logs`). No log query service is installed; the volume goes with the
+release on `uninstall`.
+
+A Prometheus rule in the `firing` state is the alert, read from
+Prometheus's alerts API (`/api/v1/alerts`) and the `ALERTS{ztd_source="collector"}` series.
+
+The demonstrator cluster needs cert-manager (it runs its own, v1.21.2); `install` refuses a cluster
+without its CRDs. On kind `scripts/dev/kind-cert-manager-up.sh` installs the pinned version. A
+demonstrator zone file on a cluster with a LoadBalancer is refused while
+`observabilityBackends.entry.sourceRanges` is empty, so the entry is never published without them.
+
+**Order across clusters.** Install the zone's umbrella (`install.sh install ztd`, or the zone without
+its telemetry releases), install the demonstrator role with `TELEMETRY_ZONES`, then install the zone
+again (or `install.sh install otel-node otel-gateway`). On kind:
+
+```bash
+scripts/dev/kind-cilium-up.sh && scripts/dev/kind-cert-manager-up.sh
+scripts/install-zone/install.sh install ztd spire-crds spire istio-base istiod istio-cni zone-policy ztd-openbao
+ZONE_VALUES=deployment/helm/ztd/ci/demonstrator-values.yaml TELEMETRY_ZONES=kind=kind-ztd \
+  scripts/install-zone/install.sh install
+scripts/install-zone/install.sh install otel-node otel-gateway
+```
+
+On kind this ran on 2026-10-21: every demonstrator release deployed, every pod of `ztd-observability`
+Ready, the client certificate copied into `ztd-otel-node` and `ztd-mgmt`, then both telemetry
+releases deployed (the zone gateway with its sidecar, 2/2).
 
 ## The OpenBao dependency
 
@@ -103,7 +174,7 @@ reached at the first build, as SPIRE's and Istio's are at their first fetch.
 ## Placement
 
 No release is placed on a node: the installer sets no node affinity or node selector, and the
-scheduler places every pod, the OpenBao server and both of its jobs included. A zone file that still
+scheduler places every pod, the OpenBao server, both of its jobs and the zone gateway (`otel-gateway`) included. A zone file that still
 carries a key under `openbao` is refused by the umbrella's values schema before anything is rendered.
 
 ## What the installer accepts
@@ -155,6 +226,20 @@ by the zone file:
 | `ztd-openbao` | `openbao.server.dataStorage.storageClass` | `zone.storageClass` |
 | `ztd-openbao` | `cilium.enabled` | `cni.cilium.enabled` |
 | `ztd-openbao` | `trustDomain`, `mesh.mode` | `zone.trustDomain`, `mesh.mode` (its own pairs' rules render only under a mesh) |
+| `otel-node`, `otel-gateway` | the exporter's endpoint and server name; the client certificate's Secret | `telemetryExport.entry` (`address` or `inCluster.host`, `port`, `serverName`), `telemetryExport.clientSecret` |
+| `otel-gateway` | the revocation probe's URL | `telemetryExport.revocationStatusListUrl` |
+| `telemetry-issuers` | `zones`, `serverName` | `observabilityBackends.entry.zones`, `.serverName` |
+| `otel-entry` | the listeners, pipelines, ports, CA mounts; the Service type and source ranges; the log files (one per zone), their rotation size, the volume's size and storage class | `observabilityBackends.entry.zones`, `.sourceRanges`; `zone.loadBalancer.type`; `observabilityBackends.volumes.logs`, `zone.storageClass` |
+| `prometheus` | retention, size bound, volume size, storage class; the silent-zone rules | `observabilityBackends.retention`, `.retentionSize`, `.volumes.prometheus`, `zone.storageClass`; `observabilityBackends.entry.zones` |
+| `jaeger` | volume size, storage class | `observabilityBackends.volumes.jaeger`, `zone.storageClass` |
+
+The telemetry releases of a participant zone also need `telemetryExport.entry` (an address, or
+`inCluster` on kind), `telemetryExport.revocationStatusListUrl`, the namespace `ztd-otel-node` with
+`mesh: false` in `planes.extra` and `networkPolicy.observabilityScrape.enabled`; whenever a run
+includes `otel-node` or `otel-gateway` (every run without release names), a zone file without them is
+refused before anything is rendered, naming what is missing. Zone A and zone B leave the entry's
+address and the URL empty until the demonstrator role is installed, so their telemetry releases are
+refused and their other releases are not.
 
 A release whose zone fact is missing does not render, and the message names the fact and the
 release. Every fact is written into the release's generated values file, never passed with
@@ -190,9 +275,11 @@ tree that plant a mismatch:
 
 ## Pins
 
-The chart versions and digests are at the top of `install.sh` and in `docs/dependencies.md` (the
-upstream OpenBao chart: in `deployment/helm/ztd-openbao/Chart.lock`); the
-container images are pinned by tag and digest in the values files under `deployment/helm/values/`. The SPIRE
+The chart versions and digests of SPIRE and Istio are at the top of `install.sh`, those of the
+observability stack in `scripts/tools/pins.env` with their images (the installer sets the images on
+the charts), all listed in `docs/dependencies.md` (the upstream OpenBao chart: in
+`deployment/helm/ztd-openbao/Chart.lock`); the identity and mesh images are pinned by tag and digest in
+the values files under `deployment/helm/values/`. The SPIRE
 charts come from `https://spiffe.github.io/helm-charts-hardened/` and are checked against their
 sha256. The Istio 1.31 charts are not in Istio's Helm repository or OCI registry; they come from
 the release archive `istio-1.31.1-linux-amd64.tar.gz`, checked against its published sha256. An
@@ -212,7 +299,11 @@ docker run --rm -v "$PWD:/repo" -w /repo -v "$(command -v helm):/usr/local/bin/h
   sh -c 'apk add --no-cache python3 py3-yaml curl >/dev/null && bash --version | head -1 && bash scripts/install-zone/install.sh render'
 ```
 
-Last run (2026-10-29, `bash:3.2` container, GNU bash 3.2.57(1)-release, repository mounted
+A run with the observability releases (2026-10-22, `bash:3.2` container, GNU bash 3.2.57(1)-release, repository mounted
+read-only): exit 0; the kind zone's ten releases rendered (`ztd` 47 objects, `spire-crds` 3, `spire`
+36, `istio-base` 17, `istiod` 17, `istio-cni` 7, `zone-policy` 15, `ztd-openbao` 13, `otel-node` 3,
+`otel-gateway` 6) and the kind demonstrator's five (`ztd-demonstrator` 10, `telemetry-issuers` 10,
+`otel-entry` 5, `prometheus` 5, `jaeger` 5). Last run (2026-10-29, `bash:3.2` container, GNU bash 3.2.57(1)-release, repository mounted
 read-only, the chart cache mounted writable): exit 0, all eight releases rendered (`ztd` 38 objects,
 `spire-crds` 3, `spire` 36, `istio-base` 17, `istiod` 17, `istio-cni` 7, `zone-policy` 21,
 `ztd-openbao` 15) and the pairs coupling held (5 allow rules for the 5 declared pairs), no

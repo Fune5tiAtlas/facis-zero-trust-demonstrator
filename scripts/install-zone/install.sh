@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Install one zone of the demonstrator from an empty cluster (with its CNI) as eight Helm releases
-# (nine with the admission release), in this order, each through the deployment lifecycle step
-# (scripts/lifecycle.sh: server-side dry run, then helm upgrade --install --wait with rollback on
-# failure), each waiting on the previous:
+# Install one cluster of the demonstrator from its zone file, as a sequence of Helm releases, each
+# through the deployment lifecycle step (scripts/lifecycle.sh: server-side dry run, then helm upgrade
+# --install --wait with rollback on failure), each waiting on the previous. The zone file's zone.role
+# chooses the sequence.
+#
+# A participant zone (zone.role participant, the default: zone A, zone B, kind) is ten releases, eleven with the admission release:
 #
 #   1 ztd          ztd-system    the umbrella: plane namespaces (with spire-system and istio-system),
 #                                default deny, declared openings, allow matrix
@@ -18,9 +20,21 @@
 #                                rules of its own pairs (project chart wrapping the upstream openbao
 #                                chart, built from its Chart.lock, pinned by digest); after the mesh, so
 #                                its pods are created with a sidecar and an SVID
-#   9 gatekeeper   gatekeeper-system  only when the zone file sets admission.install: the admission
-#                                release of the umbrella chart - Gatekeeper, the image-verification
-#                                provider, the admission policy and the admission pool
+#   9 otel-node    ztd-otel-node the node collectors: a host-network DaemonSet that reads every pod's
+#                                logs and scrapes its node's SPIRE agent on the loopback (upstream
+#                                OpenTelemetry Collector chart, pinned)
+#  10 otel-gateway ztd-mgmt      the zone gateway: OTLP from the workloads and the proxies, the SPIRE
+#                                server and controller-manager scrapes, node readiness, the
+#                                revocation probe (same chart); meshed, with an SVID
+# Both telemetry releases export to the demonstrator cluster's entry (telemetryExport.entry) with the
+# zone's client certificate, the Secret telemetryExport.clientSecret in ztd-otel-node and in the
+# management namespace, which the demonstrator role's step telemetry-client-certs creates; `install`
+# stops before otel-node when that Secret is missing (install the umbrella first, so the namespaces
+# exist, then run telemetry-client-certs from the demonstrator side, then install again).
+#  11 gatekeeper   gatekeeper-system  only when the zone file sets admission.install (either role, after
+#                                its last release): the admission release of the umbrella chart -
+#                                Gatekeeper, the image-verification provider, the admission policy and
+#                                the admission pool
 #
 # The admission release is the umbrella chart installed a second time, into Gatekeeper's namespace,
 # with Gatekeeper's values (deployment/admission/gatekeeper-values.yaml), its image pins
@@ -34,16 +48,38 @@
 # only with ADMISSION_ADOPT=1 (helm --take-ownership, docs/umbrella-chart.md); the records of the old
 # releases are dropped afterwards, their objects kept.
 #
+# The demonstrator cluster (zone.role demonstrator: IONOS; on kind ci/demonstrator-values.yaml, in
+# the same cluster as the kind zone) is five releases and one step, all into the backends' namespace
+# (observabilityBackends.namespace) except the umbrella:
+#   1 ztd-demonstrator  ztd-system   the umbrella in its demonstrator role: the backends' namespace,
+#                                    its default deny and the entry's listeners, nothing else
+#   2 telemetry-issuers              the telemetry CA as cert-manager resources: root, server
+#                                    certificate, one intermediate and one client certificate per zone
+#                                    (project chart deployment/helm/telemetry-issuers; needs
+#                                    cert-manager on the cluster)
+#   3 otel-entry                     the receiving collector: one mutual-TLS listener per zone
+#   4 prometheus                     metrics by remote write, the alert rules (upstream, pinned);
+#                                    a rule in the firing state is the alert
+#   5 jaeger                         traces, Badger on a persistent volume (upstream, pinned)
+#     telemetry-client-certs         copies each zone's client certificate into that zone, when
+#                                    TELEMETRY_ZONES names the zones (also a command of its own)
+# The logs of every zone end in files on the entry's volume (otel-entry-logs, one file per zone,
+# rotated by size); no log query service is installed.
+#
 # Usage:
 #   scripts/install-zone/install.sh install [release...]
-#                                                    install or upgrade the zone, or only the named
-#                                                    releases (idempotent)
+#                                                    install or upgrade the zone (idempotent); with
+#                                                    release names, only those, in plan order
 #   scripts/install-zone/install.sh plan             list the steps; touches no cluster
 #   scripts/install-zone/install.sh render [release...]
 #                                                    render the releases from the pinned charts and
 #                                                    the merged values; touches no cluster (CI);
 #                                                    an unknown release name is an error
-#   scripts/install-zone/install.sh uninstall        uninstall in reverse order (gatekeeper first, then ztd-openbao)
+#   scripts/install-zone/install.sh uninstall        uninstall in reverse order (the last release
+#                                                    first: gatekeeper when installed)
+#   scripts/install-zone/install.sh telemetry-client-certs
+#                                                    demonstrator role: copy each zone's client
+#                                                    certificate into that zone (TELEMETRY_ZONES)
 #   scripts/install-zone/install.sh help             this text (also -h, --help)
 #
 # Environment:
@@ -55,6 +91,11 @@
 #   INSTALL_ZONE_CACHE  where the pinned charts and the built OpenBao dependency are kept
 #                       (default: ~/.cache/ztd-install-zone)
 #   ADMISSION_ADOPT=1   let the admission release adopt the objects of scripts/admission/install.sh
+#   TELEMETRY_ZONES     demonstrator role: the zones whose client certificate telemetry-client-certs
+#                       copies, as <zone>=<kubectl context>[,...] (kind: kind=kind-ztd); each
+#                       certificate goes into ztd-otel-node and the management namespace
+#                       (TELEMETRY_ZONE_MGMT_NAMESPACE, default ztd-mgmt) of that context; the key
+#                       passes through a temporary directory that is removed, never the repository
 #
 # Mesh settings: the installer installs sidecar mode with the default, unrevisioned istiod (and the
 # Istio CNI plugin with ambient off). It refuses, before it renders or installs anything, a zone
@@ -83,7 +124,14 @@
 # The umbrella's dependencies are taken from deployment/helm/ztd/charts: run `helm dependency build
 # deployment/helm/ztd` after a change to deployment/helm/admission or admission-pool. Needs helm,
 # kubectl, jq, curl, python3 with PyYAML, and sha256sum or shasum.
-# No release is placed on a node: the scheduler places every pod, ztd-openbao's included.
+# No release is placed on a node: the scheduler places every pod, ztd-openbao's and otel-gateway's
+# included.
+#
+# The telemetry releases need two zone facts: the entry (telemetryExport.entry.address, or
+# .inCluster on kind) and the revocation status-list URL (telemetryExport.revocationStatusListUrl).
+# A participant zone file without either is refused before anything is rendered, whenever the run
+# includes otel-node or otel-gateway. A demonstrator zone file on a cluster with a LoadBalancer is
+# refused while observabilityBackends.entry.sourceRanges is empty.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -92,13 +140,17 @@ KUBE_CONTEXT=${KUBE_CONTEXT:-kind-ztd}
 STEP_TIMEOUT=${STEP_TIMEOUT:-10m}
 CACHE=${INSTALL_ZONE_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/ztd-install-zone}
 VALUES_DIR=$REPO/deployment/helm/values
-# shellcheck source=scripts/tools/pins.env disable=SC1091
-. "$REPO/scripts/tools/pins.env"
-# shellcheck source=scripts/admission/checks.sh
-. "$REPO/scripts/admission/checks.sh"
 
 # ---- Pins (docs/dependencies.md). An upgrade changes a version and its digest here, then reruns
 # ---- scripts/verify-mesh-identity/verify.sh; every Istio minor also reruns the ADR-0009 check.
+# ---- The observability charts and images are pinned in scripts/tools/pins.env (exported for the
+# ---- derived values below); an upgrade there reruns scripts/verify-observability/verify.sh.
+set -a
+# shellcheck source-path=SCRIPTDIR source=../tools/pins.env
+. "$REPO/scripts/tools/pins.env"
+set +a
+# shellcheck source=scripts/admission/checks.sh
+. "$REPO/scripts/admission/checks.sh"
 SPIRE_REPO=https://spiffe.github.io/helm-charts-hardened/
 SPIRE_CRDS_VERSION=0.6.1
 SPIRE_CRDS_SHA256=ce982e63fc375e392b014fc99e621a55442ab886052413e9bb052f72d66580a8
@@ -117,7 +169,7 @@ ISTIO_ARCHIVE_SHA256=cb4af2e8a099acfc51368c1d15d4deab8321ae628554d4ee5c74f62ebe7
 # ---- extra lifecycle settings. "zone" as values file means the zone file itself; no values file
 # ---- means the chart's defaults. A zone key written "<key>+<key>" is the concatenation of those
 # ---- lists in the pair shape of zone-policy (merged_values); an empty list is a fact, not a gap.
-STEPS=(
+PARTICIPANT_STEPS=(
   "ztd|ztd-system|umbrella|zone||"
   "spire-crds|spire-system|spire-crds|$VALUES_DIR/spire-crds.yaml||"
   "spire|spire-system|spire|$VALUES_DIR/spire.yaml|global.spire.trustDomain=zone.trustDomain,global.spire.clusterName=zone.name,global.spire.persistence.storageClass=zone.storageClass,global.spire.caSubject.commonName=zone.trustDomain|"
@@ -126,14 +178,21 @@ STEPS=(
   "istio-cni|istio-system|istio-cni|$VALUES_DIR/istio-cni.yaml||"
   "zone-policy|istio-system|zone-policy||trustDomain=zone.trustDomain,planes.management.namespace=planes.management.namespace,planes.data.namespace=planes.data.namespace,pairs=allowMatrix+intraPlanePairs|wait-for-jobs"
   "ztd-openbao|=planes.management.namespace|ztd-openbao||managementNamespace=planes.management.namespace,openbao.global.namespace=planes.management.namespace,openbao.server.dataStorage.storageClass=zone.storageClass,cilium.enabled=cni.cilium.enabled,trustDomain=zone.trustDomain,mesh.mode=mesh.mode|wait-for-jobs"
+  "otel-node|ztd-otel-node|otel-collector|$VALUES_DIR/otel-node.yaml||"
+  "otel-gateway|=planes.management.namespace|otel-collector|$VALUES_DIR/otel-gateway.yaml||"
 )
-# A namespace written "=<zone key>" is that zone fact (the management namespace of ztd-openbao).
-# The admission release, when the zone file opts in; "admission" as values file means the zone file
-# with Gatekeeper's values and the stage settings (merged_values).
-if [ -f "$ZONE_VALUES" ] && command -v python3 >/dev/null &&
-  [ "$(python3 -c 'import sys, yaml; z = yaml.safe_load(open(sys.argv[1])) or {}; print((z.get("admission") or {}).get("install") is True)' "$ZONE_VALUES" 2>/dev/null)" = True ]; then
-  STEPS+=("gatekeeper|$admission_ns|umbrella|admission||")
-fi
+DEMONSTRATOR_STEPS=(
+  "ztd-demonstrator|ztd-system|umbrella|zone||"
+  "telemetry-issuers|=observabilityBackends.namespace|telemetry-issuers||serverName=observabilityBackends.entry.serverName,zones=observabilityBackends.entry.zones|"
+  "otel-entry|=observabilityBackends.namespace|otel-collector|$VALUES_DIR/otel-entry.yaml||"
+  "prometheus|=observabilityBackends.namespace|prometheus|$VALUES_DIR/prometheus.yaml|server.retention=observabilityBackends.retention,server.retentionSize=observabilityBackends.retentionSize,server.persistentVolume.size=observabilityBackends.volumes.prometheus,server.persistentVolume.storageClass=zone.storageClass|"
+  "jaeger|=observabilityBackends.namespace|jaeger|$VALUES_DIR/jaeger.yaml||"
+)
+# The releases of the zone file's role (load_steps, once the zone file is known).
+STEPS=()
+TELEMETRY_RELEASES=" otel-node otel-gateway "
+# A namespace written "=<zone key>" is that zone fact (the management namespace of ztd-openbao and
+# otel-gateway, the backends' namespace of the demonstrator releases).
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -141,10 +200,74 @@ trap 'rm -rf "$work"' EXIT
 say() { printf '%s\n' "$*"; }
 die() { printf 'install-zone: %s\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,/^# (docs\/environments\/osc.md)\.$/p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,/^# refused while observabilityBackends.entry.sourceRanges is empty\.$/p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # zone_file: the zone file must exist before anything reads it.
-zone_file() { [ -f "$ZONE_VALUES" ] || die "zone file not found: $ZONE_VALUES"; }
+zone_file() {
+  [ -f "$ZONE_VALUES" ] || die "zone file not found: $ZONE_VALUES"
+  load_steps
+}
+
+# load_steps: the releases of the zone file's role (zone.role; participant when absent).
+ROLE=""
+load_steps() {
+  [ -n "$ROLE" ] && return 0
+  ROLE=$(zone_fact zone.role) || exit 1
+  case ${ROLE:-participant} in
+    participant) ROLE=participant; STEPS=("${PARTICIPANT_STEPS[@]}") ;;
+    demonstrator) STEPS=("${DEMONSTRATOR_STEPS[@]}") ;;
+    *) die "the zone file sets zone.role \"$ROLE\"; it is participant or demonstrator" ;;
+  esac
+  # The admission release, when the zone file opts in (either role); "admission" as values file means
+  # the zone file with Gatekeeper's values and the stage settings (merged_values).
+  if [ "$(python3 -c 'import sys, yaml; z = yaml.safe_load(open(sys.argv[1])) or {}; print((z.get("admission") or {}).get("install") is True)' "$ZONE_VALUES" 2>/dev/null)" = True ]; then
+    STEPS+=("gatekeeper|$admission_ns|umbrella|admission||")
+  fi
+}
+
+# telemetry_facts [release...]: the zone facts the telemetry releases need, refused before anything
+# is rendered. Participant: when the run includes otel-node or otel-gateway (all releases when none
+# is named), the entry (address or inCluster), the revocation status-list URL, the node collectors'
+# namespace without the mesh, and the SPIRE metrics lane. Demonstrator: on a cluster with a
+# LoadBalancer, the zones' egress addresses.
+telemetry_facts() {
+  local want=" $* " r include=false
+  # The admission release alone publishes no telemetry path (IONOS can take it before its entry).
+  [ "$(admission_only "$@")" != admission-only ] || return 0
+  if [ "$ROLE" = participant ]; then
+    if [ $# -eq 0 ]; then include=true; else
+      for r in $TELEMETRY_RELEASES; do [[ "$want" == *" $r "* ]] && include=true; done
+    fi
+    [ "$include" = true ] || return 0
+  fi
+  zone_py "$ROLE" <<'PY' || exit 1
+role = ARGS[0]
+doc = zone_doc()
+missing = []
+if role == "participant":
+    te = fact(doc, "telemetryExport") or {}
+    entry = te.get("entry") or {}
+    inc = entry.get("inCluster") or {}
+    if not str(entry.get("address") or "").strip() and not inc.get("namespace"):
+        missing.append("telemetryExport.entry.address (the demonstrator cluster's entry as a /32 CIDR; "
+                       "telemetryExport.entry.inCluster on kind)")
+    if not str(te.get("revocationStatusListUrl") or "").strip():
+        missing.append("telemetryExport.revocationStatusListUrl (the revocation status list the zone gateway probes)")
+    extra = (fact(doc, "planes") or {}).get("extra") or []
+    if not any(e.get("name") == "ztd-otel-node" and str(e.get("mesh")).lower() == "false" for e in extra):
+        missing.append("planes.extra entry ztd-otel-node with mesh: false (the node collectors' namespace)")
+    if not (fact(doc, "networkPolicy.observabilityScrape") or {}).get("enabled"):
+        missing.append("networkPolicy.observabilityScrape.enabled: true (the zone gateway's SPIRE metrics lane)")
+else:
+    lb = fact(doc, "zone.loadBalancer.type")
+    if lb and lb != "none" and not (fact(doc, "observabilityBackends.entry.sourceRanges") or []):
+        missing.append("observabilityBackends.entry.sourceRanges (the zones' egress addresses; the entry "
+                       "is never published on a LoadBalancer without them)")
+if missing:
+    sys.exit(f"install-zone: the zone file {ZONE} does not state, for the telemetry releases: "
+             + "; ".join(missing) + ". Nothing was rendered or installed.")
+PY
+}
 
 # zone_mesh: the zone file's mesh settings must be the ones this installer installs, sidecar mode
 # with the default, unrevisioned istiod; anything else is refused before anything is rendered or
@@ -153,7 +276,8 @@ zone_file() { [ -f "$ZONE_VALUES" ] || die "zone file not found: $ZONE_VALUES"; 
 # namespace) only the admission switches are checked, so a zone without a mesh, such as IONOS, can
 # take the admission release.
 zone_mesh() {
-  python3 - "$ZONE_VALUES" "${1:-}" <<'PY' || exit 1
+  # A demonstrator labels no plane namespace for a mesh: only its admission switches are checked.
+  python3 - "$ZONE_VALUES" "$([ "$ROLE" = demonstrator ] && echo admission-only || echo "${1:-}")" <<'PY' || exit 1
 import sys, yaml
 zone_file, scope_only = sys.argv[1], sys.argv[2] == "admission-only"
 zone = yaml.safe_load(open(zone_file)) or {}
@@ -232,7 +356,7 @@ MESH_SCOPE=
 plan() {
   zone_file
   zone_mesh "$MESH_SCOPE"
-  say "Zone file: ${ZONE_VALUES#"$REPO"/}   context: $KUBE_CONTEXT"
+  say "Zone file: ${ZONE_VALUES#"$REPO"/}   role: $ROLE   context: $KUBE_CONTEXT"
   local i=0 step release ns chart values facts extra label
   for step in "${STEPS[@]}"; do
     IFS='|' read -r release ns chart values facts extra <<<"$step"
@@ -242,9 +366,13 @@ plan() {
     elif [ "$values" = admission ]; then label="the zone file + deployment/admission/gatekeeper-values.yaml, staged"
     elif [ -n "$values" ]; then label=${values#"$REPO"/}
     else label="chart defaults"; fi
-    printf '  %d/%d  %-12s into %-13s chart %-12s values %s%s%s\n' "$i" "${#STEPS[@]}" "$release" "$ns" \
+    printf '  %d/%d  %-17s into %-17s chart %-12s values %s%s%s\n' "$i" "${#STEPS[@]}" "$release" "$ns" \
       "$(chart_label "$chart")" "$label" "${facts:+ + zone facts ${facts//,/ }}" "${extra:+ ($extra)}"
   done
+  if [ "$ROLE" = demonstrator ]; then
+    say "  then telemetry-client-certs: ${TELEMETRY_ZONES:-not run (TELEMETRY_ZONES is empty)}"
+    say "  the logs of every zone are exported to files on the volume otel-entry-logs; no log query service is installed"
+  fi
 }
 
 chart_label() {
@@ -257,6 +385,10 @@ chart_label() {
     istio-base) echo "base $ISTIO_VERSION" ;;
     istiod) echo "istiod $ISTIO_VERSION" ;;
     istio-cni) echo "cni $ISTIO_VERSION" ;;
+    telemetry-issuers) echo "deployment/helm/telemetry-issuers" ;;
+    otel-collector) echo "opentelemetry-collector $OTEL_COLLECTOR_CHART_VERSION" ;;
+    prometheus) echo "prometheus $PROMETHEUS_CHART_VERSION" ;;
+    jaeger) echo "jaeger $JAEGER_CHART_VERSION" ;;
   esac
 }
 
@@ -270,6 +402,20 @@ fetch_spire_chart() { # fetch_spire_chart <chart> <version> <sha256>
     mv "$work/$1-$2.tgz" "$file"
   fi
   [ "$(sha256 "$file")" = "$3" ] || die "chart $1 $2: digest $(sha256 "$file") is not the pinned $3"
+  echo "$file"
+}
+
+# fetch_chart <repo> <chart> <version> <sha256>: an upstream chart of pins.env into the cache,
+# verified by the digest its repository's index publishes.
+fetch_chart() {
+  local file="$CACHE/$2-$3.tgz"
+  if [ ! -f "$file" ] || [ "$(sha256 "$file")" != "$4" ]; then
+    mkdir -p "$CACHE"
+    helm pull "$2" --repo "$1" --version "$3" --destination "$work" >/dev/null \
+      || die "could not fetch chart $2 $3 from $1"
+    mv "$work/$2-$3.tgz" "$file"
+  fi
+  [ "$(sha256 "$file")" = "$4" ] || die "chart $2 $3: digest $(sha256 "$file") is not the pinned $4"
   echo "$file"
 }
 
@@ -337,6 +483,10 @@ chart_path() {
     istio-base) echo "$(fetch_istio)/base" ;;
     istiod) echo "$(fetch_istio)/istio-control/istio-discovery" ;;
     istio-cni) echo "$(fetch_istio)/istio-cni" ;;
+    telemetry-issuers) echo "$REPO/deployment/helm/telemetry-issuers" ;;
+    otel-collector) fetch_chart "$OTEL_COLLECTOR_CHART_REPO" opentelemetry-collector "$OTEL_COLLECTOR_CHART_VERSION" "$OTEL_COLLECTOR_CHART_SHA256" ;;
+    prometheus) fetch_chart "$PROMETHEUS_CHART_REPO" prometheus "$PROMETHEUS_CHART_VERSION" "$PROMETHEUS_CHART_SHA256" ;;
+    jaeger) fetch_chart "$JAEGER_CHART_REPO" jaeger "$JAEGER_CHART_VERSION" "$JAEGER_CHART_SHA256" ;;
   esac
 }
 
@@ -350,6 +500,9 @@ chart_path() {
 # podSelector and ports. Paths travel as arguments, never inside the source.
 # "admission": the zone file over Gatekeeper's values and pins, with the switches of stage
 # $ADMISSION_STAGE (default 4, everything).
+# Then the derived values of the observability releases: the pinned images of
+# scripts/tools/pins.env, and what follows from the zone file beyond a single fact (the collectors'
+# exporter, the entry's listeners per zone, the silent-zone rules per zone, the volumes).
 merged_values() {
   if [ "$2" = zone ]; then cp "$ZONE_VALUES" "$4"; return; fi
   if [ "$2" = admission ]; then
@@ -438,6 +591,99 @@ for pair in filter(None, facts.split(",")):
 if missing:
     sys.exit(f"install-zone: release {release}: the zone file {ZONE} does not state the zone fact "
              + ", ".join(missing))
+import os
+
+def image(var):
+    ref = os.environ[var]
+    name, digest = ref.split("@", 1)
+    repo, tag = name.rsplit(":", 1)
+    return repo, tag, digest
+
+te = fact(doc, "telemetryExport") or {}
+ob = fact(doc, "observabilityBackends") or {}
+if release in ("otel-node", "otel-gateway", "otel-entry"):
+    repo, tag, digest = image("OTEL_COLLECTOR_IMAGE")
+    values.setdefault("image", {}).update(repository=repo, tag=tag, digest=digest)
+if release in ("otel-node", "otel-gateway"):
+    entry = te.get("entry") or {}
+    inc = entry.get("inCluster") or {}
+    host = inc.get("host") or str(entry.get("address") or "").split("/")[0]
+    exporter = values["config"]["exporters"]["otlp/entry"]
+    exporter["endpoint"] = f"{host}:{entry['port']}"
+    exporter["tls"]["server_name_override"] = entry["serverName"]
+    for vol in values.get("extraVolumes") or []:
+        if vol["name"] == "telemetry-client":
+            vol["secret"]["secretName"] = te["clientSecret"]
+    if release == "otel-node" and inc.get("namespace"):
+        # kind only: the demonstrator role shares the cluster; its pods are not the zone's.
+        values["config"]["receivers"]["filelog"]["exclude"] = [f"/var/log/pods/{inc['namespace']}_*/*/*.log"]
+    if release == "otel-gateway":
+        values["config"]["receivers"]["http_check/revocation"]["targets"][0]["endpoint"] = te["revocationStatusListUrl"]
+if release == "otel-entry":
+    e = ob.get("entry") or {}
+    cfg = values["config"]
+    lb = fact(doc, "zone.loadBalancer.type") or "none"
+    values["service"]["type"] = "ClusterIP" if lb == "none" else "LoadBalancer"
+    values["service"]["loadBalancerSourceRanges"] = list(e.get("sourceRanges") or [])
+    # The log export: one file per zone on the volume otel-entry-logs, rotated by size. The size at
+    # which a file rotates is the volume shared out over every zone's current file and backups, with a
+    # tenth kept free.
+    lx = values.pop("logExport")
+    size = str((ob.get("volumes") or {}).get("logs") or "")
+    unit = {"Mi": 1, "Gi": 1024, "Ti": 1024 * 1024}.get(size[-2:])
+    if not unit or not size[:-2].isdigit():
+        sys.exit(f"install-zone: release otel-entry: observabilityBackends.volumes.logs ({size!r}) is not a size in Mi, Gi or Ti")
+    files = len(e["zones"]) * (int(lx["maxBackups"]) + 1)
+    rotate_mb = int(int(size[:-2]) * unit * 0.9 // files)
+    if rotate_mb < 1:
+        sys.exit(f"install-zone: release otel-entry: the logs volume ({size}) is too small for {files} files")
+    for obj in values.get("extraManifests") or []:
+        if obj.get("kind") == "PersistentVolumeClaim":
+            obj["spec"]["storageClassName"] = fact(doc, "zone.storageClass")
+            obj["spec"]["resources"]["requests"]["storage"] = size
+    for z in e["zones"]:
+        n, port = z["name"], int(z["port"])
+        if len(f"tcp-{n}") > 15:
+            sys.exit(f"install-zone: zone name {n} is too long for a port name (tcp-<zone>, 15 characters)")
+        cfg["receivers"][f"otlp/{n}"] = {"protocols": {"grpc": {"endpoint": f"0.0.0.0:{port}", "tls": {
+            "cert_file": "/etc/ztd-entry/server/tls.crt", "key_file": "/etc/ztd-entry/server/tls.key",
+            "client_ca_file": f"/etc/ztd-entry/zones/{n}/ca.crt", "min_version": "1.3"}}}}
+        # The zone is the listener's: set on the resource, removed wherever the client may have put one.
+        cfg["processors"][f"transform/zone-{n}"] = {"error_mode": "ignore",
+            "trace_statements": [f'set(resource.attributes["zone"], "{n}")', 'delete_key(span.attributes, "zone")'],
+            "metric_statements": [f'set(resource.attributes["zone"], "{n}")', 'delete_key(datapoint.attributes, "zone")'],
+            "log_statements": [f'set(resource.attributes["zone"], "{n}")', 'delete_key(log.attributes, "zone")']}
+        cfg["exporters"][f"file/{n}"] = {"path": f"{lx['directory']}/{n}.jsonl", "format": "json",
+            "flush_interval": "1s",
+            "rotation": {"max_megabytes": rotate_mb, "max_backups": int(lx["maxBackups"]), "localtime": False}}
+        for signal, exporter in (("traces", "otlp/jaeger"), ("metrics", "prometheus_remote_write"), ("logs", f"file/{n}")):
+            cfg["service"]["pipelines"][f"{signal}/{n}"] = {"receivers": [f"otlp/{n}"],
+                "processors": ["memory_limiter", f"transform/zone-{n}", "batch"], "exporters": [exporter]}
+        values["ports"][f"tcp-{n}"] = {"enabled": True, "containerPort": port, "servicePort": port, "protocol": "TCP"}
+        values["extraVolumes"].append({"name": f"ca-{n}", "secret": {"secretName": f"ztd-telemetry-{n}-ca",
+            "defaultMode": 0o444, "items": [{"key": "tls.crt", "path": "ca.crt"}]}})
+        values["extraVolumeMounts"].append({"name": f"ca-{n}", "mountPath": f"/etc/ztd-entry/zones/{n}", "readOnly": True})
+if release == "prometheus":
+    repo, tag, digest = image("PROMETHEUS_IMAGE")
+    values["server"]["image"].update(repository=repo, digest=digest)
+    repo, tag, digest = image("CONFIG_RELOADER_IMAGE")
+    values["configmapReload"]["prometheus"]["image"].update(repository=repo, digest=digest)
+    # A silent zone: no uptime sample of its gateway for 15 s (the window is the pending period;
+    # for 5 s on top), one rule per zone of the entry, so a zone that never reported is caught too.
+    rules = [{"alert": "ZoneSilent",
+              "expr": f'absent_over_time({{__name__=~"otelcol_process_uptime.*",collector="otel-gateway",ztd_source="collector",zone="{z["name"]}"}}[15s])',
+              "for": "5s",
+              "labels": {"severity": "critical", "zone": z["name"], "target": "zone-gateway", "ztd_source": "collector"},
+              "annotations": {"summary": f"No telemetry from {z['name']}: its zone gateway, its export path or the zone is down"}}
+             for z in (ob.get("entry") or {}).get("zones") or []]
+    values["serverFiles"]["alerting_rules.yml"]["groups"].append({"name": "ztd-silent-zones", "interval": "5s", "rules": rules})
+if release == "jaeger":
+    repo, tag, digest = image("JAEGER_IMAGE")
+    values["jaeger"]["image"].update(repository=repo, tag=tag, digest=digest)
+    for obj in values.get("extraObjects") or []:
+        if obj.get("kind") == "PersistentVolumeClaim":
+            obj["spec"]["storageClassName"] = fact(doc, "zone.storageClass")
+            obj["spec"]["resources"]["requests"]["storage"] = (ob.get("volumes") or {}).get("jaeger")
 yaml.safe_dump(values, open(out, "w"), sort_keys=False)
 PY
 }
@@ -560,8 +806,9 @@ render() {
   MESH_SCOPE=$(admission_only ${want[@]+"${want[@]}"})
   zone_mesh "$MESH_SCOPE"
   known_releases ${want[@]+"${want[@]}"}
+  telemetry_facts ${want[@]+"${want[@]}"}
   # The coupling of zone-policy to istiod is checked whenever either of them is rendered.
-  if [ ${#want[@]} -eq 0 ] || [[ " ${want[*]} " == *" istiod "* ]] || [[ " ${want[*]} " == *" zone-policy "* ]]; then
+  if [ "$ROLE" = participant ] && { [ ${#want[@]} -eq 0 ] || [[ " ${want[*]} " == *" istiod "* ]] || [[ " ${want[*]} " == *" zone-policy "* ]]; }; then
     mesh_coupling
   fi
   [ -n "${RENDER_DIR:-}" ] && mkdir -p "$RENDER_DIR"
@@ -570,7 +817,7 @@ render() {
     wanted "$release" ${want[@]+"${want[@]}"} || continue
     ns=$(step_ns "$ns")
     merged_values "$release" "$values" "$facts" "$work/$release.values.yaml" || exit 1
-    path=$(chart_path "$chart")
+    path=$(chart_path "$chart") || exit 1
     out=${RENDER_DIR:+$RENDER_DIR/$release.yaml}
     flags=()
     if [ "$values" = admission ]; then admission_setup; flags=(--post-renderer ztd-webhook-scope); fi
@@ -594,12 +841,38 @@ kctx() { kubectl --context "$KUBE_CONTEXT" "$@"; }
 
 # plane namespaces of the zone: the two fixed planes and planes.extra, from the zone document
 zone_namespaces() {
-  zone_py <<'PY'
-planes = zone_doc().get("planes") or {}
-names = [planes["management"]["namespace"], planes["data"]["namespace"]]
-names += [e["name"] for e in planes.get("extra") or []]
-print(" ".join(names))
+  zone_py "$ROLE" <<'PY'
+doc = zone_doc()
+if ARGS[0] == "demonstrator":
+    print(fact(doc, "observabilityBackends.namespace"))
+else:
+    planes = doc.get("planes") or {}
+    names = [planes["management"]["namespace"], planes["data"]["namespace"]]
+    names += [e["name"] for e in planes.get("extra") or []]
+    print(" ".join(names))
 PY
+}
+
+# client_secret_present: the zone's client-certificate Secret is in ztd-otel-node and in the
+# management namespace (created by the demonstrator role's step telemetry-client-certs).
+client_secret_present() {
+  local secret mgmt ns missing=""
+  secret=$(zone_fact telemetryExport.clientSecret); mgmt=$(zone_fact planes.management.namespace)
+  for ns in ztd-otel-node "$mgmt"; do
+    kctx -n "$ns" get secret "$secret" >/dev/null 2>&1 || missing="$missing $ns/$secret"
+  done
+  [ -z "$missing" ] && return 0
+  say "the zone's telemetry client certificate is missing:$missing"
+  say "  run, against the demonstrator cluster: ZONE_VALUES=<its zone file> KUBE_CONTEXT=<its context> \\"
+  say "    TELEMETRY_ZONES=$(zone_fact zone.name)=$KUBE_CONTEXT scripts/install-zone/install.sh telemetry-client-certs"
+  say "  then rerun this install (the releases already installed are left as they are)"
+  return 1
+}
+
+# cert_manager_present: the demonstrator role's issuers need cert-manager on the cluster.
+cert_manager_present() {
+  kctx get crd certificates.cert-manager.io issuers.cert-manager.io >/dev/null 2>&1 \
+    || die "cert-manager is not installed on $KUBE_CONTEXT (no certificates.cert-manager.io CRD); the telemetry issuers need it (on kind: scripts/dev/kind-cert-manager-up.sh)"
 }
 
 # wait_ready <timeout-seconds> <namespace...>: every pod Ready (finished Job pods aside: Succeeded,
@@ -814,6 +1087,7 @@ install() {
   zone_file
   MESH_SCOPE=$(admission_only ${want[@]+"${want[@]}"})
   zone_mesh "$MESH_SCOPE"
+  telemetry_facts ${want[@]+"${want[@]}"}
   preflight
   known_releases ${want[@]+"${want[@]}"}
   # Adopting the standalone admission objects is the operator's decision, refused before anything.
@@ -832,6 +1106,7 @@ install() {
   render ${want[@]+"${want[@]}"} >"$work/render.log"
   grep '^pairs coupling:' "$work/render.log" || true
   plan
+  [ "$ROLE" = demonstrator ] && cert_manager_present
   local umbrella_ns
   umbrella_ns=$(IFS='|' read -r _ ns _ <<<"${STEPS[0]}"; echo "$ns")
   if wanted ztd ${want[@]+"${want[@]}"}; then
@@ -840,28 +1115,89 @@ install() {
   local i=0 step release ns chart values facts extra
   for step in "${STEPS[@]}"; do
     IFS='|' read -r release ns chart values facts extra <<<"$step"
-    ns=$(step_ns "$ns")
     i=$((i + 1))
     wanted "$release" ${want[@]+"${want[@]}"} || continue
+    ns=$(step_ns "$ns")
+    if [ "$ROLE" = participant ] && [ "$release" = otel-node ] && ! client_secret_present; then
+      die "stopped before $release: the zone's telemetry client certificate is not in the zone yet"
+    fi
     if [ "$values" = admission ]; then
       kctx get namespace "$ns" >/dev/null 2>&1 || kctx create namespace "$ns" >/dev/null
       install_admission "$i" "$ns"
       continue
     fi
-    merged_values "$release" "$values" "$facts" "$work/$release.values.yaml"
+    merged_values "$release" "$values" "$facts" "$work/$release.values.yaml" || exit 1
     say "step $i/${#STEPS[@]}: $release into $ns ..."
     deploy "$i" "$release" "$ns" "$(chart_path "$chart")" "$work/$release.values.yaml" "$extra"
   done
-  # The plane namespaces' pods, unless only the admission release was installed.
-  [ ${#want[@]} -eq 0 ] || [ "${want[*]}" != gatekeeper ] || return 0
-  local namespaces
-  namespaces=$(zone_namespaces)
-  # shellcheck disable=SC2086 # one word per namespace
-  wait_ready 600 $namespaces || die "the releases are deployed, but not every pod in $namespaces is Ready"
-  say "zone installed: every pod in $namespaces is Ready"
+  if [ ${#want[@]} -gt 0 ]; then
+    # A subset: each release waited for its own resources; the rest of the zone is not judged here.
+    say "installed: ${want[*]}"
+  else
+    local namespaces
+    namespaces=$(zone_namespaces)
+    # shellcheck disable=SC2086 # one word per namespace
+    wait_ready 600 $namespaces || die "the releases are deployed, but not every pod in $namespaces is Ready"
+    say "$ROLE installed: every pod in $namespaces is Ready"
+  fi
+  if [ "$ROLE" = demonstrator ] && [ ${#want[@]} -eq 0 ]; then
+    if [ -n "${TELEMETRY_ZONES:-}" ]; then telemetry_client_certs
+    else say "telemetry-client-certs not run: TELEMETRY_ZONES is empty"; fi
+  fi
+}
+
+# telemetry_client_certs: demonstrator role. For each <zone>=<context> of TELEMETRY_ZONES, wait for
+# the zone's client certificate (release telemetry-issuers), and create or update the Secret
+# telemetryExport.clientSecret (ztd-telemetry-client) in ztd-otel-node and the management namespace
+# of that context: tls.crt and tls.key of the zone's certificate, ca.crt the telemetry root's
+# certificate (never its key). The material passes through a temporary directory readable by the
+# user alone, removed on exit; the Secret is applied server-side, so no copy of it lands in a
+# last-applied annotation. A namespace that does not exist yet (the zone's umbrella not installed)
+# stops the step: only the umbrella creates namespaces.
+telemetry_client_certs() {
+  zone_file
+  [ "$ROLE" = demonstrator ] || die "telemetry-client-certs runs with the demonstrator cluster's zone file (zone.role demonstrator)"
+  [ -n "${TELEMETRY_ZONES:-}" ] || die "telemetry-client-certs: TELEMETRY_ZONES is empty (<zone>=<context>[,...])"
+  local backends known pair zone ctx dir ns mgmt=${TELEMETRY_ZONE_MGMT_NAMESPACE:-ztd-mgmt}
+  backends=$(zone_fact observabilityBackends.namespace)
+  known=$(zone_py <<'PY'
+print(" ".join(z["name"] for z in (fact(zone_doc(), "observabilityBackends.entry.zones") or [])))
+PY
+)
+  kctx version --request-timeout=10s >/dev/null 2>&1 || die "the demonstrator cluster of context $KUBE_CONTEXT cannot be reached"
+  dir=$(umask 077; mktemp -d)
+  # shellcheck disable=SC2064 # the directory is fixed now
+  trap "rm -rf '$dir' '$work'" EXIT
+  IFS=',' read -r -a pairs <<<"$TELEMETRY_ZONES"
+  for pair in "${pairs[@]}"; do
+    zone=${pair%%=*}; ctx=${pair#*=}
+    [[ " $known " == *" $zone "* ]] || die "telemetry-client-certs: zone $zone has no listener on the entry (observabilityBackends.entry.zones: $known)"
+    kctx -n "$backends" wait --for=condition=Ready "certificate/ztd-telemetry-client-$zone" --timeout=120s >/dev/null \
+      || die "telemetry-client-certs: the certificate ztd-telemetry-client-$zone is not Ready in $backends"
+    (umask 077
+     kctx -n "$backends" get secret "ztd-telemetry-client-$zone" -o jsonpath='{.data.tls\.crt}' | base64 -d >"$dir/tls.crt"
+     kctx -n "$backends" get secret "ztd-telemetry-client-$zone" -o jsonpath='{.data.tls\.key}' | base64 -d >"$dir/tls.key"
+     kctx -n "$backends" get secret ztd-telemetry-root -o jsonpath='{.data.tls\.crt}' | base64 -d >"$dir/ca.crt")
+    if [ ! -s "$dir/tls.crt" ] || [ ! -s "$dir/tls.key" ] || [ ! -s "$dir/ca.crt" ]; then
+      die "telemetry-client-certs: the certificate of $zone could not be read"
+    fi
+    for ns in ztd-otel-node "$mgmt"; do
+      kubectl --context "$ctx" get namespace "$ns" >/dev/null 2>&1 \
+        || die "telemetry-client-certs: namespace $ns does not exist on $ctx; install the zone's umbrella first (install.sh install ztd)"
+      kubectl --context "$ctx" -n "$ns" create secret generic ztd-telemetry-client \
+          --from-file=tls.crt="$dir/tls.crt" --from-file=tls.key="$dir/tls.key" --from-file=ca.crt="$dir/ca.crt" \
+          --dry-run=client -o yaml \
+        | kubectl --context "$ctx" label --local -f - ztd.facis.io/telemetry-zone="$zone" -o yaml \
+        | kubectl --context "$ctx" apply --server-side --force-conflicts --field-manager=install-zone -f - >/dev/null \
+        || die "telemetry-client-certs: could not write the Secret into $ctx $ns"
+      say "telemetry-client-certs: $zone -> $ctx $ns/ztd-telemetry-client"
+    done
+    rm -f "$dir"/*
+  done
 }
 
 uninstall() {
+  zone_file
   preflight
   local i step release ns rest line
   for (( i=${#STEPS[@]}-1; i>=0; i-- )); do
@@ -890,6 +1226,7 @@ uninstall() {
 
 case "${1:-}" in
   install) shift; install "$@" ;;
+  telemetry-client-certs) telemetry_client_certs ;;
   plan) plan ;;
   render) shift; render "$@" ;;
   uninstall) uninstall ;;

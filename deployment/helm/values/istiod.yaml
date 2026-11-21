@@ -52,6 +52,14 @@ meshConfig:
             termination: "%CONNECTION_TERMINATION_DETAILS%"  # a TCP connection's decision
             flags: "%RESPONSE_FLAGS%"
             time: "%START_TIME%"
+    # Envoy spans (docs/adr/0017-central-observability-backends.md): an OpenTelemetry provider pointing at
+    # the zone gateway (release otel-gateway in the management namespace, OTLP/gRPC on 4317), enabled
+    # mesh-wide by the Telemetry resource of zone-policy (tracing.provider, same name). The proxies
+    # reach the gateway along the allow-matrix row workloads-to-otel-collector, under mTLS.
+    - name: ztd-otel-gateway
+      opentelemetry:
+        service: otel-gateway.ztd-mgmt.svc.cluster.local
+        port: 4317
 # Images, pinned by digest (the multi-arch index digest of the 1.31.1 tag, read from its registry).
 # A value that contains "/" is used by the chart as the whole image reference. The two injected
 # images carry the digest only, no tag: the admission policy admits a third-party image by exact

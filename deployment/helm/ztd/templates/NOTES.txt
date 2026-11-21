@@ -1,4 +1,4 @@
-ztd umbrella chart {{ .Chart.Version }}: release {{ .Release.Name }} in {{ .Release.Namespace }}, zone {{ .Values.zone.name }}.
+ztd umbrella chart {{ .Chart.Version }}: release {{ .Release.Name }} in {{ .Release.Namespace }}, zone {{ .Values.zone.name }} (role {{ include "ztd.role" . }}).
 {{- if .Values.gatekeeper.enabled }}
 
 The admission release: Gatekeeper{{ if .Values.admissionProvider.enabled }}, the image-verification provider{{ end }}
@@ -6,6 +6,11 @@ The admission release: Gatekeeper{{ if .Values.admissionProvider.enabled }}, the
 {{- if .Values.admissionPolicy.constraints }}, the constraints{{ end }}
 {{- if .Values.admissionPool.enabled }}, the admission pool{{ end }}.
 {{- else }}
+{{- if eq (include "ztd.role" .) "demonstrator" }}
+
+Demonstrator cluster: the backends' namespace {{ .Values.observabilityBackends.namespace }} (default deny, outside both
+trust domains), with the entry's listeners open to the zones' egress addresses and nothing else.
+{{- end }}
 
 Plane namespaces:
 {{- $meshKey := include "ztd.meshLabelKey" . }}{{ $meshValue := include "ztd.meshLabelValue" . }}

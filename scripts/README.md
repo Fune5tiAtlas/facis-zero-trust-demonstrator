@@ -7,12 +7,15 @@ Bash is the language for scripts under `scripts/` per the Technical Development 
 | Script | What |
 |---|---|
 | `lifecycle.sh` | deploy or uninstall one Helm release: server-side dry run, then upgrade with rollback; the ORCE lifecycle node runs it |
-| `install-zone/install.sh` | install, upgrade, render or uninstall a zone as its eight releases in order, each through `lifecycle.sh` |
+| `install-zone/install.sh` | install, upgrade, render or uninstall a cluster from its zone file, each release through `lifecycle.sh`: a participant zone (ten releases, the telemetry collectors last) or the demonstrator cluster (the observability backends); `telemetry-client-certs` copies each zone's client certificate |
 | `dev/kind-cilium-up.sh` | the local kind cluster with Cilium chained (`cni.exclusive=false`) |
+| `dev/kind-cert-manager-up.sh` | cert-manager on kind (pinned), for the demonstrator role that shares the cluster |
 | `verify-umbrella/verify.sh` | evidence for the umbrella chart alone on kind |
 | `verify-mesh-identity/verify.sh` | evidence that the mesh identities are SPIRE's, the whole zone on kind |
 | `verify-plane-separation/verify.sh` | executes the plane-separation allow matrix against an installed zone and attributes every refusal to its layer (network, mesh); `verify-plane-separation/plan.sh` the part that reads no cluster (rows, cross-check, probe plan, per-row decision), sourced; `verify-plane-separation/verify_test.sh` its offline cases |
 | `lib/` | sourced by the cluster proofs, never run: `proof.sh` (CI refusal, context guard, run directory, check accounting, redaction), `probe.sh` (placement, probes and outcome classes, denial log, Cilium reads, capture-rule lift, routing check), `doc-table.sh` (the heading-based reader of the architecture document's tables, shared with `check-plane-separation.sh`) |
+| `verify-observability/verify.sh` | evidence that the observability stack collects, carries, stores and alerts within 30 s; kind, or a zone with the demonstrator cluster |
+| `verify-observability/test-alert-rules.sh`, `check-rendered-images.sh` | the alert rules and the detection budget; the observability images pinned and licensed (no cluster, CI) |
 | `mesh-mode/check-upstream-state.sh` | the upstream-state record behind ADR-0009 and its reopen check |
 | `ci/check-charts.sh` | the chart quality gate: lint, render and (release) server dry-run of every chart; `ci/check-charts_test.sh` its cases |
 | `ci/check-policy-addresses.sh` | no address in a policy: renders the umbrella, `zone-policy` and `ztd-openbao` with every shipped zone file and the CI zone file and fails on any `ipBlock`, CIDR rule or address literal in a NetworkPolicy, CiliumNetworkPolicy or AuthorizationPolicy; `ci/check-policy-addresses_test.sh` its cases |

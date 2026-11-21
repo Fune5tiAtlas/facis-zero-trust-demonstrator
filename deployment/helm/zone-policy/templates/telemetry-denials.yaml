@@ -8,6 +8,10 @@ details; TCP: the connection's termination details), never on the status code: a
 also log an application's own 403, a request the mesh served. Served requests are not logged. Named
 mesh-default, the one mesh-wide Telemetry a zone has: another change that needs a mesh-wide setting
 (tracing) adds it to this resource rather than a second one.
+Mesh-wide tracing (tracing.enabled): every proxy reports a span per request to the istiod extension
+provider tracing.provider (deployment/helm/values/istiod.yaml, meshConfig.extensionProviders, an
+OpenTelemetry provider pointing at the zone gateway on 4317), and propagates W3C traceparent. The
+spans reach the zone gateway along the allow-matrix row workloads-to-otel-collector, under mTLS.
 */ -}}
 apiVersion: telemetry.istio.io/v1
 kind: Telemetry
@@ -22,3 +26,9 @@ spec:
         - name: {{ .Values.denialLog.provider }}
       filter:
         expression: {{ `response.code_details.startsWith("rbac_access_denied") || connection.termination_details.startsWith("rbac_access_denied")` | squote }}
+{{- if .Values.tracing.enabled }}
+  tracing:
+    - providers:
+        - name: {{ .Values.tracing.provider }}
+      randomSamplingPercentage: {{ .Values.tracing.randomSamplingPercentage }}
+{{- end }}
