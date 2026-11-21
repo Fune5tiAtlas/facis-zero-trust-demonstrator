@@ -11,6 +11,8 @@ Bash is the language for scripts under `scripts/` per the Technical Development 
 | `dev/kind-cilium-up.sh` | the local kind cluster with Cilium chained (`cni.exclusive=false`) |
 | `dev/kind-cert-manager-up.sh` | cert-manager on kind (pinned), for the demonstrator role that shares the cluster |
 | `verify-umbrella/verify.sh` | evidence for the umbrella chart alone on kind |
+| `verify-tsa-policy/verify.sh` | the TSA policy proof on kind: allow under bundle v1, deny under v2 without restart, refused bundles, rollback, decision log ([TSA policy evaluation](../docs/tsa-policy.md#proof)) |
+| `supplychain/publish-tsa-bundle.sh` | pack, sign, push and sign a Rego bundle for the TSA; prints its digest reference |
 | `verify-mesh-identity/verify.sh` | evidence that the mesh identities are SPIRE's, the whole zone on kind |
 | `verify-plane-separation/verify.sh` | executes the plane-separation allow matrix against an installed zone and attributes every refusal to its layer (network, mesh); `verify-plane-separation/plan.sh` the part that reads no cluster (rows, cross-check, probe plan, per-row decision), sourced; `verify-plane-separation/verify_test.sh` its offline cases |
 | `lib/` | sourced by the cluster proofs, never run: `proof.sh` (CI refusal, context guard, run directory, check accounting, redaction), `probe.sh` (placement, probes and outcome classes, denial log, Cilium reads, capture-rule lift, routing check), `doc-table.sh` (the heading-based reader of the architecture document's tables, shared with `check-plane-separation.sh`) |

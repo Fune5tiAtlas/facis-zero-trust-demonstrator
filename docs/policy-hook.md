@@ -209,3 +209,12 @@ This deployment applies ADR-0008's ext_authz choice using a dedicated namespace
 Envoy. It does not claim native mesh CUSTOM attachment or deployed evidence.
 
 The guarded token path uses two distinct audiences. Participant clients obtain only the guard's inbound audience; token-store clients obtain only the Resource's upstream audience. The latter equals the guard's `upstream_audience` and the Resource's `PROTECTED_RESOURCE_AUDIENCE`. Configure the Connector's `oauth.exclusiveAudiences` with both values: registration and issuance enforce the boundary, including legacy client rows. Use separate registrar identities for the two roles.
+
+## Policy engine: the XFSC TSA
+
+With `tsa.evaluationURL` set in the guard chart, the evaluator behind `policy_url` takes every
+decision from the XFSC TSA policy service, evaluating the signed Rego bundle Git declares active; the
+IF-05 input and decision are unchanged, every decision names its rule and bundle revision, and any
+TSA error or answer later than the evaluator's bound is `POL-PDP-UNAVAILABLE`. Bundle publishing,
+verification, activation without restart and rollback are described in
+[TSA policy evaluation](tsa-policy.md).

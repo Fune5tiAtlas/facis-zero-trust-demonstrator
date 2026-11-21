@@ -24,13 +24,22 @@ func run() error {
 		return errors.New("configuration unavailable")
 	}
 	defer func() { _ = f.Close() }()
-	var cfg policyevaluator.Config
+	var cfg struct {
+		policyevaluator.Config
+		// TSA, when set, takes decisions from the XFSC TSA policy service instead of the built-in rules.
+		TSA *policyevaluator.TSAConfig `json:"tsa"`
+	}
 	dec := json.NewDecoder(io.LimitReader(f, 64*1024))
 	dec.DisallowUnknownFields()
 	if dec.Decode(&cfg) != nil || dec.Decode(&struct{}{}) != io.EOF {
 		return errors.New("configuration invalid")
 	}
-	policy, err := policyevaluator.New(cfg)
+	var policy http.Handler
+	if cfg.TSA != nil {
+		policy, err = policyevaluator.NewTSA(*cfg.TSA, cfg.GuardCallers, slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	} else {
+		policy, err = policyevaluator.New(cfg.Config)
+	}
 	if err != nil {
 		return errors.New("policy configuration invalid")
 	}
