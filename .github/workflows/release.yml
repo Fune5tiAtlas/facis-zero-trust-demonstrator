@@ -18,7 +18,8 @@ name: Release
 #
 # Started by hand, by pushing a branch named candidate/<anything> - which also works in a fork whose
 # default branch does not carry this workflow - or by pushing a release tag. The release environment
-# must admit those branches, main, the PR branches and the tags v* (see docs/ci-cd.md).
+# admits main, candidate/* and the tags v* and nothing else; a run from any other ref stops before the
+# signing job starts (docs/ci-cd.md, Release tags and the release environment).
 on:
   workflow_dispatch:
   push:
@@ -490,6 +491,12 @@ jobs:
             --output-signature dist/release/release-manifest.json.sig dist/release/release-manifest.json >/dev/null
           cosign verify-blob --key "$SIGNING_PUBLIC_KEY" --insecure-ignore-tlog=true \
             --signature dist/release/release-manifest.json.sig dist/release/release-manifest.json
+
+      # The last gate: the manifest, the repository SBOM and every image with both attestations must
+      # verify against the selected source's committed public key, read with this job's read
+      # credentials; one that does not stops the job, and the tag stays without a release.
+      - name: Verify every signature of the release
+        run: scripts/supplychain/verify-release.sh dist/release
 
       # A tag with a prerelease identifier is a prerelease. A rerun completes or replaces the release
       # with this run's set - an asset of the same name is overwritten, one the set does not carry is

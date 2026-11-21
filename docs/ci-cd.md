@@ -250,7 +250,12 @@ The release job, in order:
    `RELEASE_NOTES.md`, the same list for the release page with the commands that check it;
 5. the manifest signed with the selected key (`cosign sign-blob`, the profile of the images) and
    verified;
-6. `gh release create`, with the notes and every asset. A rerun completes or replaces the release
+6. `scripts/supplychain/verify-release.sh` — the last gate: the manifest must name the selected
+   source's public key and its signature must verify, `sbom.json.sig` must verify, and every image of
+   the manifest must carry, by digest, a signature and both attestations that verify against that
+   key, read with the job's read credentials. One that does not stops the job: the tag stays without
+   a release (`scripts/supplychain/verify-release_test.sh` holds it to that);
+7. `gh release create`, with the notes and every asset. A rerun completes or replaces the release
    with its own set: an asset of the same name is overwritten, one the set does not carry is removed.
 
 The release carries: the chart packages and their `SHA256SUMS`; `sbom.json` and `sbom.json.sig`;
@@ -423,6 +428,24 @@ organisation setting and cannot be declared from this repository's tree. The req
 | Required status checks | `Workflow hygiene`, `Licence gate`, `Go lint`, `Image build and scan`, `Chart lint and render` |
 | Force pushes and branch deletion | Blocked |
 | Enforcement | Applies to administrators |
+
+### Release tags and the release environment
+
+A release exists only as the output of `release.yml` on a tag `v*`, and the run refuses to publish
+anything whose signatures do not verify ([Release](#release), step 6). What the repository tree cannot
+enforce are the two settings that keep anyone else from reaching the key or from creating a tag;
+a repository administrator applies them:
+
+| Setting | Required value |
+|---|---|
+| Tag ruleset, target `refs/tags/v*` | Restrict creations, updates and deletions; bypass list: the release maintainers only. A tag cannot be moved to another commit once its release exists |
+| Environment `release`, deployment branches and tags | Selected refs only: `main`, `candidate/*` and tags `v*` (plus `fixtures/*` while the admission fixtures are published) — no other branch, no pull-request ref |
+| Environment `release`, secrets | Only the inputs of the selected key source and the Harbor robot accounts ([Signing configuration](#signing-configuration)) |
+
+With the ruleset a tag that was not pushed by a maintainer does not exist, and with the allowlist a
+run from any other ref stops before the signing job starts: GitHub refuses the job with
+"not allowed to deploy to release", and no step — none of the key — runs. The
+[signing environment audit](#signing-environment-audit) records that refusal.
 
 ### Token scopes
 
