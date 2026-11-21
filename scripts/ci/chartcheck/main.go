@@ -3,7 +3,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -172,10 +171,24 @@ func check(root, chart string) error {
 	if err := need(ports[53] && ports[5432] && ports[15012], "schema policy must include DNS, configured database and istiod"); err != nil {
 		return err
 	}
-	// Ensure public runtime annotations remain JSON accepted by the proxy.
-	var proxy object
-	raw, _ := at(deployment, "spec", "template", "metadata", "annotations", "proxy.istio.io/config").(string)
-	return need(json.Unmarshal([]byte(raw), &proxy) == nil && at(proxy, "proxyHeaders", "forwardedClientCert") == "SANITIZE_SET", "runtime proxy must sanitize caller identity")
+	// The caller's identity comes from the sidecar's XFCC, sound only if the sidecar replaces a client's:
+	// SANITIZE_SET is mesh-wide in the istiod values, as zone-policy refuses a per-pod proxy configuration.
+	for _, d := range append([]object{deployment}, docs...) {
+		if d["kind"] == "Deployment" || d["kind"] == "Job" {
+			if err := need(at(d, "spec", "template", "metadata", "annotations", "proxy.istio.io/config") == nil, "runtime pods may not set proxy.istio.io/config (refused by zone-policy)"); err != nil {
+				return err
+			}
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(root, "deployment/helm/values/istiod.yaml"))
+	if err != nil {
+		return err
+	}
+	var istiod object
+	if yaml.Unmarshal(data, &istiod) != nil {
+		return errors.New("invalid istiod values")
+	}
+	return need(at(istiod, "meshConfig", "defaultConfig", "proxyHeaders", "forwardedClientCert") == "SANITIZE_SET", "the mesh must sanitize caller identity (istiod meshConfig.defaultConfig.proxyHeaders)")
 }
 func main() {
 	if len(os.Args) != 3 {

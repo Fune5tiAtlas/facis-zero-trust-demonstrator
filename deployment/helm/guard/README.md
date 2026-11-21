@@ -20,10 +20,12 @@ same guard-only rule. Remove any preliminary probe/Participant ingress policy:
 Kubernetes policies combine their allowed traffic. Render the complete namespace
 inventory to check no broader ingress policy defeats this one.
 
-Guard and policy pods force `proxyHeaders.forwardedClientCert: SANITIZE_SET` and
-URI certificate details; this is the inbound-sidecar API documented in the
-[Istio proxy schema](https://github.com/istio/api/blob/master/mesh/v1alpha1/proxy.proto).
-The namespace Envoy preserves that trusted sidecar header only to its local hook;
+Guard and policy pods rely on the mesh-wide `proxyHeaders.forwardedClientCert: SANITIZE_SET`
+with URI certificate details only, set by the zone's administrator in
+`deployment/helm/values/istiod.yaml` (`meshConfig.defaultConfig`; the inbound-sidecar API of the
+[Istio proxy schema](https://github.com/istio/api/blob/master/mesh/v1alpha1/proxy.proto)). The
+chart sets no `proxy.istio.io/config` and refuses one in `podAnnotations`: `zone-policy` refuses
+it at admission in a plane namespace. The namespace Envoy preserves that trusted sidecar header only to its local hook;
 the hook removes it before upstream forwarding. Effective sidecar sanitization
 and Resource mesh denial still require live probes. Do not expose this Envoy
 without Istio injection, STRICT mTLS and these network/identity policies.

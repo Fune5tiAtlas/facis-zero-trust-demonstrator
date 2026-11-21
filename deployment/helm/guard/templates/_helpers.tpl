@@ -16,12 +16,10 @@
 {{- if or (not (get $scopes "report:read")) (not (get $scopes "report:summary")) (eq (get $scopes "report:read") (get $scopes "report:summary")) -}}{{ fail "full-report and summary scope tenants must be distinct" }}{{- end -}}
 {{- end -}}
 
+{{/* XFCC sanitization is mesh-wide (deployment/helm/values/istiod.yaml, meshConfig.defaultConfig.proxyHeaders):
+zone-policy refuses a per-pod proxy configuration in a plane namespace, and native sidecars start the
+proxy before the application without holdApplicationUntilProxyStarts. */}}
 {{- define "guard.annotations" -}}
-{{- $a := deepCopy .Values.podAnnotations -}}
-{{- $p := dict -}}
-{{- if hasKey $a "proxy.istio.io/config" -}}{{- $p = mustFromJson (index $a "proxy.istio.io/config") -}}{{- end -}}
-{{- $_ := set $p "holdApplicationUntilProxyStarts" true -}}
-{{- $_ := set $p "proxyHeaders" (mergeOverwrite (get $p "proxyHeaders" | default dict) (dict "forwardedClientCert" "SANITIZE_SET" "setCurrentClientCertDetails" (dict "uri" true "cert" false "chain" false "subject" false "dns" false))) -}}
-{{- $_ := set $a "proxy.istio.io/config" (toJson $p) -}}
-{{- toYaml $a -}}
+{{- if hasKey .Values.podAnnotations "proxy.istio.io/config" -}}{{ fail "podAnnotations: proxy.istio.io/config is refused at admission in a plane namespace (zone-policy); XFCC sanitization is set mesh-wide in deployment/helm/values/istiod.yaml" }}{{- end -}}
+{{- toYaml .Values.podAnnotations -}}
 {{- end -}}

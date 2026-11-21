@@ -917,6 +917,40 @@ src0=$(metric "$DATA" caller source); dst0=$(metric "$DATA" peer destination)
 xfcc=$(k -n "$DATA" exec caller -c app -- curl -sS -m 15 "http://peer.$DATA.svc:8080/header?key=X-Forwarded-Client-Cert" 2>&1)
 xfcc_id=$(grep -o 'URI=[^;,]*' <<<"$xfcc" | head -1 | sed 's/^URI=//')
 [ "$xfcc_id" = "$SA_ID" ]; check $? "the peer sees the caller's own SPIFFE identity in X-Forwarded-Client-Cert ($SA_ID, the caller's own service account; any other ID fails)" "$xfcc"
+# xfcc-sanitized: the guard and the token store take their caller from this header, so a caller must not
+# be able to write it. A forged element naming another identity must be replaced by the peer's proxy
+# (SANITIZE_SET, mesh-wide in deployment/helm/values/istiod.yaml), not forwarded next to the real one.
+forged="By=spiffe://$TD/ns/$DATA/sa/peer;URI=spiffe://$TD/ns/$MGMT/sa/forged-caller"
+xfcc=$(k -n "$DATA" exec caller -c app -- curl -sS -m 15 -H "X-Forwarded-Client-Cert: $forged" "http://peer.$DATA.svc:8080/header?key=X-Forwarded-Client-Cert" 2>&1)
+[ "$(grep -o 'URI=[^;,]*' <<<"$xfcc" | sort -u)" = "URI=$SA_ID" ] && ! grep -q forged-caller <<<"$xfcc"
+check $? "xfcc-sanitized: a forged X-Forwarded-Client-Cert sent by the caller (URI=spiffe://$TD/ns/$MGMT/sa/forged-caller) is replaced by the peer's proxy: the peer sees only the caller's own SPIFFE ID ($SA_ID)" "$xfcc"
+# guard-admitted: the guard chart's pods (deployment/helm/guard, its CI values), created in the data
+# plane as a server-side dry run: injected, and admitted by proxy-takes-spire-socket with a proxy
+# whose PROXY_CONFIG is {} and no proxy.istio.io/config (XFCC sanitization comes from the mesh, above).
+h template ztd-guard "$REPO/deployment/helm/guard" -n "$DATA" -f "$REPO/deployment/helm/guard/ci/values.yaml" >"$work/guard.yaml" 2>&1
+guard_pods=$(python3 - "$work/guard.yaml" "$work/guard-pod-" <<'PY'
+import sys, yaml
+for d in yaml.safe_load_all(open(sys.argv[1])):
+    if d and d.get("kind") == "Deployment":
+        t = d["spec"]["template"]
+        pod = {"apiVersion": "v1", "kind": "Pod", "metadata": dict(t["metadata"], name=d["metadata"]["name"] + "-admission"), "spec": t["spec"]}
+        yaml.safe_dump(pod, open(sys.argv[2] + d["metadata"]["name"] + ".yaml", "w"))
+        print(d["metadata"]["name"], t["spec"].get("serviceAccountName") or "default")
+PY
+)
+[ -n "$guard_pods" ]; check $? "guard-admitted: the guard chart renders its Deployments" "$(head -3 "$work/guard.yaml")"
+while read -r gd gsa; do
+  [ -n "$gd" ] || continue
+  made_sa=
+  k -n "$DATA" get sa "$gsa" >/dev/null 2>&1 || { k -n "$DATA" create sa "$gsa" >/dev/null && made_sa=1; }
+  out=$(k -n "$DATA" create --dry-run=server -o json -f "$work/guard-pod-$gd.yaml" 2>&1); rc=$?
+  [ -z "$made_sa" ] || k -n "$DATA" delete sa "$gsa" --wait=false >/dev/null 2>&1
+  verdict=$( [ $rc -eq 0 ] && jq -r '[ (.metadata.annotations["proxy.istio.io/config"] // "none"),
+      ([(.spec.initContainers // []) + .spec.containers | .[] | select(.name == "istio-proxy") | .env[]? | select(.name == "PROXY_CONFIG") | .value | gsub("\\s"; "")] | join(",")) ] | join(" ")' <<<"$out" 2>/dev/null)
+  [ $rc -eq 0 ] && [ "$verdict" = "none {}" ]
+  check $? "guard-admitted: the guard chart's $gd pod is injected and admitted in $DATA by proxy-takes-spire-socket, its proxy with PROXY_CONFIG {} and no proxy.istio.io/config" "${verdict:-$(tail -2 <<<"$out")}"
+done <<<"$guard_pods"
+rm -f "$work"/guard.yaml "$work"/guard-pod-*
 sleep 3
 src1=$(metric "$DATA" caller source); dst1=$(metric "$DATA" peer destination)
 [ "$src1" -gt "$src0" ] && [ "$dst1" -gt "$dst0" ]; check $? "both proxies counted the request (istio_requests_total)" "caller (reporter=source) $src0 → $src1, peer (reporter=destination) $dst0 → $dst1"

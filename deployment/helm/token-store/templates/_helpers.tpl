@@ -68,18 +68,14 @@ app.kubernetes.io/component: server
 {{- end -}}
 {{- end -}}
 
-{{/* Preserve per-pod overrides but enforce the inbound XFCC prerequisite in runtime mode. */}}
+{{/* Per-pod overrides, and native sidecars in runtime mode. The inbound XFCC prerequisite (SANITIZE_SET) is
+mesh-wide (deployment/helm/values/istiod.yaml, meshConfig.defaultConfig.proxyHeaders): zone-policy refuses
+a per-pod proxy configuration in a plane namespace. */}}
 {{- define "token-store.annotations" -}}
 {{- $annotations := deepCopy .Values.podAnnotations -}}
+{{- if hasKey $annotations "proxy.istio.io/config" -}}{{ fail "podAnnotations: proxy.istio.io/config is refused at admission in a plane namespace (zone-policy); XFCC sanitization is set mesh-wide in deployment/helm/values/istiod.yaml" }}{{- end -}}
 {{- if .Values.runtime.enabled -}}
 {{- $_ := set $annotations "sidecar.istio.io/nativeSidecar" "true" -}}
-{{- $proxy := dict -}}
-{{- if hasKey $annotations "proxy.istio.io/config" -}}
-{{- $proxy = fromYaml (index $annotations "proxy.istio.io/config") -}}
-{{- if hasKey $proxy "Error" -}}{{ fail "proxy.istio.io/config must be a YAML mapping" }}{{- end -}}
-{{- end -}}
-{{- $_ := set $proxy "proxyHeaders" (mergeOverwrite (get $proxy "proxyHeaders" | default dict) (dict "forwardedClientCert" "SANITIZE_SET")) -}}
-{{- $_ := set $annotations "proxy.istio.io/config" (toJson $proxy) -}}
 {{- end -}}
 {{- if $annotations }}
 annotations:

@@ -137,8 +137,10 @@ Public issuer keys can be included in the ConfigMap; use absolute paths below
 `/var/run/token-store/credentials`; do not put credentials in values or ConfigMaps.
 
 Runtime mode requires SPIRE identity and NetworkPolicy. It renders STRICT
-PeerAuthentication and enforces inbound `SANITIZE_SET` for XFCC, preserving other
-JSON `proxy.istio.io/config` fields. This annotation is a prerequisite, not proof
+PeerAuthentication; inbound `SANITIZE_SET` for XFCC is mesh-wide, set by the zone's
+administrator in `deployment/helm/values/istiod.yaml`, and the chart refuses a
+`proxy.istio.io/config` in `podAnnotations` (`zone-policy` refuses it at admission in a
+plane namespace). That setting is a prerequisite, not proof
 of effective mesh configuration: verify the injected proxy and refuse forged XFCC
 before live use. `runtime.replayCallers` lists allowed SPIFFE service accounts;
 acquisition route callers remain in the acquisition configuration.
