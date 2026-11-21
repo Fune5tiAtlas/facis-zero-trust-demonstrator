@@ -259,7 +259,8 @@ The release job, in order:
    with its own set: an asset of the same name is overwritten, one the set does not carry is removed.
 
 The release carries: the chart packages and their `SHA256SUMS`; `sbom.json` and `sbom.json.sig`;
-one `<image>.cdx.json` per image and `mock-attestation.json`; the cucumber-JSON of every run as
+one `<image>.cdx.json` per image and `mock-attestation.json`; `did.json` when `SIGNING_DID_WEB` is
+set ([Trust anchor](#trust-anchor-didweb)); the cucumber-JSON of every run as
 `bdd-*.json`, with `bdd-traceability.md` and `.csv`; `release-manifest.json` and its `.sig`. The
 images themselves are in the registry, listed in the notes and the manifest by digest.
 `scripts/supplychain/release-set_test.sh` holds the script to the refusals above, against sets it
@@ -339,6 +340,43 @@ Activation, per source: commit the source's public key under `docs/contracts/key
 committed public key is the only verification key of the source: the release manifest and notes,
 `sbom.yml` and the did:web anchor all read it from there. `scripts/supplychain/keys_test.sh` holds the
 selection, the key check and the SBOM key set to their refusals.
+
+### Trust anchor (did:web)
+
+ZT-11 asks for the trust anchor to be provided via did:web and linked over TRAIN.
+`go run ./cmd/didweb -did <host[:port][/path]> -key <public key> [-key ...]` writes the DID document:
+one `JsonWebKey2020` verification method per key, its fragment the key's RFC 7638 thumbprint, each an
+assertion method; the same keys give the same bytes in any order (`cmd/didweb/main_test.go`, which
+also checks the thumbprint against RFC 7638's own example). Once the repository variable
+`SIGNING_DID_WEB` names where the document is served, the release job generates it from the selected
+source's public key, the release carries it as `did.json`, and the manifest names the DID as
+`trustAnchor`. Unset, no document is generated and `trustAnchor` is `null`.
+
+The document is served, unchanged, at the URL a did:web resolver reads: `https://<host>/.well-known/did.json`
+for a bare host (`did:web:<host>`), `https://<host>/<path>/did.json` for a host with a path
+(`did:web:<host>:<path segments>`); `didweb` prints the URL. Then TRAIN links it: the signing DID is
+entered in the trust list of the framework through TSPA, so a verifier that resolves the framework's
+chain (`_scheme._trust.<zone>` → trust list, [TRAIN DNS zone](train-dns.md)) finds the key the
+releases are signed with. The key material stays where the [key source](#key-source) keeps it — in
+OpenBao's transit engine with `openbao-transit`; only the public key is published.
+
+The host is not decided here. The names in use for the TRAIN zone and TSPA, `trust.facis.cloud` and
+`did:web:tspa.facis.cloud`, are not yet recorded in this repository ([TRAIN DNS zone](train-dns.md)
+writes `<zone>`), so both are to be confirmed. Reusing them has limits:
+
+- `did:web:tspa.facis.cloud` is TSPA's own DID, and one host has one `/.well-known/did.json`. The
+  signing key cannot take that path without replacing or merging into TSPA's document. A path on
+  the same host — `tspa.facis.cloud/ztd/release-keys`, giving
+  `did:web:tspa.facis.cloud:ztd:release-keys` — avoids the collision if TSPA's web server can serve
+  a static file there.
+- `trust.facis.cloud` is the DNS zone the zone manager (NSD) serves on port 53; it has no HTTPS
+  server. Using it means an HTTPS host inside the zone, for example `keys.trust.facis.cloud`,
+  served by something else.
+
+A dedicated name the client controls (for example `keys.<client domain>`) keeps the signing anchor
+independent of TSPA's lifecycle. Activation: choose and confirm the host, set `SIGNING_DID_WEB`, cut a
+release, serve its `did.json` at the printed URL, check it resolves
+(`curl -fsS <url> | cmp - did.json`), and register the DID in the trust list through TSPA.
 
 ### Image registry
 

@@ -11,6 +11,7 @@ How the demonstrator is built, packaged and shipped.
 | SBOM | CI | CycloneDX, signed: one of the repository per release, one of each image attested to it |
 | Mock attestation | CI, at signing time | JSON document, attested to each image and attached to the release |
 | BDD reports | CI | The cucumber-JSON of the release's BDD runs and the traceability sheet merged from them, attached to the release |
+| Trust anchor | CI, from the signing public key (`cmd/didweb`) | `did.json`, the did:web document of the signing key, attached to the release once its host is configured |
 | Release manifest and notes | CI | `release-manifest.json`, signed, and the release notes: every artefact above with its digest |
 
 One release carries all of them at one version — the tag's — and nothing less: the release workflow

@@ -469,6 +469,14 @@ jobs:
             echo "$(basename "$chart") oci://${reference%:*}@$digest" >> "$RUNNER_TEMP/run/charts/pushed.txt"
           done
 
+      # The did:web document of the signing key (cmd/didweb), once SIGNING_DID_WEB names where it is
+      # served (host[:port][/path]); the release carries it and the manifest names the DID.
+      - name: Generate the trust anchor
+        if: vars.SIGNING_DID_WEB != ''
+        env:
+          SIGNING_DID_WEB: ${{ vars.SIGNING_DID_WEB }}
+        run: go run ./cmd/didweb -did "$SIGNING_DID_WEB" -key "$SIGNING_PUBLIC_KEY" > "$RUNNER_TEMP/set/did.json"
+
       - name: Assemble and check the release set
         run: |
           set="$RUNNER_TEMP/set"
