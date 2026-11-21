@@ -21,6 +21,7 @@ and is declared as such in [Specification changes](specifications.md#readings-an
 | `.github/workflows/workflow-hygiene.yml` | every pull request, manual | Fails the pull request when an action is not pinned to a commit or a token scope is too wide |
 | `.github/workflows/ci.yml` | every pull request, push to `main`, published release, manual | Go lint and tests, image build with the Linux assertion and a Trivy scan, chart lint and dry-run render, the release set check; on a release published by hand, the chart gate once more and the chart packaging and publication (see [Chart release](#chart-release)) |
 | `.github/workflows/release.yml` | manual, push to a `candidate/**` branch, push of a tag `v*` | Release candidate: the chart gate (see [Chart gate](#chart-gate)), then builds, pushes, signs and attests every image by digest and verifies each one (see [Image signing](#image-signing)); beside it the secrets baseline (see [Secrets](secrets.md#the-baseline-proof-tdr-bdd-08)). On a tag, the release: the charts packaged at the tag's version, the repository SBOM signed, the BDD suite run, and the GitHub release created with every artefact and the notes that list each one with its digest (see [Release](#release)) |
+| `.github/workflows/signing-environment-audit.yml` | manual only | Proves that the `release` environment refuses a run from a ref outside its allowlist and records the verdict (see [Signing environment audit](#signing-environment-audit)) |
 | `.github/workflows/measurement-determinism.yml` | pull request and push to `main` touching the check, manual | Measures one fixture on a hosted runner, in a container, and on a deliberately divergent checkout, and requires the normalised measurement to be the same on all three |
 | `.github/workflows/token-store.yml` | pull requests touching the token store, its image, its chart or the pinned images; pushes to `main`; manual | Runs the schema migrations, the store's queries and the service's readiness checks against a PostgreSQL from the pinned image, then the chart's lifecycle (install, upgrade, uninstall) and the service's readiness against PostgreSQL and OpenBao on kind; the records are the run's artefact and the verdict goes to the job summary |
 | `.github/workflows/policy-hook.yml` | pull requests touching the policy-hook probe, its script, the pinned Envoy image or the policy fixtures; manual | Runs the guard policy-hook proofs (`scripts/verify-policy-hook/verify.sh`) against Envoy from the pinned image, uploads the records as an artefact and writes the verdict and the latency numbers to the job summary |
@@ -312,6 +313,27 @@ Activation: register the runner with the repository, give it the labels, check i
 `scripts/tools/install.sh` (linux/amd64). `scripts/supplychain/runner-labels_test.sh` holds the
 check to its refusals.
 
+### Signing environment audit
+
+That a signing workflow refuses an unauthorised trigger cannot be asserted inside the protected job:
+a job the environment refuses never starts. `signing-environment-audit.yml` proves it from outside,
+started by hand: its `Environment audit` job (no secret; `contents: write` for a disposable branch,
+`actions: write` to dispatch, `checks: read` for annotations) creates `audit/env-probe-<run id>` at the
+current commit, or takes the `probe_ref` input, dispatches the same workflow on it in probe mode,
+waits for that run and decides with `scripts/supplychain/env-audit.sh`: **refused** when the
+`Environment probe` job — which names the `release` environment and holds nothing — failed with
+GitHub's "not allowed to deploy" annotation before any step ran; **admitted** when a step ran;
+**inconclusive** otherwise (for example, the job waiting for a reviewer). Only *refused* passes. The
+record, `env-audit.json`, is the run's artefact and is the evidence for FZTD-57; the disposable
+branch is deleted. An allowlisted ref (`main`, `candidate/*`, `v*`) is refused as a probe.
+
+Activation: apply the environment allowlist ([Release tags and the release environment](#release-tags-and-the-release-environment)),
+then run the workflow from `main` and keep the artefact. Two points are *inferred, not yet observed*:
+that the job token may create a branch at a commit that carries workflow files (if it may not, create
+a branch outside the allowlist by hand and pass it as `probe_ref`), and the exact wording of GitHub's
+refusal, matched loosely (`not allowed to deploy to release` or `environment protection rules`).
+`scripts/supplychain/env-audit_test.sh` holds the verdict to its cases.
+
 ### Signing log audit
 
 No log of a job that holds the key may show key material (FZTD-57). Each signing workflow ends with
@@ -507,7 +529,9 @@ relying on that default, and a job that needs more than read access grants it at
 a comment naming the reason: `docs.yml` writes to `gh-pages`, `sbom.yml` uploads the SBOM onto a
 release, the release candidate job pushes images and signatures to GHCR (`packages: write`), the
 release job creates the release with its set (`contents: write`) and reads the image manifests back
-(`packages: read`), and the `Release charts` job attaches the packaged charts to a release. Wildcard
+(`packages: read`), and the `Release charts` job attaches the packaged charts to a release. The
+signing log audits read job logs (`actions: read`), and the signing environment audit creates and
+deletes its probe branch and dispatches its probe (`contents: write`, `actions: write`, `checks: read`). Wildcard
 scopes (`write-all`) are never used.
 
 ### Action pinning
