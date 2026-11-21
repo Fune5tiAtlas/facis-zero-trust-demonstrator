@@ -176,7 +176,13 @@ evidence and end-to-end scripts detect the layout (`admission_layout` in
 Not run on a live cluster yet. Proven on kind: `LAYOUT=migrate` and `LAYOUT=rollback` of
 `scripts/admission/kind-e2e.sh`.
 
-1. **Preflight.** `helm list -n gatekeeper-system` shows `gatekeeper` (chart `gatekeeper-3.23.1`),
+1. **Preflight.** Nothing else may manage the admission objects. On zone A and zone B an Argo CD on
+   the cluster does: its Applications `admission-templates`, `admission-constraints`,
+   `admission-exemptions` and `ztd-admission` (automated sync with prune and self-heal, seen
+   2026-11-21) own the constraint templates, constraints and exemptions. Release `gatekeeper` and a
+   self-healing Argo CD would overwrite each other, and an Argo CD prune would delete what the release
+   owns; those Applications are retired, without cascade so the objects stay, before step 4 - a
+   decision for whoever runs that Argo CD. Then: `helm list -n gatekeeper-system` shows `gatekeeper` (chart `gatekeeper-3.23.1`),
    `admission` and `admission-pool`. Compare the zone file's admission settings with the live ones:
    `helm get values admission -n gatekeeper-system` against `admissionProvider` (image digest,
    repositories, key, allowed digests, replicas) and `helm get values gatekeeper` replicas against
@@ -188,9 +194,14 @@ Not run on a live cluster yet. Proven on kind: `LAYOUT=migrate` and `LAYOUT=roll
 3. **Dry run against the cluster** (read-only), with the rendered values of stage 4:
    `helm upgrade gatekeeper deployment/helm/ztd -n gatekeeper-system -f <RENDER_DIR>/gatekeeper.values.yaml
    --post-renderer ztd-webhook-scope --take-ownership --dry-run=server`, then
-   `kubectl diff --server-side` of the rendered manifest: the expected changes are labels and
-   annotations only (`app.kubernetes.io/instance` of the pool objects, Helm's ownership annotations);
-   any spec change is a difference between the zone file and the live values to settle first.
+   `kubectl diff --server-side --force-conflicts -f <the MANIFEST part of that output>`. Expected:
+   Gatekeeper, the provider (its TLS Secret is looked up, not regenerated) and the exemptions
+   unchanged; `app.kubernetes.io/instance` of the seven pool objects `admission-pool` →
+   `gatekeeper`; Helm's ownership annotations on the adopted objects. The 2026-11-21 dry run on all
+   three clusters showed exactly that, plus the constraint template `k8sztdallowedrepositories`
+   gaining `allowedDigests` - the digest allow-list, which the clusters do not run yet. Any other
+   change is a difference between the zone file and the live values, to settle first. A dry run
+   persists nothing (the release revision stays).
 4. **Adopt.** `ZONE_VALUES=<zone file> KUBE_CONTEXT=<context> ADMISSION_ADOPT=1
    scripts/install-zone/install.sh install gatekeeper` (or `install` for the whole zone). Release
    `gatekeeper` is upgraded to this chart with `--take-ownership` and without rollback on failure
