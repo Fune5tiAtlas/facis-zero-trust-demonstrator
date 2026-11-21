@@ -44,7 +44,9 @@
 set -uo pipefail
 PROOF_NAME=verify-connector-routing
 PROOF_OTHER_CONTEXT="the run creates stand-ins in the zone"
+# shellcheck source=scripts/lib/proof.sh
 . "$(dirname "$0")/../lib/proof.sh"
+# shellcheck source=scripts/lib/probe.sh
 . "$(dirname "$0")/../lib/probe.sh"
 usage() { sed -n '2,/^# shellcheck/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
 case $# in
@@ -122,16 +124,25 @@ if k -n "$NS" get deploy "$GW" >/dev/null 2>&1; then
   peer_log > "$WORK/peer.before"
   args=(-A "$UA" -X "${ROUTE_METHOD:-GET}")
   [ -n "${ROUTE_BODY:-}" ] && args+=(-H 'Content-Type: application/json' --data "$ROUTE_BODY")
-  out=$(send route-backend "http://$GW.$NS.svc.cluster.local:8080${ROUTE_PATH:-/}" "${args[@]}")
-  case $out in "200 "*"${ROUTE_EXPECT:-}"*) ok=0;; *) ok=1;; esac
-  check $ok "the caller's ${ROUTE_METHOD:-GET} ${ROUTE_PATH:-/} through the gateway is served by the peer zone" "outcome: $out"
-  sleep 3
-  line=$(k -n "$NS" logs "$gwpod" -c envoy 2>/dev/null | grep -F "\"$UA\"" | tail -1)
+  # The whole body is read for ROUTE_EXPECT; the record keeps the outcome line only.
+  raw=$(probe_exec -n "$NS" exec route-backend -c app -- curl -sS -m 20 "${args[@]}" -w "\n%{http_code}\n$CURL_EXIT_FMT\n" "http://$GW.$NS.svc.cluster.local:8080${ROUTE_PATH:-/}" 2>/dev/null)
+  out=$(http_outcome "$raw")
+  case $out in "200 "*) grep -qF -- "${ROUTE_EXPECT:-}" <<<"$raw"; ok=$?;; *) ok=1;; esac
+  check $ok "the caller's ${ROUTE_METHOD:-GET} ${ROUTE_PATH:-/} through the gateway is served by the peer zone${ROUTE_EXPECT:+ (its response holds $ROUTE_EXPECT)}" "outcome: $out"
+  # Envoy writes its access log to stdout in batches (about every 10 s): read again for up to 60 s.
+  for _ in $(seq 12); do
+    line=$(k -n "$NS" logs "$gwpod" -c envoy 2>/dev/null | grep -F "\"$UA\"" | tail -1)
+    [ -n "$line" ] && break; sleep 5
+  done
   jq -e --arg u "$peer:$pport" '(.status | tostring) == "200" and .upstream == $u' <<<"$line" >/dev/null 2>&1
   check $? "the gateway's access log records the request and its upstream, the peer entry" "$line"
   if [ -n "${PEER_LOG_CMD:-}" ]; then
-    peer_log > "$WORK/peer.after"
-    seen=$(diff "$WORK/peer.before" "$WORK/peer.after" | grep -F "$UA" | head -1)
+    # The peer's log, batched the same way, is read again for up to 60 s.
+    for _ in $(seq 12); do
+      peer_log > "$WORK/peer.after"
+      seen=$(diff "$WORK/peer.before" "$WORK/peer.after" | grep -F "\"$UA\"" | head -1)
+      [ -n "$seen" ] && break; sleep 5
+    done
     [ -n "$seen" ]
     check $? "the peer entry logs the request's arrival" "${seen#> }"
   else
@@ -162,6 +173,7 @@ for d in $direct; do
   fi
 done
 if [ -n "${PEER_LOG_CMD:-}" ] && [ -n "$direct" ]; then
+  sleep 60   # past the peer log's batching (above), so an arrival would show
   peer_log > "$WORK/peer.after"
   ! diff "$WORK/peer.before" "$WORK/peer.after" | grep -qF "$UA-direct"
   check $? "no direct attempt reached the peer entry (its log holds none)"
@@ -195,9 +207,12 @@ for cl in c["static_resources"]["clusters"]:
 fi
 
 section exemptions
-out=$(probe_exec -n "$NS" exec route-backend -c app -- sh -c "nslookup kubernetes.default.svc.cluster.local >/dev/null && nslookup $GW.$NS.svc.cluster.local >/dev/null; echo curl-exit=\$?" 2>/dev/null)
+names="kubernetes.default.svc.cluster.local"
+k -n "$NS" get svc "$GW" >/dev/null 2>&1 && names="$names $GW.$NS.svc.cluster.local"
+out=$(probe_exec -n "$NS" exec route-backend -c app -- sh -c "for n in $names; do nslookup \$n >/dev/null || exit 1; done; echo curl-exit=0" 2>/dev/null)
+[ -n "$(curl_exit "$out")" ] || out="curl-exit=1"
 [ "$(curl_exit "$out")" = 0 ]
-check $? "DNS (declared bypass, name resolution): the caller resolves cluster names through the resolver lane" "exit $(curl_exit "$out")"
+check $? "DNS (declared bypass, name resolution): the caller resolves cluster names through the resolver lane" "names: $names"
 if [ -z "$(k -n "$MGMT" get pod -l app.kubernetes.io/name=otel-collector --field-selector=status.phase=Running -o name 2>/dev/null)" ]; then
   sed "s/__NS__/$MGMT/g" fixtures/otel-stand-in.yaml > "$WORK/otel.yaml"
   k apply -f "$WORK/otel.yaml" >/dev/null && k -n "$MGMT" wait --for=condition=Ready pod/route-otel-stand-in --timeout=180s >/dev/null

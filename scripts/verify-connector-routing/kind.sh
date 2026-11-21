@@ -20,6 +20,7 @@ case $CONTEXT in kind-?*) ;; *) echo "kind.sh: kind contexts only" >&2; exit 125
 cd "$(dirname "$0")" || exit 125
 REPO=$(git rev-parse --show-toplevel)
 CHART=$REPO/deployment/helm/connector-gateway
+# shellcheck source=scripts/lib/proof.sh
 . "$REPO/scripts/lib/proof.sh"
 ENVOY=$(sed -n 's/^ENVOY_IMAGE=//p' "$REPO/scripts/tools/pins.env")
 ENVOY_REPO=${ENVOY%%:*}; ENVOY_DIGEST=${ENVOY##*@}
