@@ -15,6 +15,12 @@
 # reference, such as the injected Istio proxy; the one list goes to both the provider's
 # trust.allowedDigests and the ztd-allowed-repositories constraint's allowedDigests.
 #
+# The standalone layout. A zone whose zone file sets admission.install has the umbrella layout
+# instead - one release gatekeeper of deployment/helm/ztd, installed by scripts/install-zone/install.sh -
+# and this script refuses it, except as the rollback to this layout (docs/umbrella-chart.md, "Admission
+# in the umbrella"): FROM_UMBRELLA=1 drops the umbrella release's records, leaving every object in
+# place, and adopts the objects into the three releases here (helm --take-ownership).
+#
 # Break-glass: delete the ValidatingWebhookConfiguration gatekeeper-validating-webhook-configuration,
 # then helm uninstall gatekeeper -n gatekeeper-system.
 set -euo pipefail
@@ -23,6 +29,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 # shellcheck source=scripts/tools/pins.env disable=SC1091
 . scripts/tools/pins.env
+# shellcheck source=scripts/admission/checks.sh
+. scripts/admission/checks.sh
 : "${BIN:?set BIN}" "${PROVIDER_IMAGE:?set PROVIDER_IMAGE}" "${TRUST_REPOSITORY:?set TRUST_REPOSITORY}" "${TRUST_KEY:?set TRUST_KEY}"
 chart="$BIN/gatekeeper-$GATEKEEPER_CHART_VERSION.tgz"
 case "$PROVIDER_IMAGE" in *@sha256:*) ;; *) echo "PROVIDER_IMAGE must be a digest reference" >&2; exit 2 ;; esac
@@ -33,11 +41,18 @@ for d in ${ALLOWED_DIGESTS:-}; do
 done
 allowed_json=$(printf '%s\n' ${allowed_digests[@]+"${allowed_digests[@]}"} | jq -Rsc 'split("\n") | map(select(. != ""))')
 
+adopt=()
+if [ "$(admission_layout)" = umbrella ]; then
+  [ "${FROM_UMBRELLA:-}" = 1 ] || { echo "the admission stack is release gatekeeper of the umbrella chart (scripts/install-zone/install.sh); FROM_UMBRELLA=1 rolls it back to this layout" >&2; exit 1; }
+  echo "== Rollback from the umbrella layout: dropping release gatekeeper's records, keeping its objects"
+  admission_forget gatekeeper
+  adopt=(--take-ownership)
+fi
+
 # The webhook-scope post-renderer is a Helm plugin; it lives in this run's own Helm directory.
 helm_home="$(mktemp -d)"
 trap 'rm -rf "$helm_home"' EXIT
-export HELM_DATA_HOME="$helm_home" HELM_PLUGINS="$helm_home/plugins"
-helm plugin install deployment/admission/webhook-scope >/dev/null
+admission_helm_home "$helm_home"
 
 echo "== Gatekeeper"
 gatekeeper_values=(-f deployment/admission/gatekeeper-values.yaml --set replicas="${GATEKEEPER_REPLICAS:-2}"
@@ -49,12 +64,11 @@ gatekeeper_values=(-f deployment/admission/gatekeeper-values.yaml --set replicas
   --set postInstall.probeWebhook.enabled=false --post-renderer ztd-webhook-scope)
 unpinned=$(helm template gatekeeper "$chart" -n gatekeeper-system "${gatekeeper_values[@]}" | grep -E '^\s*image:' | grep -v '@sha256:' || true)
 [ -z "$unpinned" ] || { echo "Gatekeeper images not pinned by digest:" >&2; echo "$unpinned" >&2; exit 1; }
-helm upgrade --install gatekeeper "$chart" -n gatekeeper-system --create-namespace "${gatekeeper_values[@]}" --wait --timeout 8m >/dev/null
+helm upgrade --install gatekeeper "$chart" -n gatekeeper-system --create-namespace "${gatekeeper_values[@]}" ${adopt[@]+"${adopt[@]}"} --wait --timeout 8m >/dev/null
 # Both webhooks must select only the admission namespaces.
-unscoped=$(kubectl get validatingwebhookconfiguration gatekeeper-validating-webhook-configuration -o json | jq -r '
-  .webhooks[] | select(any(.namespaceSelector.matchExpressions[]?; .key == "facis.ztd/admission-proof" and .operator == "In" and .values == ["true"]) | not) | .name')
+unscoped=$(admission_unscoped)
 [ -z "$unscoped" ] || { echo "webhooks not scoped to facis.ztd/admission-proof=true: $unscoped" >&2; exit 1; }
-ttl=$(kubectl -n gatekeeper-system get deploy gatekeeper-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}' | tr ',' '\n' | grep -o 'response-cache-ttl=[^"]*' || true)
+ttl=$(admission_cache_ttl)
 [ "$ttl" = "response-cache-ttl=0s" ] || { echo "Gatekeeper response cache is not off: '$ttl'" >&2; exit 1; }
 echo "webhooks scoped to facis.ztd/admission-proof=true; $ttl"
 
@@ -63,7 +77,7 @@ provider_values=(--set replicas="${PROVIDER_REPLICAS:-2}" --set image.repository
   --set-json "trust.repositories=[\"$TRUST_REPOSITORY\"]" --set-file trust.publicKeys="$TRUST_KEY")
 [ -z "${PLAIN_HTTP_REGISTRY:-}" ] || provider_values+=(--set insecurePlainHTTPRegistry="$PLAIN_HTTP_REGISTRY")
 [ ${#allowed_digests[@]} -eq 0 ] || provider_values+=(--set-json "trust.allowedDigests=$allowed_json")
-helm upgrade --install admission deployment/helm/admission -n gatekeeper-system "${provider_values[@]}" --wait --timeout 5m >/dev/null
+helm upgrade --install admission deployment/helm/admission -n gatekeeper-system "${provider_values[@]}" ${adopt[@]+"${adopt[@]}"} --wait --timeout 5m >/dev/null
 
 echo "== Policy"
 kubectl apply -f deployment/admission/templates/ >/dev/null
@@ -76,20 +90,9 @@ sed -e "s|ghcr.io/eclipse-xfsc/facis-zero-trust-demonstrator|$TRUST_REPOSITORY|"
   deployment/admission/constraints/allowed-repositories.yaml | kubectl apply -f - >/dev/null
 for c in image-digest naming verified-images; do kubectl apply -f "deployment/admission/constraints/$c.yaml" >/dev/null; done
 # Each constraint must be acknowledged, current and error-free, by every Ready webhook replica.
-status_dir="$helm_home/status"
-mkdir -p "$status_dir"
-for c in k8sztdimagedigest/ztd-image-digest k8sztdallowedrepositories/ztd-allowed-repositories k8sztdnaming/ztd-naming k8sztdverifiedimages/ztd-verified-images; do
-  ok=
-  for _ in $(seq 90); do
-    kubectl get "$c" -o json > "$status_dir/constraint.json"
-    kubectl -n gatekeeper-system get pods -l control-plane=controller-manager -o json > "$status_dir/pods.json"
-    if scripts/admission/enforced.sh "$status_dir/constraint.json" "$status_dir/pods.json"; then ok=1; break; fi
-    sleep 2
-  done
-  [ -n "$ok" ] || { echo "constraint $c is not enforced by every Ready webhook replica" >&2; exit 1; }
-done
+admission_wait_enforced
 echo "constraints enforced by every webhook replica"
 
 echo "== Admission pool"
-helm upgrade --install admission-pool deployment/helm/admission-pool -n gatekeeper-system --wait >/dev/null
+helm upgrade --install admission-pool deployment/helm/admission-pool -n gatekeeper-system ${adopt[@]+"${adopt[@]}"} --wait >/dev/null
 kubectl get namespaces -l facis.ztd/admission-proof=true -o name
