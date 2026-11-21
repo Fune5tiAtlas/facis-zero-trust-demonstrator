@@ -48,7 +48,7 @@ failures=0
 pass() { echo "PASS  $*" | tee -a "$out/run.txt"; }
 fail() { echo "FAIL  $*" | tee -a "$out/run.txt"; failures=$((failures + 1)); }
 cleanup() {
-  docker rm -f "$net-tspa" "$net-keycloak" >/dev/null 2>&1 || true
+  docker rm -f "$net-tspa" "$net-nokey" "$net-keycloak" >/dev/null 2>&1 || true
   docker network rm "$net" >/dev/null 2>&1 || true
   rm -rf "$work"
 }
@@ -154,5 +154,24 @@ if [ "$(jq -r .issuanceDate "$work/vc2.json")" != "$issued" ] && [ "$(jq -r .exp
 else
   fail "re-publication kept the window"
 fi
+# Without its key file the image signs nothing: the published key is not in it to fall back on.
+docker run -d --name "$net-nokey" --network "$net" --network-alias tspa-nokey \
+  -e SPRING_APPLICATION_JSON="$(jq -c '.tspa."signing-key-file" = "/var/run/tspa/absent.jwk"
+    | .request.get.mapping = "http://tspa-nokey:16003/tspa-service/tspa/v1/"' <<<"$props")" "$image" >/dev/null
+for _ in $(seq 1 90); do
+  in_net -fs -o /dev/null http://tspa-nokey:16003/tspa-service/api/docs 2>/dev/null && break
+  sleep 2
+done
+new_token
+nokey=http://tspa-nokey:16003/tspa-service/tspa/v1
+code=$(docker run --rm -i --network "$net" "$curl_image" -s -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: Bearer $token" \
+  -H 'Content-Type: application/json' --data-binary @- "$nokey/init/json/$framework/trust-list" < scripts/verify-tspa-api/payloads/trustlist-init.json)
+vc_code=$(in_net -s -o /dev/null -w '%{http_code}' "$nokey/$framework/vc/trust-list" || true)
+if [ "$code" != 201 ] && [ "$vc_code" != 200 ]; then
+  pass "without its key file nothing is signed (create answered $code, VC $vc_code)"
+else
+  fail "without its key file: create $code, VC $vc_code"
+fi
+
 echo "image $image" >> "$out/run.txt"
 [ "$failures" -eq 0 ] && echo "verdict: PASS" | tee -a "$out/run.txt" || { echo "verdict: FAIL ($failures)" | tee -a "$out/run.txt"; exit 1; }
