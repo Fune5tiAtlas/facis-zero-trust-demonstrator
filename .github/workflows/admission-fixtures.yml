@@ -18,9 +18,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The runner the job that holds the signing key runs on: the repository variable SIGNING_RUNNER, a
+  # JSON array of labels, checked here; GitHub's hosted runner while it is unset (docs/ci-cd.md).
+  signing-runner:
+    name: Signing runner
+    runs-on: ubuntu-latest
+    outputs:
+      labels: ${{ steps.labels.outputs.labels }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the runner labels
+        id: labels
+        env:
+          SIGNING_RUNNER: ${{ vars.SIGNING_RUNNER }}
+        run: echo "labels=$(scripts/supplychain/runner-labels.sh)" >> "$GITHUB_OUTPUT"
+
   fixtures:
     name: Publish the admission fixtures
-    runs-on: ubuntu-latest
+    needs: [signing-runner]
+    runs-on: ${{ fromJSON(needs.signing-runner.outputs.labels) }}
     # The interim signing key lives only in this protected environment's secrets.
     environment: release
     permissions:

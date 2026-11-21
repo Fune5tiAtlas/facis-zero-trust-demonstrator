@@ -396,6 +396,9 @@ jobs:
       - name: Test the release set check
         run: scripts/supplychain/release-set_test.sh
 
+      - name: Test the signing runner check
+        run: scripts/supplychain/runner-labels_test.sh
+
   # The charts of a release published by hand on GitHub. A release the release workflow creates
   # from a tag carries its charts already and starts no workflow (GitHub's rule for the events of a
   # workflow's own token); this job delivers them when one is published by hand, and only once every

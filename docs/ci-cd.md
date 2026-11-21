@@ -271,6 +271,29 @@ images job, before an image is pushed.
 A release published by hand on GitHub is not the set: `ci.yml` attaches its charts and `sbom.yml`
 its SBOM, but no image is built for it and no notes list it.
 
+## Signing configuration
+
+Every job that holds signing key material uses the protected `release` environment: the
+candidate and release jobs of `release.yml`, the job of `sbom.yml` and the job of
+`admission-fixtures.yml`. Each part below is off until the input named for it exists; until then
+the workflows behave as they did with the interim key on GitHub's hosted runner.
+
+### Signing runner
+
+The three signing workflows run their signing job on the runner the repository variable
+`SIGNING_RUNNER` names: a JSON array of runner labels, for example
+`["self-hosted","ztd-signing"]`. A first job, `Signing runner`, checks the value with
+`scripts/supplychain/runner-labels.sh` and hands it to `runs-on` through `fromJSON`; a value that
+is not a non-empty array of plain labels fails that job, so no signing job starts on a runner nobody
+chose. Unset, the jobs run on `ubuntu-latest`. The chart gate, the secrets baseline and the audits
+hold no key and stay on hosted runners.
+
+Activation: register the runner with the repository, give it the labels, check it is online
+(Settings → Actions → Runners), then set `SIGNING_RUNNER`. The runner needs Docker with Buildx, Git,
+`jq`, `gh` and Python 3; Go, Helm and Node are installed by the jobs, cosign, Syft and Grype by
+`scripts/tools/install.sh` (linux/amd64). `scripts/supplychain/runner-labels_test.sh` holds the
+check to its refusals.
+
 ## Lifecycle scenarios on the client targets
 
 The `bdd` job runs on every pull request: `bddpack -check`, the strict and catalogue runs of both
