@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/if03"
 )
@@ -79,8 +80,16 @@ func pinnedList(path string) lister {
 // POST /tcr/v1/resolve, docs/tspa-publish-api.md section 4): the TCR walks the DNS chain from the
 // pointer to the trust-list VC, checks the VC's signature and the list's hash, and returns the
 // entries whose ServiceTypeIdentifier equals the issuer. The issuer is listed when one trust list
-// with vcVerified true holds an active service for it.
-func tcrList(client *http.Client, base string, pointers []string) lister {
+// with vcVerified true holds an active service for it and is inside its validity window.
+//
+// The window is required because vcVerified does not cover it: the documented TCR (train-trust-
+// validator e27b1ed) checks the trust-list VC's signature and hash but never its expirationDate
+// (docs/tspa-publish-api.md, section 1), so an expired signed list would still authorise. The
+// service reads the window from the resolved trust list as the TCR answers it (expirationDate or
+// validUntil, and validFrom or issuanceDate when present, RFC 3339) and fails closed when it is
+// missing, unreadable, not begun or passed. The documented TCR returns no window, so against it
+// every issuer is refused until the TCR returns the window of the VC it verified.
+func tcrList(client *http.Client, base string, pointers []string, now func() time.Time) lister {
 	endpoint := strings.TrimRight(base, "/") + "/tcr/v1/resolve"
 	return func(ctx context.Context, issuer string) (bool, error) {
 		body, _ := json.Marshal(map[string]any{"issuer": issuer, "trustSchemePointers": pointers})
@@ -102,8 +111,12 @@ func tcrList(client *http.Client, base string, pointers []string) lister {
 			ResolvedResults []struct {
 				ResolvedDoc *struct {
 					Endpoints []struct {
-						TrustList  any  `json:"trustList"`
-						VCVerified bool `json:"vcVerified"`
+						TrustList      any    `json:"trustList"`
+						VCVerified     bool   `json:"vcVerified"`
+						ExpirationDate string `json:"expirationDate"`
+						ValidUntil     string `json:"validUntil"`
+						ValidFrom      string `json:"validFrom"`
+						IssuanceDate   string `json:"issuanceDate"`
 					} `json:"endpoints"`
 				} `json:"resolvedDoc"`
 			} `json:"resolvedResults"`
@@ -111,18 +124,52 @@ func tcrList(client *http.Client, base string, pointers []string) lister {
 		if json.Unmarshal(raw, &answer) != nil {
 			return false, errors.New("tcr answer is not JSON")
 		}
+		var outside error
 		for _, r := range answer.ResolvedResults {
 			if r.ResolvedDoc == nil {
 				continue
 			}
 			for _, e := range r.ResolvedDoc.Endpoints {
-				if e.VCVerified && listsActive(e.TrustList, issuer) {
-					return true, nil
+				if !e.VCVerified || !listsActive(e.TrustList, issuer) {
+					continue
 				}
+				if err := within(now(), first(e.ExpirationDate, e.ValidUntil), first(e.ValidFrom, e.IssuanceDate)); err != nil {
+					outside = err
+					continue
+				}
+				return true, nil
 			}
 		}
-		return false, nil
+		return false, outside
 	}
+}
+
+func first(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+// within says whether now lies in [from, until]; until is required, from optional.
+func within(now time.Time, until, from string) error {
+	if until == "" {
+		return errors.New("trust list has no validity end")
+	}
+	end, err := time.Parse(time.RFC3339, until)
+	if err != nil {
+		return errors.New("trust list validity end unreadable")
+	}
+	if !now.Before(end) {
+		return errors.New("trust list expired")
+	}
+	if from != "" {
+		start, err := time.Parse(time.RFC3339, from)
+		if err != nil || now.Before(start) {
+			return errors.New("trust list not yet valid")
+		}
+	}
+	return nil
 }
 
 // listsActive finds, anywhere in a trust list, a service object whose ServiceTypeIdentifier is

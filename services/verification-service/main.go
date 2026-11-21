@@ -127,7 +127,7 @@ func serve(ctx context.Context, o options, log *slog.Logger, kv *transit.Client,
 	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }, Timeout: 5 * time.Second}
 	listed := pinnedList(o.trustListFile)
 	if o.tcrURL != "" {
-		listed = tcrList(noRedirect, o.tcrURL, o.pointers)
+		listed = tcrList(noRedirect, o.tcrURL, o.pointers, time.Now)
 	} else {
 		log.Warn("FIXTURE trust source: the pinned trust list is neither signature- nor hash-checked", "file", o.trustListFile)
 	}

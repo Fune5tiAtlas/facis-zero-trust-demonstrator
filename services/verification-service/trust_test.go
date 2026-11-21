@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/verificationtest"
 )
@@ -20,6 +21,14 @@ const listed = "did:web:issuer.zone-a.test"
 func entry(id, status string) map[string]any {
 	return map[string]any{"TSPServices": map[string]any{"TSPService": []any{
 		map[string]any{"ServiceTypeIdentifier": id, "ServiceCurrentStatus": status}}}}
+}
+
+func endpoint(verified bool, window map[string]any) map[string]any {
+	e := map[string]any{"vcUri": "https://tl.test/vc", "trustList": entry(listed, "active"), "vcVerified": verified}
+	for k, v := range window {
+		e[k] = v
+	}
+	return e
 }
 
 func TestListsActiveFindsAnActiveServiceByItsTypeIdentifier(t *testing.T) {
@@ -36,6 +45,7 @@ func TestListsActiveFindsAnActiveServiceByItsTypeIdentifier(t *testing.T) {
 // The TCR answer in the shape of train-trust-validator's OpenAPI (POST /tcr/v1/resolve).
 func TestTCRListsOnlyFromAVerifiedTrustList(t *testing.T) {
 	var verified bool
+	var window map[string]any // validity members of the resolved trust list
 	var status = http.StatusOK
 	var got map[string]any
 	tcr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -50,19 +60,34 @@ func TestTCRListsOnlyFromAVerifiedTrustList(t *testing.T) {
 			"trustSchemePointers": []any{map[string]any{"pointer": "trust.zone-a.test", "dids": []string{"did:web:tl.test"}}},
 			"resolvedResults": []any{map[string]any{"did": "did:web:tl.test", "resolvedDoc": map[string]any{
 				"document": map[string]any{}, "didVerified": true,
-				"endpoints": []any{map[string]any{"vcUri": "https://tl.test/vc", "trustList": entry(listed, "active"), "vcVerified": verified}},
+				"endpoints": []any{endpoint(verified, window)},
 			}}},
 		})
 	}))
 	defer tcr.Close()
-	l := tcrList(tcr.Client(), tcr.URL, []string{"trust.zone-a.test"})
+	l := tcrList(tcr.Client(), tcr.URL, []string{"trust.zone-a.test"}, time.Now)
 
 	if ok, err := l(context.Background(), listed); ok || err != nil {
 		t.Errorf("an unverified trust list listed the issuer: %v %v", ok, err)
 	}
 	verified = true
+	// The documented TCR's vcVerified ignores the VC's expirationDate: without a validity window, or
+	// with one that has passed or not begun, the list authorises nothing.
+	for name, w := range map[string]map[string]any{
+		"no validity":         nil,
+		"expired":             {"expirationDate": time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)},
+		"expired, VC DM 2.0":  {"validUntil": time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)},
+		"not yet valid":       {"validFrom": time.Now().Add(time.Hour).UTC().Format(time.RFC3339), "validUntil": time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)},
+		"unreadable validity": {"expirationDate": "next year"},
+	} {
+		window = w
+		if ok, err := l(context.Background(), listed); ok || err == nil {
+			t.Errorf("%s: listed %v, err %v", name, ok, err)
+		}
+	}
+	window = map[string]any{"expirationDate": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}
 	if ok, err := l(context.Background(), listed); !ok || err != nil {
-		t.Errorf("a verified trust list did not list the issuer: %v %v", ok, err)
+		t.Errorf("a verified trust list within its validity did not list the issuer: %v %v", ok, err)
 	}
 	if got["issuer"] != listed || len(got["trustSchemePointers"].([]any)) != 1 {
 		t.Errorf("request %v", got)
