@@ -22,6 +22,10 @@ config:
   allowed_callers: []
   scope_tenants: {"report:read": report-read, "report:summary": report-summary}
 policyRevision: m3-v1
+# Decide through the XFSC TSA policy service (deployment/helm/tsa-policy) instead of the built-in
+# rules, e.g. http://tsa-policy-engine.<ns>:8080/policy/policies/facis/guard/1.0/evaluation. Add the
+# matching egress to networkPolicy.egress. timeoutMS stays under the guard's 1 s policy bound.
+tsa: {evaluationURL: "", timeoutMS: 500}
 # Added to component-specific service and DNS rules; use only explicit dependency/control peers.
 networkPolicy:
   istiod: {enabled: false, namespace: istio-system}
