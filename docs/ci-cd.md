@@ -281,8 +281,12 @@ sha256sum -c SHA256SUMS
 key=$(jq -r .publicKey release-manifest.json)       # a path in this repository's docs/contracts/keys/, never a downloaded key
 cosign verify-blob --key "$key" --insecure-ignore-tlog=true \
   --signature release-manifest.json.sig release-manifest.json
-jq -r '.images[].reference' release-manifest.json   # what a zone file pins
+jq -r '.images[].reference' release-manifest.json   # what a zone file pins: repository@sha256:<digest>
 ```
+
+Each image's `reference` is `repository@sha256:<digest>`, without the tag: the admission policy
+denies a reference that carries a tag and a digest together (`ADM-NOT-DIGEST`). The release version
+is the image's `tag` field.
 
 Two rules of GitHub shape this. A release created with the workflow's own token starts no other
 workflow (`workflow_dispatch` and `repository_dispatch` are the exceptions), so the `Release charts`

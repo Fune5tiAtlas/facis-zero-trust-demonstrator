@@ -71,7 +71,7 @@ while read -r ref; do
   images+=("$(jq -cn --arg name "$name" --arg repository "$repository" --arg tag "$version" --arg digest "$digest" \
     --arg sbom "$name.cdx.json" --arg sha "$(sha "$sbom")" \
     '{name: $name, repository: $repository, tag: $tag, digest: $digest,
-      reference: ($repository + ":" + $tag + "@" + $digest), sbom: $sbom, sbomSha256: $sha}')")
+      reference: ($repository + "@" + $digest), sbom: $sbom, sbomSha256: $sha}')")
 done < "$dir/images.txt"
 [ ${#images[@]} -gt 0 ] || refuse "images.txt names no image"
 

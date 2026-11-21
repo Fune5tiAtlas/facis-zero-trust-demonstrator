@@ -78,8 +78,10 @@ manifest="$work/out/release-manifest.json"
 notes="$work/out/RELEASE_NOTES.md"
 check "the manifest is JSON at the release version and revision" \
   [ "$(jq -r '.version + " " + .tag + " " + .revision' "$manifest")" = "$version v$version $revision" ]
-check "every image is listed by digest, tagged with the version" \
-  [ "$(jq -r '.images[] | .reference' "$manifest" | sort | tr '\n' ' ')" = "ghcr.io/example/ztd/admission-provider:$version@$digest_a ghcr.io/example/ztd/orce:$version@$digest_b " ]
+check "every image is referenced as repository@digest, which the admission policy admits, with the version as its tag" \
+  [ "$(jq -r '.images[] | .reference' "$manifest" | sort | tr '\n' ' ')" = "ghcr.io/example/ztd/admission-provider@$digest_a ghcr.io/example/ztd/orce@$digest_b " ]
+check "every image carries the version in its tag field" \
+  [ "$(jq -r '[.images[] | .tag] | unique | join(" ")' "$manifest")" = "$version" ]
 check "every chart is listed with the digest of its package" \
   [ "$(jq -r '.charts[] | select(.name == "ztd") | .sha256' "$manifest")" = "$(sha "$work/set/charts/ztd-$version.tgz")" ]
 check "a chart not pushed to a registry says so" [ "$(jq -r '.charts[0].registry' "$manifest")" = null ]
