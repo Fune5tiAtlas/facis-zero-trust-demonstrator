@@ -185,10 +185,10 @@ restore() {
 # dependencies).
 restore_runnable() {
   if [ "$layout" = standalone ]; then
-    # shellcheck source=scripts/tools/pins.env disable=SC1091
-    . scripts/tools/pins.env
-    [ -f "$BIN/gatekeeper-$GATEKEEPER_CHART_VERSION.tgz" ] || { echo "no Gatekeeper chart in BIN ($BIN)"; return 1; }
-    KUBECONFIG="$ADMIN_KUBECONFIG" helm upgrade admission deployment/helm/admission -n gatekeeper-system -f "$snapshot" --dry-run=server >/dev/null
+    # install.sh's own preflight: the archive against its pinned digest, then server dry runs of the
+    # Gatekeeper release (through the webhook-scope post-renderer) and of the provider from the snapshot.
+    KUBECONFIG="$ADMIN_KUBECONFIG" GATEKEEPER_REPLICAS="$gatekeeper_replicas" PROVIDER_REPLICAS="$provider_replicas" \
+      RESTORE=1 RESTORE_FROM="$snapshot" PREFLIGHT=1 scripts/admission/install.sh
   else
     KUBECONFIG="$ADMIN_KUBECONFIG" admission_umbrella_upgrade --set gatekeeper.replicas="$gatekeeper_replicas" \
       --set admissionProvider.replicas="$provider_replicas" --set-file admissionProvider.trust.publicKeys="$TRUST_KEY" --dry-run=server >/dev/null
