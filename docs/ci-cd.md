@@ -501,10 +501,15 @@ cluster at a time (a concurrency group per cluster), from the protected environm
 | Name | Kind | Content |
 |---|---|---|
 | `ADMISSION_ZONE_A_ADMIN_KUBECONFIG`, `ADMISSION_ZONE_B_ADMIN_KUBECONFIG`, `ADMISSION_IONOS_ADMIN_KUBECONFIG` | secret | an administrator kubeconfig for the cluster (the fault cases scale Gatekeeper and the provider) |
-| `ADMISSION_PROVIDER_IMAGE` | variable | the provider image the cluster runs, `repository@sha256:<digest>` |
-| `ADMISSION_TRUST_REPOSITORY` | variable | the repository prefix the provider trusts, the same one the fixtures were published under |
 
-Until they are set, the job stops with a notice and records nothing.
+Until it is set, the job stops with a notice and records nothing. The provider's settings - image,
+trust keys, repositories, digest allow-list, registry credentials, replicas - are read from the
+cluster before any fault and are what every restore puts back; nothing the job is given replaces them.
+The key the index names is the selected signing key source (`SIGNING_KEY_SOURCE`, as for the
+fixtures). The job builds the umbrella chart's dependencies from `Chart.lock` first (the umbrella
+layout's restore upgrades release `gatekeeper` from it), and the fault script dry-runs its restore
+before it injects anything, refusing to start if the restore could not run. Namespaces carrying the
+admission label are never counted as outside admission, whatever the job passes.
 
 ## Image scan exceptions
 

@@ -42,22 +42,17 @@ jobs:
     env:
       TARGET: ${{ inputs.target }}
       ADMIN_KUBECONFIG_CONTENT: ${{ inputs.target == 'zone-a' && secrets.ADMISSION_ZONE_A_ADMIN_KUBECONFIG || inputs.target == 'zone-b' && secrets.ADMISSION_ZONE_B_ADMIN_KUBECONFIG || secrets.ADMISSION_IONOS_ADMIN_KUBECONFIG }}
-      PROVIDER_IMAGE: ${{ vars.ADMISSION_PROVIDER_IMAGE }}
-      TRUST_REPOSITORY: ${{ vars.ADMISSION_TRUST_REPOSITORY }}
     steps:
       - name: Check the inputs exist
         id: ready
         run: |
           missing=()
           [ -n "$ADMIN_KUBECONFIG_CONTENT" ] || missing+=("administrator kubeconfig secret for $TARGET")
-          [ -n "$PROVIDER_IMAGE" ] || missing+=("variable ADMISSION_PROVIDER_IMAGE")
-          [ -n "$TRUST_REPOSITORY" ] || missing+=("variable ADMISSION_TRUST_REPOSITORY")
           if [ "${#missing[@]}" -gt 0 ]; then
             echo "::notice::Admission evidence not run: missing ${missing[*]}."
             echo "ready=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          case "$PROVIDER_IMAGE" in *@sha256:*) ;; *) echo "::error::ADMISSION_PROVIDER_IMAGE must be repository@sha256:<digest>"; exit 1 ;; esac
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Checkout repository
@@ -83,6 +78,31 @@ jobs:
           scripts/tools/install.sh "$RUNNER_TEMP/bin" kubectl gatekeeper-chart
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
+      # The umbrella layout's restore upgrades release gatekeeper from deployment/helm/ztd, whose
+      # dependencies are not in Git: they are built from Chart.lock, as scripts/ci/check-charts.sh
+      # builds them, and the Gatekeeper chart among them is checked against its pinned digest. The
+      # fault script also refuses to inject anything until a dry run of its restore has passed.
+      - name: Build the umbrella chart's dependencies
+        if: steps.ready.outputs.ready == 'true'
+        run: |
+          sed -n 's/^ *repository: *"\{0,1\}\(https:[^"]*\)"\{0,1\}$/\1/p' deployment/helm/ztd/Chart.yaml | sort -u | while read -r url; do
+            helm repo add "dep-$(printf '%s' "$url" | sha256sum | cut -c1-8)" "$url" >/dev/null
+          done
+          helm dependency build deployment/helm/ztd
+          . scripts/tools/pins.env
+          echo "$GATEKEEPER_CHART_SHA256  deployment/helm/ztd/charts/gatekeeper-$GATEKEEPER_CHART_VERSION.tgz" | sha256sum -c -
+
+      # The key the fixtures were signed with: the same selected key source as "Admission fixtures";
+      # it only labels the pack - every restore puts back the key the provider had installed.
+      - name: Select the signing key
+        if: steps.ready.outputs.ready == 'true'
+        env:
+          SIGNING_KEY_SOURCE: ${{ vars.SIGNING_KEY_SOURCE }}
+          SIGNING_TRANSIT_KEY: ${{ vars.SIGNING_TRANSIT_KEY }}
+          SIGNING_TRANSIT_PATH: ${{ vars.SIGNING_TRANSIT_PATH }}
+          SIGNING_VAULT_ADDR: ${{ vars.SIGNING_VAULT_ADDR }}
+        run: scripts/supplychain/key-source.sh >> "$GITHUB_ENV"
+
       - name: Fetch the fixture list
         if: steps.ready.outputs.ready == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -104,9 +124,9 @@ jobs:
           printf '%s' "$ADMIN_KUBECONFIG_CONTENT" > "$RUNNER_TEMP/admin.kubeconfig"
           export ADMIN_KUBECONFIG="$RUNNER_TEMP/admin.kubeconfig" KUBECONFIG="$RUNNER_TEMP/admin.kubeconfig"
           export FIXTURES="$RUNNER_TEMP/fixtures/fixtures.txt" BIN="$RUNNER_TEMP/bin"
-          export TRUST_KEY=docs/contracts/keys/interim-cosign.pub
-          # The zones keep their management and data planes outside the admission scope; IONOS uses
-          # the script's default set.
+          export TRUST_KEY="$SIGNING_PUBLIC_KEY"
+          # The zones' management and data planes; the fault script leaves out any of them that
+          # carries the admission label (an enforced data plane). IONOS uses the script's default set.
           if [ "$TARGET" != ionos ]; then export OUTSIDE_NAMESPACES="kube-system ztd-mgmt ztd-data"; fi
           scripts/admission/evidence-pack.sh "$TARGET"
 
