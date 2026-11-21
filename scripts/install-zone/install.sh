@@ -508,7 +508,7 @@ admission_policy_handoff() {
   [ "$(admission_layout)" = umbrella ] || return 0
   helm get manifest gatekeeper -n "$admission_ns" | python3 -c '
 import sys, yaml
-bad = [f"{d[\"kind\"]}/{d[\"metadata\"][\"name\"]}" for d in yaml.safe_load_all(sys.stdin) if d
+bad = [d["kind"] + "/" + d["metadata"]["name"] for d in yaml.safe_load_all(sys.stdin) if d
        and (d["kind"] == "ConstraintTemplate" or d["apiVersion"].startswith(("constraints.gatekeeper.sh/", "config.gatekeeper.sh/")))
        and (d["metadata"].get("annotations") or {}).get("helm.sh/resource-policy") != "keep"]
 if bad:
