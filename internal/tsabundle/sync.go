@@ -24,21 +24,36 @@ type Desired struct {
 	Revision string `json:"revision"`
 }
 
-// Syncer keeps the TSA on the desired bundle. Nothing reaches the TSA's import before Open accepted
-// it, so a refused bundle leaves the previous one active.
+// Syncer keeps the TSA on the desired bundle. Activation is transactional: nothing reaches the TSA's
+// import before Open accepted it; evaluations are not forwarded while a bundle is being swapped; a
+// bundle counts as active only once an evaluation reports its revision; and a candidate that does
+// not is replaced by the last verified bundle, which the Syncer keeps for that purpose.
 type Syncer struct {
 	TSA    string // TSA base URL, pod-local
 	Policy Coordinates
 	Key    *ecdsa.PublicKey
 	// Fetch returns the outer bundle of a digest reference, after the registry-side checks.
-	Fetch  func(ctx context.Context, ref string) ([]byte, error)
-	HTTP   *http.Client
-	Log    *slog.Logger
-	active atomic.Value // string: the revision the TSA evaluates with, "" when none
+	Fetch func(ctx context.Context, ref string) ([]byte, error)
+	HTTP  *http.Client
+	Log   *slog.Logger
+
+	serving atomic.Bool // the TSA evaluates the last verified bundle; evaluations may be forwarded
+	last    []byte      // the last verified and activated bundle, its reference and revision
+	ref     string
+	rev     atomic.Value // string
 }
 
-// Active is the revision the TSA last evaluated with ("" when it evaluates none).
-func (s *Syncer) Active() string { v, _ := s.active.Load().(string); return v }
+// Active is the revision evaluations are served under, "" while none is (startup, a swap, a TSA
+// that lost its policy).
+func (s *Syncer) Active() string {
+	if !s.serving.Load() {
+		return ""
+	}
+	v, _ := s.rev.Load().(string)
+	return v
+}
+
+func (s *Syncer) revision() string { v, _ := s.rev.Load().(string); return v }
 
 // Probe evaluates an empty input: the policy denies it, naming the revision it evaluated with. This
 // reads the revision the TSA actually uses, so a TSA restart (which empties it) is noticed.
@@ -52,15 +67,54 @@ func (s *Syncer) Probe(ctx context.Context) string {
 	return d.BundleRevision
 }
 
-// Reconcile imports the desired bundle when the TSA does not already evaluate its revision.
+// load imports a verified bundle and waits until an evaluation reports its revision.
+func (s *Syncer) load(ctx context.Context, outer []byte, revision string) error {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, s.TSA+"/v1/policy/import", bytes.NewReader(outer))
+	req.Header.Set("Content-Type", "application/zip")
+	resp, err := s.HTTP.Do(req)
+	if err != nil {
+		return fmt.Errorf("tsa import: %w", err)
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("tsa import: %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	// The TSA swaps the policy under a lock and drops its compiled query asynchronously.
+	got := ""
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if got = s.Probe(ctx); got == revision {
+			return nil
+		}
+	}
+	return fmt.Errorf("imported bundle evaluates as revision %q, not %q", got, revision)
+}
+
+// restore puts the last verified bundle back, or leaves nothing served if there is none or it fails.
+func (s *Syncer) restore(ctx context.Context) {
+	if s.last == nil {
+		return
+	}
+	if err := s.load(ctx, s.last, s.revision()); err != nil {
+		s.Log.Error("previous bundle not restored", "bundle", s.ref, "revision", s.revision(), "reason", err.Error())
+		return
+	}
+	s.serving.Store(true)
+	s.Log.Info("previous bundle restored", "bundle", s.ref, "revision", s.revision())
+}
+
+// Reconcile makes the declared reference and revision the active pair.
 func (s *Syncer) Reconcile(ctx context.Context, d Desired) error {
-	previous := s.Probe(ctx)
-	s.active.Store(previous)
-	if d.Revision != "" && previous == d.Revision {
+	// The TSA must still evaluate the last verified bundle (it empties on restart).
+	if s.Probe(ctx) != s.revision() || s.last == nil {
+		s.serving.Store(false)
+		s.restore(ctx)
+	}
+	if s.serving.Load() && d.Bundle == s.ref && d.Revision == s.revision() {
 		return nil
 	}
 	refuse := func(err error) error {
-		s.Log.Error("bundle refused", "bundle", d.Bundle, "revision", d.Revision, "active_revision", previous, "reason", err.Error())
+		s.Log.Error("bundle refused", "bundle", d.Bundle, "revision", d.Revision, "active_bundle", s.ref, "active_revision", s.Active(), "reason", err.Error())
 		return err
 	}
 	if d.Bundle == "" || d.Revision == "" {
@@ -73,27 +127,17 @@ func (s *Syncer) Reconcile(ctx context.Context, d Desired) error {
 	if err := Open(outer, Expect{Key: s.Key, Coordinates: s.Policy, Revision: d.Revision}); err != nil {
 		return refuse(err)
 	}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, s.TSA+"/v1/policy/import", bytes.NewReader(outer))
-	req.Header.Set("Content-Type", "application/zip")
-	resp, err := s.HTTP.Do(req)
-	if err != nil {
-		return refuse(fmt.Errorf("tsa import: %w", err))
+	previous := s.Active()
+	s.serving.Store(false)
+	if err := s.load(ctx, outer, d.Revision); err != nil {
+		s.restore(ctx)
+		return refuse(err)
 	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return refuse(fmt.Errorf("tsa import: %d %s", resp.StatusCode, strings.TrimSpace(string(body))))
-	}
-	// The TSA swaps the policy under a lock and drops its compiled query asynchronously; the bundle
-	// counts as active once an evaluation reports its revision.
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-		if s.Probe(ctx) == d.Revision {
-			s.active.Store(d.Revision)
-			s.Log.Info("bundle activated", "bundle", d.Bundle, "revision", d.Revision, "previous_revision", previous)
-			return nil
-		}
-	}
-	return refuse(errors.New("imported bundle did not become active"))
+	s.last, s.ref = outer, d.Bundle
+	s.rev.Store(d.Revision)
+	s.serving.Store(true)
+	s.Log.Info("bundle activated", "bundle", d.Bundle, "revision", d.Revision, "previous_revision", previous)
+	return nil
 }
 
 // Decision is the part of an IF-05 decision the probe reads.
