@@ -83,6 +83,11 @@ networkPolicy:
 # then installs. The key is docs/contracts/keys/interim-cosign.pub (interim, not the client's).
 admission:
   install: false
+  # The policy objects (constraint templates, constraints, exemptions) are kept by the Argo CD on
+  # this cluster (Applications admission-templates, admission-constraints, admission-exemptions,
+  # under ztd-admission); the admission release installs Gatekeeper, the provider and the pool only.
+  policy:
+    managedBy: argocd
 gatekeeper:
   replicas: 2
 admissionProvider:
