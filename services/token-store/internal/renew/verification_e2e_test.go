@@ -48,7 +48,7 @@ import (
 // service's sidecar would set. With VP_E2E_RECORD set, the run's transcript is written to that file.
 
 const (
-	storeSPIFFE = "spiffe://zone-a.test/ns/ztd-data/sa/ztd-token-store"
+	storeSPIFFE = "spiffe://zone-a.test/ns/ztd-mgmt/sa/ztd-token-store"
 	vsIssuer    = "https://verification.zone-a.test"
 )
 
