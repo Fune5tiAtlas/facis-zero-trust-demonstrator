@@ -16,9 +16,11 @@ Bash is the language for scripts under `scripts/` per the Technical Development 
 | `lib/` | sourced by the cluster proofs, never run: `proof.sh` (CI refusal, context guard, run directory, check accounting, redaction), `probe.sh` (placement, probes and outcome classes, denial log, Cilium reads, capture-rule lift, routing check), `doc-table.sh` (the heading-based reader of the architecture document's tables, shared with `check-plane-separation.sh`) |
 | `verify-observability/verify.sh` | evidence that the observability stack collects, carries, stores and alerts within 30 s; kind, or a zone with the demonstrator cluster |
 | `verify-observability/test-alert-rules.sh`, `check-rendered-images.sh` | the alert rules and the detection budget; the observability images pinned and licensed (no cluster, CI) |
+| `verify-cni-chaining-upgrade/verify.sh` | evidence that the CNI chain (Istio after Cilium) survives a Cilium upgrade, from the zones' version to the pin, on a disposable kind cluster |
 | `mesh-mode/check-upstream-state.sh` | the upstream-state record behind ADR-0009 and its reopen check |
 | `ci/check-charts.sh` | the chart quality gate: lint, render and (release) server dry-run of every chart; `ci/check-charts_test.sh` its cases |
 | `ci/check-policy-addresses.sh` | no address in a policy: renders the umbrella, `zone-policy` and `ztd-openbao` with every shipped zone file and the CI zone file and fails on any `ipBlock`, CIDR rule or address literal in a NetworkPolicy, CiliumNetworkPolicy or AuthorizationPolicy; `ci/check-policy-addresses_test.sh` its cases |
+| `ci/check-policy-l7-owner.sh` | one L7 owner per path: the same renderings, failing on any Cilium policy with a port field that sends traffic to Cilium's L7 proxy (an `http`, `kafka`, `l7` or `l7proto` rule, `listener`, `serverNames`, `terminatingTLS`, `originatingTLS`), on any Cilium Envoy configuration and on any allow-matrix policy without its `ztd.facis.io/l7-owner`; `ci/check-policy-l7-owner_test.sh` its cases (the shared render path is `ci/render-zones.sh`) |
 
 ## Guard policy-hook proofs (`verify-policy-hook/`)
 

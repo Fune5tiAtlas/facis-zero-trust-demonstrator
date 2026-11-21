@@ -34,3 +34,32 @@ it, the SPIFFE ID without its scheme: <trustDomain>/ns/<namespace>/sa/<serviceAc
 {{- define "zone-policy.principal" -}}
 {{- printf "%s/ns/%s/sa/%s" .root.Values.trustDomain .namespace .serviceAccount -}}
 {{- end }}
+
+{{/*
+zone-policy.ciliumProxyField: CEL, true when a Cilium port rule (p, one entry of toPorts) carries the
+field given as the context, one of the fields that send the port's traffic to Cilium's L7 proxy:
+rules.http, rules.kafka, rules.l7, rules.l7proto, listener, serverNames, terminatingTLS or
+originatingTLS. Every optional field is guarded with has() (an empty serverNames never reaches the
+rule: the CRDs require at least one item).
+*/}}
+{{- define "zone-policy.ciliumProxyField" -}}
+{{- if hasPrefix "rules." . -}}
+has(p.rules) && has(p.{{ . }})
+{{- else -}}
+has(p.{{ . }})
+{{- end -}}
+{{- end }}
+
+{{/*
+zone-policy.ciliumL7Rule: CEL, true when a Cilium policy (object) carries the port field given as the
+context (see zone-policy.ciliumProxyField) in any toPorts[] of any direction (ingress, egress,
+ingressDeny, egressDeny) of its spec or of any entry of its specs list. Every optional field is
+guarded with has(), so a policy without toPorts is not matched.
+*/}}
+{{- define "zone-policy.ciliumL7Rule" -}}
+{{- $p := include "zone-policy.ciliumProxyField" . -}}
+variables.specs.exists(s,
+{{- range $i, $d := list "ingress" "egress" "ingressDeny" "egressDeny" }}
+  {{ if $i }}|| {{ end }}(has(s.{{ $d }}) && s.{{ $d }}.exists(r, has(r.toPorts) && r.toPorts.exists(p, {{ $p }})))
+{{- end }})
+{{- end }}

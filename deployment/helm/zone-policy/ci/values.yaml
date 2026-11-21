@@ -2,7 +2,8 @@
 # scripts/install-zone fills trustDomain, the plane namespaces and the pairs from the zone file over
 # the umbrella's defaults; CI renders with this file. The pairs are the five allowMatrix rows of the
 # umbrella (deployment/helm/ztd/values.yaml) in the shape the installer hands over, and one
-# intra-plane pair that exists only here, so that the render shows a same-plane rule as well.
+# intra-plane pair that exists only here, so that the render shows a same-plane rule as well (it
+# names no l7Owner, so it renders the default, sidecar).
 trustDomain: kind.facis-ztd.local
 planes:
   management:
@@ -11,15 +12,19 @@ planes:
     namespace: ztd-data
 pairs:
   - name: pdp-adapter-to-tsa
+    l7Owner: sidecar
     from: { plane: data, serviceAccount: pdp-adapter }
     to: { plane: management, podSelector: { app.kubernetes.io/name: tsa-policy-engine } }
   - name: atls-gateway-to-cmcd
+    l7Owner: sidecar
     from: { plane: data, serviceAccount: atls-gateway }
     to: { plane: management, podSelector: { app.kubernetes.io/name: cmcd } }
   - name: atls-gateway-to-tcr
+    l7Owner: sidecar
     from: { plane: data, serviceAccount: atls-gateway }
     to: { plane: management, podSelector: { app.kubernetes.io/name: tcr } }
   - name: workloads-to-otel-collector
+    l7Owner: sidecar
     from: { plane: data, wholePlane: true }
     to:
       plane: management
@@ -28,6 +33,7 @@ pairs:
         - { port: 4317, protocol: TCP }
         - { port: 4318, protocol: TCP }
   - name: backend-to-verification-service
+    l7Owner: sidecar
     from: { plane: data, serviceAccount: backend }
     to: { plane: management, podSelector: { app.kubernetes.io/name: verification-service } }
   # A render fixture, not a pair of the zone: an intra-plane pair between two releases.

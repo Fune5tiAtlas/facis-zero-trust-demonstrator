@@ -70,6 +70,7 @@ declared derogation of the preferred stack first (`docs/workload-identity.md`).
 | `mesh.mode` | `sidecar` | `sidecar` (the ADR-0009 baseline), `ambient` (parked) or `none`; sets the namespace label. Sidecar mode refuses a `zone.kubernetesVersion` below 1.33 (native sidecars) |
 | `mesh.revision` | `""` | Sidecar mode: pin an Istio revision (`istio.io/rev`) instead of the default injector |
 | `cni.cilium.enabled` | `true` | Render the Cilium-specific pieces: the entity openings and the API lane, and the host-probe exception of the parked ambient mode. Required with a mesh |
+| `cni.cilium.version` | none; required where `cni.cilium.enabled` is true | The Cilium version the zone is verified against, bare `major.minor.patch` (the `cilium` DaemonSet's image tag without the leading `v`: `1.19.6` on the participant clusters, `1.20.2` on kind). `scripts/verify-mesh-identity` fails when the running Cilium differs |
 | `networkPolicy.defaultDeny` | `true` | Default deny, ingress and egress, in every plane namespace |
 | `networkPolicy.dns.*` | kube-dns in `kube-system`, port 53 | The declared DNS bypass, the resolver pods' port only (`ports`: the kube-dns Service's targetPort, 8053 on the Gardener clusters of zone A and zone B) |
 | `networkPolicy.intraPlane` | `true` | Pods within one plane namespace may reach each other at L3/L4 |
@@ -141,7 +142,23 @@ and is refused by the mesh. `to.serviceAccount` names the destination's account,
 only. `enforcedBy` records which layer the architecture holds responsible; both layers enforce the
 row either way.
 
-`intraPlanePairs` has the same entry shape (no `enforcedBy`) for a pair inside one plane
+`l7Owner` (required) is the place of record of the row's single L7 enforcement owner, the one
+component that may take an L7 decision on the path (SRS Table 4: never both the mesh and Cilium;
+ADR-0009, point 2). It takes `sidecar` (the destination's Envoy sidecar, the value of the five shipped
+rows) or `none` (no component decides at L7); the schema refuses a row without it and any other
+value. `cilium` is not a value: every row joins two injected plane namespaces under the mesh-wide
+STRICT `PeerAuthentication`, so Cilium sees only mTLS ciphertext on the path, and the `zone-policy`
+release refuses, in plane namespaces, Cilium policies that send traffic to Cilium's L7 proxy and Cilium Envoy configurations
+([zone-policy](../zone-policy/README.md#the-l7-owner-rule)). Both NetworkPolicies of a row carry the
+owner as the annotation `ztd.facis.io/l7-owner`: the row's value under `mesh.mode: sidecar`, `none`
+under `none` and the parked `ambient` (no per-pod proxy, and ambient deploys no waypoint). The
+installer copies the field with the row, so the mesh rule `allow-<name>` carries the same annotation.
+The DNS lane (`allow-dns-egress`, annotated `workloads-to-dns`) is plaintext to the cluster
+resolver, outside the mesh, and carries `none`. A zone file that overrides `allowMatrix` must state
+`l7Owner` on every row; no shipped zone file does.
+
+`intraPlanePairs` has the same entry shape (no `enforcedBy`, no `l7Owner`: an intra-plane pair joins
+two injected pods of one plane namespace, and its mesh rule records `sidecar`) for a pair inside one plane
 namespace between components of different releases. The network layer is already open inside a
 plane namespace (`allow-intra-plane`), so this chart renders nothing for it and only refuses an
 entry whose two endpoints are not in one namespace; the installer copies the entries to

@@ -84,6 +84,14 @@ participant backend obtains its authorization from the connector, and Keycloak s
 login and the pipeline ([Keycloak integration](keycloak.md#connector-boundary)). A permitted lane
 without a caller would only widen what the matrix exists to limit.
 
+Every row records its single L7 enforcement owner in `l7Owner`, `sidecar` (the destination's Envoy
+sidecar) or `none`, required by the schema; the five shipped rows are `sidecar`. `cilium` is not a
+value: under the mesh-wide STRICT mTLS Cilium sees only ciphertext on these paths, and the
+`zone-policy` release refuses, in plane namespaces, Cilium policies that send traffic to Cilium's L7 proxy and Cilium Envoy configurations (`l7-owner-is-the-mesh`). Both
+NetworkPolicies of a row and its mesh rule `allow-<name>` carry the owner as the annotation
+`ztd.facis.io/l7-owner`, written `none` when `mesh.mode` is `none` or the parked `ambient`, which has
+no per-pod proxy and deploys no waypoint ([Architecture](architecture.md#allow-matrix-data-plane-management-plane)).
+
 Every row is enforced at both layers (`enforcedBy` documents the layer the architecture holds
 responsible, not a choice between them). The network layer opens the L3/L4 lane here. The mesh
 layer is rendered by the `zone-policy` release, which installs after Istio's CRDs: a mesh-wide
@@ -371,7 +379,12 @@ the zone file states them, so a zone is never installed on assumed values. Where
 zone file also states `zone.trustDomain`, the zone's SPIFFE trust domain (the DNS zone delegated to
 the trust zone; [Workload identity](workload-identity.md#the-trust-domain)), and enables the API
 lane; the schema refuses a meshed zone without either. In sidecar mode the chart also refuses a
-`zone.kubernetesVersion` below 1.33, because native sidecar containers need it. The zone files live in
+`zone.kubernetesVersion` below 1.33, because native sidecar containers need it. A zone that enables
+Cilium also states `cni.cilium.version`, the Cilium version it is verified against (the tag of the
+`cilium` DaemonSet's image without the leading `v`, bare `major.minor.patch`); the schema refuses a
+zone with Cilium and without it, or with another form such as `v1.19.6`. The mesh identity proof
+compares it with the running Cilium and fails on a difference, naming both, so that an upgrade of
+Cilium by the provider is detected at the proof's next run. The zone files live in
 `deployment/helm/ztd/zones/`; the CI chart job and the local kind cluster use
 `deployment/helm/ztd/ci/values.yaml`, filled the same way with what that cluster is.
 

@@ -17,6 +17,7 @@ mesh:
 cni:
   cilium:
     enabled: true
+    version: 1.20.2   # the kind cluster's Cilium, as in ci/values.yaml
 observabilityBackends:
   namespace: ztd-observability
   entry:

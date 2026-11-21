@@ -79,6 +79,18 @@ tracing:
   provider: ztd-otel-gateway
   randomSamplingPercentage: 100
 
+# One L7 owner per path (templates/validatingadmissionpolicy-l7-owner.yaml, README.md "The L7 owner
+# rule"). The mesh's sidecar is the L7 owner of every path between plane namespaces, so Cilium's proxy
+# may not take a second L7 decision there: a CiliumNetworkPolicy in a plane namespace, or any
+# CiliumClusterwideNetworkPolicy, carrying a toPorts[] field that sends traffic to Cilium's L7 proxy
+# (rules.http, kafka, l7 or l7proto, listener, serverNames, terminatingTLS, originatingTLS) is refused
+# at admission, and so is every CiliumEnvoyConfig in a plane namespace and every
+# CiliumClusterwideEnvoyConfig. rules.dns is admitted (plaintext DNS, outside the mesh). The policy's
+# binding is `name` (namespaced kinds), and `<name>-clusterwide` for the cluster-wide kinds.
+l7OwnerPolicy:
+  enabled: true
+  name: l7-owner-is-the-mesh
+
 # Identity-band checks (hook-weight band "identity", 20-39): post-install and post-upgrade Jobs that
 # only read, through the Kubernetes API, and fail the release when identity is not there. They run
 # in the release namespace under its default deny, through the DNS bypass and the API lane.

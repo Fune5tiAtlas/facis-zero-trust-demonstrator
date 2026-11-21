@@ -11,7 +11,10 @@
 # unregistered workload cut off, traffic through the proxies, a SPIFFE ID of its own for every meshed
 # stand-in (one service account per stand-in, so a lane's pair and the callers refused on it differ
 # by identity), the default deny intact with the
-# chained CNI and both control planes inside it, the mesh layer's default deny (a registered caller
+# chained CNI and both control planes inside it, Cilium held to L3/L4 in the plane namespaces (every
+# case of fixtures/cilium-l7.yaml sent to the API server: Cilium policies with a field that sends
+# traffic to Cilium's L7 proxy, and Envoy configurations, refused by zone-policy's rule
+# l7-owner-is-the-mesh, a DNS-aware one admitted), the mesh layer's default deny (a registered caller
 # without a pair, and an impostor with a lane's labels but its own identity, refused by the
 # destination's proxy and logged there with both SPIFFE IDs; the proof's own pairs in
 # fixtures/mesh-pairs.yaml), the native-sidecar version rule, the identity-band
@@ -113,6 +116,13 @@ proof_refuse_ci
 cd "$(dirname "$0")" || exit 125
 REPO=$(git rev-parse --show-toplevel)
 CHART=$REPO/deployment/helm/ztd
+# The per-node reading of the CNI chain, shared with scripts/verify-cni-chaining-upgrade.
+. lib/cni-chain.sh
+# The cases of zone-policy's L7 owner rule, sent to the API server (section cilium-l7-refused-in-planes).
+. lib/cilium-l7.sh
+# The zone file's cni.cilium.version against the running Cilium (section 0). This proof only: the
+# upgrade proof starts below the CI zone file's version on purpose.
+. lib/cilium-version.sh
 CONTEXT=${KUBE_CONTEXT:-kind-ztd}
 # The run uninstalls and reinstalls the zone: refuse any cluster that is neither a local kind cluster
 # nor a confirmed participant cluster, before anything is read from it or written to it.
@@ -176,6 +186,9 @@ delete_stand_ins() {
   kubectl --context "$CONTEXT" -n "$SPIRE_NS" delete serviceaccount stand-in --ignore-not-found >/dev/null 2>&1
   # The proof's own pairs (fixtures/mesh-pairs.yaml), by their label; nothing to remove without the CRD.
   kubectl --context "$CONTEXT" -n "$DATA" delete authorizationpolicy -l app.kubernetes.io/name=verify-mesh-pairs --ignore-not-found >/dev/null 2>&1
+  # The Cilium policies and Envoy configurations of the L7 owner section (fixtures/cilium-l7.yaml), by
+  # their label (lib/cilium-l7.sh).
+  cilium_l7_cleanup "$CONTEXT" "$DATA" >/dev/null
 }
 # shellcheck disable=SC2317  # called from the EXIT trap only
 provider_cleanup() {
@@ -335,6 +348,16 @@ sys.exit(0 if (major, minor) >= (1, 33) else 1)
 PY2
 cni=$(k -n kube-system get ds cilium -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)
 [ -n "$cni" ]; check $? "Cilium is the CNI" "$cni"
+# The Cilium version the zone file records (cni.cilium.version) against the DaemonSet's image tag: a
+# provider upgrade of Cilium is detected here, at the next run.
+cilium_recorded=$(cilium_zone_version "$CHART/values.yaml" "$ZONE_VALUES"); rc=$?
+cilium_running=$(cilium_image_version "$cni")
+if [ $rc -eq 0 ] && [ -z "$cilium_recorded" ]; then
+  say "- Cilium version: not compared, the zone file does not enable Cilium (cni.cilium.enabled: false)"
+else
+  detail=$(cilium_version_matches "$cilium_recorded" "$cni"); rc2=$?
+  [ $rc -eq 0 ] && [ $rc2 -eq 0 ]; check $? "cilium-version: the zone file's cni.cilium.version equals the version of the Cilium the cluster runs (the DaemonSet's image tag)" "$detail"
+fi
 excl=$(k -n kube-system get cm cilium-config -o jsonpath='{.data.cni-exclusive}' 2>/dev/null)
 [ "$excl" = "false" ]; check $? "cni-exclusive=false (the Istio CNI plugin can chain)" "cni-exclusive=$excl"
 # The cluster's CNI as found, read again at the end: the run reads it and never writes it.
@@ -1015,12 +1038,9 @@ rm -f "$work"/standin-*
 
 # --------------------------------------------------------------------------------------------
 section "11. default-deny-with-chained-cni"
-for P in $(k -n "$ISTIO_NS" get pod -l k8s-app=istio-cni-node -o jsonpath='{.items[*].metadata.name}'); do
-  NODE=$(k -n "$ISTIO_NS" get pod "$P" -o jsonpath='{.spec.nodeName}')
-  conf=$(k -n "$ISTIO_NS" exec "$P" -- sh -c 'ls /host/etc/cni/net.d/*.conflist | head -1')
-  plugins=$(k -n "$ISTIO_NS" exec "$P" -- cat "$conf" | jq -r '[.plugins[].type] | join(" → ")')
-  [[ "$plugins" == cilium-cni*istio-cni* ]]; check $? "the CNI configuration of node $NODE lists the Istio plugin after Cilium" "${conf#/host}: $plugins"
-done
+while IFS=$'\t' read -r NODE conf plugins; do
+  cni_chain_ok "$plugins"; check $? "the CNI configuration of node $NODE lists the Istio plugin after Cilium" "$conf: $plugins"
+done < <(cni_chain "$CONTEXT" "$ISTIO_NS")
 [ "$excl" = false ]; check $? "Cilium still runs with cni-exclusive=false" "cni-exclusive=$excl"
 r=$(http "$DATA" data-plain app "http://openbao-standin.$MGMT.svc:8080/hostname")
 case $r in denied*) true;; *) false;; esac; check $? "data-plane pod → openbao-standin (management): DENIED at the network layer (no lane: the connection never reached a proxy) with the proxies in place" "→ $r"
@@ -1077,6 +1097,16 @@ line=$(denial_for "$work/peer-denials-new" unpaired "$DATA" peer)
 check $? "peer's proxy logged the refusal of unpaired as one JSON line with both identities (source …/sa/unpaired, destination …/sa/peer, detail rbac_access_denied)" "${line:-no such line; new denial lines: $(paste -sd' ' "$work/peer-denials-new" | cut -c1-300)}"
 served=$(jq -r --arg s "spiffe://$TD/ns/$DATA/sa/caller" 'select(.source == $s) | "\(.code) \(.detail)"' "$work/peer-denials-new")
 [ -z "$served" ]; check $? "neither the served request of caller nor the application's own 403 left a denial line on peer's proxy" "denial lines naming caller: ${served:-none}"
+
+say '' '### cilium-l7-refused-in-planes' ''
+say "One L7 owner per path: the mesh's sidecar owns L7 on every path between plane namespaces (\`ztd.facis.io/l7-owner\` on the allow-matrix policies), so \`zone-policy\`'s admission rule \`l7-owner-is-the-mesh\` refuses, whoever applies it, a Cilium policy in a plane namespace, or a cluster-wide one, with any port field that sends traffic to Cilium's L7 proxy (an \`http\`, \`kafka\`, \`l7\` or \`l7proto\` rule, a \`listener\`, \`serverNames\`, \`terminatingTLS\`, \`originatingTLS\`), and a CiliumEnvoyConfig in a plane namespace or any CiliumClusterwideEnvoyConfig; a DNS-aware rule is admitted (plaintext DNS, outside the mesh). Every case of \`scripts/verify-mesh-identity/fixtures/cilium-l7.yaml\` is sent here as a real request to the API server, in file order (selectors that match no pod of the zone): in \`$DATA\` and cluster-wide with \`kubectl create\`, the update case with \`kubectl replace\` of the admitted L3/L4 policy, and the cases in \`default\` (no plane label) as server-side dry runs, which run admission and store nothing. A case marked \`rule-or-schema\` names a field the pinned 1.20 CRDs do not define (\`kafka\`, \`l7\`, \`l7proto\`): the rule refuses it on 1.19 CRDs, the CRD schema on 1.20. What was admitted is then deleted." ''
+cilium_l7_cases "$CONTEXT" fixtures/cilium-l7.yaml "$DATA" "$MGMT" default >"$work/cilium-l7.tsv"
+[ -s "$work/cilium-l7.tsv" ]; check $? "the cases of fixtures/cilium-l7.yaml were read and sent" "$(grep -c . "$work/cilium-l7.tsv") cases"
+while IFS=$'\t' read -r l7case l7want l7got l7pass l7detail; do
+  [ "$l7pass" = PASS ]; check $? "$l7case: expected $l7want, got $l7got" "$l7detail"
+done <"$work/cilium-l7.tsv"
+left=$(cilium_l7_cleanup "$CONTEXT" "$DATA")
+[ -z "$left" ]; check $? "no Cilium policy or Envoy configuration of the section is left behind" "left: ${left:-none}"
 
 # --------------------------------------------------------------------------------------------
 section "12. control-planes-under-default-deny"
@@ -1458,6 +1488,16 @@ out=$(ZONE_VALUES=$work/no-td.yaml "$INSTALL" render istiod 2>&1); rc=$?
 out=$(helm template ztd "$CHART" -f "$work/no-td.yaml" 2>&1); rc=$?
 [ $rc -ne 0 ] && grep -q "/zone/trustDomain" <<<"$out"; check $? "the umbrella refuses a meshed zone without a trust domain, on the schema" "$(grep -o "at '/zone/trustDomain'.*" <<<"$out" | head -1)"
 helm template ztd "$CHART" -f "$CHART/zones/ionos.yaml" >/dev/null 2>&1; check $? "the umbrella renders zones/ionos.yaml (mesh none) without a trust domain"
+python3 - "$ZONE_VALUES" "$work/no-cilium-version.yaml" <<'PY'
+import sys, yaml
+z = yaml.safe_load(open(sys.argv[1])); c = z.setdefault("cni", {}).setdefault("cilium", {})
+c["enabled"] = True; c.pop("version", None)
+yaml.safe_dump(z, open(sys.argv[2], "w"))
+PY
+out=$(helm template ztd "$CHART" -f "$work/no-cilium-version.yaml" 2>&1); rc=$?
+[ $rc -ne 0 ] && grep -q "at '/cni/cilium': missing property 'version'" <<<"$out"; check $? "the umbrella refuses a zone with Cilium and no cni.cilium.version, on the schema" "$(grep -o "at '/cni/cilium'.*" <<<"$out" | head -1)"
+out=$(helm template ztd "$CHART" -f "$ZONE_VALUES" --set-string cni.cilium.version=v1.19.6 2>&1); rc=$?
+[ $rc -ne 0 ] && grep -q "at '/cni/cilium/version'" <<<"$out"; check $? "the umbrella refuses a cni.cilium.version that is not bare major.minor.patch (v1.19.6), on the schema" "$(grep -o "at '/cni/cilium/version'.*" <<<"$out" | head -1)"
 out=$(helm template ztd "$CHART" -f "$ZONE_VALUES" --set zone.kubernetesVersion=v1.32.0 2>&1); rc=$?
 [ $rc -ne 0 ] && grep -q 'native sidecar' <<<"$out"; check $? "the umbrella refuses sidecar mode below Kubernetes 1.33" "$(grep -o 'mesh.mode sidecar needs.*' <<<"$out")"
 out=$(helm template ztd "$CHART" -f "$ZONE_VALUES" --set cni.cilium.enabled=false 2>&1); rc=$?
@@ -1555,7 +1595,8 @@ else
   for NODE in $(agent_nodes); do agent_answers "$NODE"; done
   # The proof's fixtures are gone (delete_stand_ins ran above, its errors silenced): the stand-ins of
   # both planes and their Services and ServiceAccounts, the per-node meshed stand-ins and their
-  # Services and ServiceAccounts, the per-node SVID stand-ins and the ServiceAccount stand-in of the SPIRE namespace, the kube-public pod, the scratch namespace, and
+  # Services and ServiceAccounts, the per-node SVID stand-ins and the ServiceAccount stand-in of the SPIRE namespace, the kube-public pod, the scratch namespace,
+  # the proof's own pairs, the Cilium policies and Envoy configurations of the L7 owner section (cilium_l7_left), and
   # any SPIRE entry for a stand-in identity, the per-node meshed stand-ins' included (the controller-manager removes those once the pods are
   # gone, so they are waited for). A leftover is a failed check, so the zone is torn down after all.
   left=$( { sed -e "s/__DATA__/$DATA/g" -e "s/__MGMT__/$MGMT/g" fixtures/stand-ins.yaml | k get -f - --ignore-not-found -o name \
@@ -1564,7 +1605,8 @@ else
     && k -n "$SPIRE_NS" get serviceaccount stand-in --ignore-not-found -o name \
     && k -n kube-public get pod declared-not-reconciled --ignore-not-found -o name \
     && k get namespace mesh-identity-outside --ignore-not-found -o name \
-    && k -n "$DATA" get authorizationpolicy -l app.kubernetes.io/name=verify-mesh-pairs -o name; } 2>&1 || echo "a read failed")
+    && k -n "$DATA" get authorizationpolicy -l app.kubernetes.io/name=verify-mesh-pairs -o name \
+    && cilium_l7_left "$CONTEXT" "$DATA"; } 2>&1 || echo "a read failed")
   for _ in $(seq 30); do
     entries=$(spire_server entry show -output json 2>/dev/null | jq -er --arg ids "$FIXTURE_IDS" '($ids | split("\n")) as $f | [.entries[] | select(.spiffe_id.path as $p | ($f | index($p)) != null or ($p | contains("/sa/mesh-on-"))) | "spiffe://\(.spiffe_id.trust_domain)\(.spiffe_id.path)"] | join(" ")') || entries="the entries could not be read"
     [ -z "$entries" ] && break; sleep 2
@@ -1595,7 +1637,7 @@ else
   fi
   rm -f "$work/left-cert.pem" "$work/left-cert.pem.err"; certs_left=${certs_left# }
   [ -z "$left" ] && [ -z "$entries" ] && [ -z "$certs_left" ]
-  check $? "nothing of the proof's fixtures stays in the zone: no stand-in pod, Service or ServiceAccount in either plane, no per-node meshed stand-in, its Service or its ServiceAccount, no per-node SVID stand-in and no stand-in ServiceAccount in $SPIRE_NS, no kube-public pod, no scratch namespace, no SPIRE entry for a stand-in identity, and no proxy of a plane namespace holding a certificate for one, the per-node meshed stand-ins' included (every running proxy read)" "left: $(tr '\n' ' ' <<<"${left:-none}"); stand-in entries: ${entries:-none}; stand-in certificates: ${certs_left:-none}"
+  check $? "nothing of the proof's fixtures stays in the zone: no stand-in pod, Service or ServiceAccount in either plane, no per-node meshed stand-in, its Service or its ServiceAccount, no per-node SVID stand-in and no stand-in ServiceAccount in $SPIRE_NS, no kube-public pod, no scratch namespace, no Cilium policy of the L7 owner section, no SPIRE entry for a stand-in identity, and no proxy of a plane namespace holding a certificate for one, the per-node meshed stand-ins' included (every running proxy read)" "left: $(tr '\n' ' ' <<<"${left:-none}"); stand-in entries: ${entries:-none}; stand-in certificates: ${certs_left:-none}"
   code "$(k -n "$SPIRE_NS" get pods -o wide | sed 's/  */ /g')"
   server_td=$(k -n "$SPIRE_NS" get cm spire-server -o jsonpath='{.data.server\.conf}' | jq -r .server.trust_domain)
   td_note="final"; [[ $server_td == *.trust.invalid ]] && td_note="interim"
@@ -1662,15 +1704,16 @@ write_environment() {
     --arg kind "$kind_version" --arg kubectl "$(kubectl version --client -o json 2>/dev/null | jq -r .clientVersion.gitVersion)" \
     --arg helm "$(ver helm version --short)" --arg istioctl "$(istioctl version --remote=false 2>/dev/null | sed 's/^client version: //' | head -1)" \
     --arg cilium "$(cilium version --client 2>/dev/null | head -1)" --arg server "$server" --arg cni "$cni" --arg nodeImage "$node_image" \
+    --arg ciliumRunning "$cilium_running" --arg ciliumRecorded "$cilium_recorded" \
     --arg spire "$(sed -n 's/^SPIRE_VERSION=\([^ ]*\).*/\1/p' "$INSTALL")" --arg spireCrds "$(sed -n 's/^SPIRE_CRDS_VERSION=\(.*\)/\1/p' "$INSTALL")" \
     --arg istio "$(sed -n 's/^ISTIO_VERSION=\(.*\)/\1/p' "$INSTALL")" \
     --arg imgSpire "$images_spire" --arg imgIstio "$images_istio" --arg imgProxy "$images_proxy" \
     --argjson failures "$failures" '{
       commit: $commit, dirty: $dirty, date: $date, finished: $finished,
       host: { kind: $host },
-      cluster: ({ context: $context, kind: $clusterKind, provider: $provider, kubernetes: $server, nodes: $nodes, cni: $cni }
+      cluster: ({ context: $context, kind: $clusterKind, provider: $provider, kubernetes: $server, nodes: $nodes, cni: $cni, ciliumVersion: $ciliumRunning }
         + (if $clusterKind == "kind" then { kindNodeImage: $nodeImage } else {} end)),
-      zone: ({ file: $zone, name: $zoneName, trustDomain: $td, trustDomainInterim: $interim, kept: $kept }
+      zone: ({ file: $zone, name: $zoneName, trustDomain: $td, trustDomainInterim: $interim, kept: $kept, ciliumVersion: $ciliumRecorded }
         + (if $kept then {} else { notKept: $notKept } end)),
       tools: ((if $clusterKind == "kind" then { kind: $kind } else {} end) + { kubectl: $kubectl, helm: $helm, istioctl: $istioctl, cilium: $cilium }),
       charts: { "spire-crds": $spireCrds, spire: $spire, "istio-base": $istio, istiod: $istio, "istio-cni": $istio },

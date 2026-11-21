@@ -48,6 +48,11 @@ it is what it was before.
   `.trust.invalid`, that it is interim.
 - **0. Preconditions**: the cluster's Kubernetes version against the zone file's
   `zone.kubernetesVersion`, the cluster's Cilium (image and version, `cni-exclusive=false`), the
+  Cilium version the zone file records (`cni.cilium.version`) against the tag of the `cilium`
+  DaemonSet's image without digest and leading `v` (`cilium-version`: on a difference the check
+  fails naming both and says to update the recorded version and to read section 11 as the re-check
+  of the CNI chain; not compared, and said so, when the zone file sets `cni.cilium.enabled: false`;
+  both values also in `environment.json`, `cluster.ciliumVersion` and `zone.ciliumVersion`), the
   routing check and the inotify limit on every node. The routing check reads `cilium-config` and
   each node's pod range: it fails when the routing mode is `native`, masquerading is on
   (`enable-ipv4-masquerade` or `enable-bpf-masquerade`) and a node's pod range lies outside
@@ -87,7 +92,7 @@ it is what it was before.
   `native-sidecar-version`, `mesh-identity-issued-by-spire`, `unregistered-workload-cut-off` (the
   refusal across nodes), `traffic-through-the-proxies` (with `mesh-on-every-node`,
   `cross-node-calls` and `stand-in-identities`, below), `default-deny-with-chained-cni` (the cross-plane denial across nodes,
-  each refusal naming its layer, and `mesh-default-deny`, below)
+  each refusal naming its layer, `mesh-default-deny` and `cilium-l7-refused-in-planes`, below)
   and
   `control-planes-under-default-deny` (with `metrics-endpoints-answer`: the SPIRE server's 9988 and
   the controller-manager's 8082 answering from the host of the server's node, beside the agents'
@@ -130,7 +135,8 @@ it is what it was before.
   is gone to the reader, its entry one without a certificate in use. Rows of the proof's own pods (the
   label `app.kubernetes.io/part-of: verify-mesh-identity` that every fixture carries, or a pod of
   `fixtures/stand-ins.yaml`) are marked `fixture`.
-- **15.** the render guards.
+- **15.** the render guards, among them the refusal of a zone file with Cilium and without
+  `cni.cilium.version`, and of a version that is not bare `major.minor.patch` (`v1.19.6`).
 - **16. Teardown** (kind, a participant cluster without the keep opt-in, or any failed check; 17
   when a check of the record of what remains failed):
   nothing of the zone left behind, then the cluster's CNI read again, unchanged.
@@ -255,9 +261,11 @@ caller without an identity, which STRICT refuses before authorization, so it doe
 uncommitted changes); a run is never refused for the state of the tree. `date` and `finished` are
 the UTC start and end. `host.kind` is the operator's machine; `tools` and `charts` the versions
 used; `images` the images found running. `cluster` is the cluster as found: the context, `kind`
-(`kind` or `provider`), the provider, the Kubernetes server version, the nodes and the CNI image; on
-kind also `kindNodeImage` and `tools.kind`. `zone` names the zone file, its name and trust domain,
-`trustDomainInterim`, `kept` and, when not kept, `notKept`. `result.failures` is the failed-check
+(`kind` or `provider`), the provider, the Kubernetes server version, the nodes, the CNI image and
+`ciliumVersion`, the version read off that image; on kind also `kindNodeImage` and `tools.kind`.
+`zone` names the zone file, its name and trust domain, `ciliumVersion` (the zone file's
+`cni.cilium.version`, empty without Cilium), `trustDomainInterim`, `kept` and, when not kept,
+`notKept`. `result.failures` is the failed-check
 count, also the exit status. For example:
 
 ```bash
@@ -378,7 +386,7 @@ in both cases before the cluster is touched.
 | `mesh-identity-issued-by-spire` | read with `istioctl proxy-config secret`: the proxy's certificate has `O = SPIRE`, the SPIRE CA as issuer, the SVID's URI SAN; its `ROOTCA` bundle is the SPIRE CA, and istiod's CA did not issue it; a pod that chooses its injection templates, brings its own proxy without the SPIRE socket, or runs Istio's agent under another container name is refused at admission; so is, under the capture rule (`capture-at-injector-defaults`), a pod that excludes an application port from the capture, switches the capture off (`NONE`), moves the status port, overrides its proxy's configuration, opts out of injection, swaps its proxy's image or brings its own `istio-proxy` container, and, under the proxy rule, an `istio-proxy` of another image on the SPIRE socket, a second proxy under another name, and an `istio-proxy` of the injector's image with its own `postStart` hook or `NET_ADMIN` (next to the same pre-set status with nothing added, admitted), and, under the socket rule, an `istio-proxy` that mounts the SPIRE socket volume with a `subPath`, while a pod annotated `prometheus.io/scrape` and `prometheus.io/port` is admitted with the injector's `ISTIO_PROMETHEUS_ANNOTATIONS`, while an ordinary pod is admitted carrying the injector's status-port exclusion and `REDIRECT`, and the istiod and `istio-cni` pods, which opt out of injection, are admitted in `istio-system` (no injection label) and refused in the data plane; a label added to a running pod is admitted (an update is checked for what it changes), an added excluded port refused, the same through the `pods/status` subresource refused, a status update that changes no annotation admitted, and the removal of `sidecar.istio.io/status` from a running injected pod refused; outside the plane namespaces istiod's 15012 is not reachable; a certificate signed with istiod's CA key for the caller's SPIFFE ID is refused by the meshed peer with a TLS alert (up to three tries, each recorded with its HTTP code, none answered: any code other than `000` fails the check, and the alert must be in curl's own error line; under TLS 1.3 the alert races the client's request, which can meet the closed connection first), the caller's SPIRE SVID accepted |
 | `unregistered-workload-cut-off` | an unlabelled pod's proxy has no certificate, its application never starts, and the peer refuses a call from its network namespace, on another node than the peer's, under STRICT, in the handshake (no denial line names it: it presents no identity); the labelled pod's call succeeds |
 | `traffic-through-the-proxies` | the peer sees the caller's own SPIFFE ID (`sa/caller`) in `X-Forwarded-Client-Cert`; both proxies count the request, as mTLS; `mesh-on-every-node`: on every node with a SPIRE agent a meshed stand-in is Ready with a SPIRE-issued proxy certificate, one check per node; `cross-node-calls`: every node's stand-in calls the next node's, and each call crosses nodes, carries the caller's SPIFFE ID to the receiver and is counted as mTLS by both proxies; `stand-in-identities`: every meshed stand-in's proxy holds a SPIRE-issued certificate for its own service account, and the lane's caller and the refused callers carry different IDs |
-| `default-deny-with-chained-cni` | the Istio plugin is chained after Cilium on every node, `cni-exclusive=false`, and the umbrella's cross-plane denial (from another node than the peer's) and matrix lane hold with the proxies in place, each refusal recorded with its layer (`data-plain` → `tsa-policy-engine` a network-layer denial without a mesh log); `mesh-default-deny`: an impostor with the lane's labels and a registered neighbour without a pair are refused by the mesh with `RBAC: access denied` and one denial line each carrying both SPIFFE IDs, while the lane's caller, the proof's pair and an application's own 403 are served with no line |
+| `default-deny-with-chained-cni` | the Istio plugin is chained after Cilium on every node, `cni-exclusive=false`, and the umbrella's cross-plane denial (from another node than the peer's) and matrix lane hold with the proxies in place, each refusal recorded with its layer (`data-plain` → `tsa-policy-engine` a network-layer denial without a mesh log); `mesh-default-deny`: an impostor with the lane's labels and a registered neighbour without a pair are refused by the mesh with `RBAC: access denied` and one denial line each carrying both SPIFFE IDs, while the lane's caller, the proof's pair and an application's own 403 are served with no line; `cilium-l7-refused-in-planes`: every case of `fixtures/cilium-l7.yaml` (which also holds the cases of the rule's test against a bare API server) is sent to the API server and recorded with its outcome and message: Cilium policies in the data plane and cluster-wide with an `http` rule (in `spec`, in an entry of `specs`, and as an update of an admitted L3/L4 policy), a `kafka` rule in `specs`, `l7proto`, a `listener`, `serverNames`, `terminatingTLS` and `originatingTLS`, and a CiliumEnvoyConfig in the data plane and a CiliumClusterwideEnvoyConfig, each refused by `zone-policy`'s rule `l7-owner-is-the-mesh` (naming the field; `kafka` and `l7proto` by the CRD schema instead on 1.20 CRDs, which do not define them); a policy with only a `dns` egress rule and an L3/L4 policy admitted and then deleted; an `http` policy and an Envoy configuration in `default` (no plane label), sent as server-side dry runs, not refused by the rule; and no Cilium policy or Envoy configuration of the section left |
 | `control-planes-under-default-deny` | `spire-system` and `istio-system` hold only the declared openings; no SPIRE pod has a sidecar; every agent is attested; the proxies are SYNCED; a stand-in pod's TCP probes to the SPIRE server and istiod on every port but istiod's xDS port are denied; the agents' metrics port listens on each node's loopback only and answers there with `spire_agent` samples; `metrics-endpoints-answer`: the SPIRE server's metrics (pod port 9988) answer with `spire_server_` samples and the controller-manager's (8082) with `controller_runtime_` samples, read from the host of the server pod's node through its Cilium agent (read-only `kubectl exec`, no lane, no pod), while the same ports stay denied from both planes |
 | `registration-inventory` | every entry on the SPIRE server, by SPIFFE ID, next to the pod its `k8s:pod-uid` names and the certificate in use read from that pod: matched, or without a certificate in use (recorded); no entry outside a plane namespace and none not created by the registration rule (the `k8s:pod-uid` of a labelled plane pod, the agent of its node as parent, the template's ID); every certificate in use read from the pods (proxies and Workload API clients) has an entry of its own pod, sits in a plane namespace and chains to the SPIRE CA; the plane pods without an identity listed |
 
@@ -426,3 +434,13 @@ owns `.spec.validations` of the policy; a later `helm upgrade` of `zone-policy` 
 the restore above, with `--force-conflicts`, takes the field back (`docs/troubleshooting.md`). The status port the
 admitted-pod check expects is read from the installed `zone-policy` release
 (`helm get values --all`), not from the chart's defaults.
+
+## The CNI chain after a Cilium upgrade
+
+The per-node reading of the CNI chain (`lib/cni-chain.sh`: each node's conflist read through its Istio
+CNI agent, the Istio plugin required after Cilium) is shared with
+`scripts/verify-cni-chaining-upgrade`, which proves on kind that the chain survives a Cilium upgrade.
+On the participant clusters Cilium is the provider's and is upgraded without notice
+([OSC environment](../../docs/environments/osc.md#1-cni-verify-the-providers-cilium)): re-running this proof
+after a provider upgrade of Cilium is the re-check of the chain there (section 11,
+`default-deny-with-chained-cni`).

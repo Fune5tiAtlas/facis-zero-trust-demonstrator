@@ -7,7 +7,9 @@ chart's listener), each by its own SPIFFE identity
 (<trust domain>/ns/<management namespace>/sa/<service account>), and no other identity reaches the
 server. Rendered only under a mesh (mesh.mode not none) and with the bundled server: without a mesh
 there is no AuthorizationPolicy CRD (the secrets baseline on kind's own CNI), and an external
-OpenBao is not in the zone's mesh. Identities only: no path, method, host or address.
+OpenBao is not in the zone's mesh. Identities only: no path, method, host or address. Each rule
+carries the path's L7 owner (ztd.facis.io/l7-owner): the server's sidecar under mesh.mode sidecar,
+none under any other mode (no per-pod proxy, and the parked ambient deploys no waypoint).
 */ -}}
 {{- if and (ne (toString .Values.mesh.mode) "none") (eq (include "ztd-openbao.bundled" .) "true") }}
 {{- $td := required "ztd-openbao: trustDomain is required when mesh.mode is not none (zone fact zone.trustDomain; scripts/install-zone fills it)" .Values.trustDomain }}
@@ -23,6 +25,7 @@ metadata:
     {{- include "ztd-openbao.labels" $ | nindent 4 }}
   annotations:
     ztd.facis.io/pair: {{ printf "%s-to-server" $account }}
+    ztd.facis.io/l7-owner: {{ ternary "sidecar" "none" (eq (toString $.Values.mesh.mode) "sidecar") | quote }}
 spec:
   # The server pods of the upstream chart: its name label, this release and the server component.
   selector:
