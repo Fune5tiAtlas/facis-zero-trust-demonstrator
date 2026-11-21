@@ -9,15 +9,16 @@
 # Without chart directories it checks every chart under deployment/helm/ and features/fixtures/charts/
 # and packages only the charts under deployment/helm/: a fixture is never released. Charts named on
 # the command line are both checked and packaged. A chart's valid baseline values are its
-# ci/values.yaml when it has one; a chart with dependencies is built from its committed Chart.lock
-# first.
+# ci/values.yaml when it has one; each ci/<variant>-values.yaml is checked as well, layered on the
+# baseline (the umbrella's ci/admission-values.yaml: its admission release). A chart with
+# dependencies is built from its committed Chart.lock first.
 #
 # --server-dry-run makes `helm install --dry-run=server` mandatory: the current kube context is used,
 # and no reachable cluster is a failure, never a pass. Without it the server dry-run is recorded as
 # not-run. A server dry-run renders, discovers the API and its schemas and checks existing resources;
 # it does not run admission webhooks or hooks and proves nothing about the release at runtime.
 #
-# --evidence DIR writes one <chart>.json per chart: chart, version, and each check as
+# --evidence DIR writes one <chart>.json per chart and one <chart>-<variant>.json per variant: chart, version, and each check as
 # passed | failed | not-run. Nothing rendered is printed or kept: rendered Secrets stay out of the logs.
 #
 # --package DIR --version X.Y.Z packages the release charts into DIR at that version, only once every
@@ -129,6 +130,22 @@ gate() {
   fi
 }
 
+# variants <chart-dir> <gate target> <name>: the gate once more for each ci/<variant>-values.yaml, on
+# top of ci/values.yaml; with --evidence, one <name>-<variant>.json each.
+variants() {
+  local file variant
+  for file in "$1"/ci/*-values.yaml; do
+    [ -f "$file" ] || continue
+    variant=$(basename "$file" -values.yaml)
+    echo "  variant $variant"
+    gate "$2" "$3-$variant" -f "$1/ci/values.yaml" -f "$file"
+    if [ -n "$evidence" ]; then
+      printf '{"chart":"%s","version":"%s","path":"%s","variant":"%s","lint":"%s","template":"%s","serverDryRun":"%s"}\n' \
+        "$3" "$version" "${1#"$root"/}" "$variant" "$lint" "$template" "$dryrun" > "$evidence/$3-$variant.json"
+    fi
+  done
+}
+
 for dir in "${charts[@]}"; do
   [ -f "$dir/Chart.yaml" ] || { echo "FAIL $dir: no Chart.yaml" >&2; failures=$((failures + 1)); continue; }
   name=$(sed -n 's/^name: *//p' "$dir/Chart.yaml" | head -1)
@@ -153,6 +170,7 @@ for dir in "${charts[@]}"; do
     printf '{"chart":"%s","version":"%s","path":"%s","dependencies":"%s","lint":"%s","template":"%s","serverDryRun":"%s"}\n' \
       "$name" "$version" "${dir#"$root"/}" "$deps" "$lint" "$template" "$dryrun" > "$evidence/$name.json"
   fi
+  variants "$dir" "$dir" "$name"
 done
 
 if [ "$failures" -ne 0 ]; then
@@ -183,6 +201,7 @@ for dir in ${release[@]+"${release[@]}"}; do
   packages+=("$package")
   echo "$name $release_version ($package)"
   gate "$package" "$name" ${values[@]+"${values[@]}"}
+  version=$release_version evidence="" variants "$dir" "$package" "$name"
 done
 
 if [ "$failures" -ne 0 ]; then
