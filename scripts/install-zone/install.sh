@@ -256,11 +256,13 @@ gatekeeper = merge(yaml.safe_load(open(gatekeeper_file)) or {}, {
     "postUpgrade": {"labelNamespace": {"image": {"tag": crds_tag}}},
 })
 values = merge({"gatekeeper": gatekeeper}, yaml.safe_load(open(zone_file)) or {})
+# Where Argo CD owns the policy (admission.policy.managedBy: argocd), the release renders none of it.
+helm_policy = ((values.get("admission") or {}).get("policy") or {}).get("managedBy", "helm") == "helm"
 merge(values, {
     "openbao": {"enabled": False},
     "gatekeeper": {"enabled": True},
     "admissionProvider": {"enabled": stage >= 2},
-    "admissionPolicy": {"templates": stage >= 2, "constraints": stage >= 3},
+    "admissionPolicy": {"templates": helm_policy and stage >= 2, "constraints": helm_policy and stage >= 3},
     "admissionPool": {"enabled": stage >= 4},
 })
 yaml.safe_dump(values, open(out, "w"), sort_keys=False)
@@ -468,23 +470,44 @@ admission_stage_ready() {
   esac
 }
 
+# policy_managed_by: admission.policy.managedBy of the zone file, helm by default.
+policy_managed_by() {
+  python3 -c 'import sys, yaml; z = yaml.safe_load(open(sys.argv[1])) or {}; print(((z.get("admission") or {}).get("policy") or {}).get("managedBy", "helm"))' "$ZONE_VALUES"
+}
+
 # install_admission <i> <namespace>: the admission release, in stages (header), then the checks of
-# scripts/admission/install.sh: webhooks scoped, response cache off, constraints enforced.
+# scripts/admission/install.sh: webhooks scoped, response cache off, constraints enforced. Where Argo
+# CD owns the policy (admission.policy.managedBy: argocd) the release never renders it, so an
+# adoption never takes ownership of it: stage 3 deploys nothing, and the installer waits for Argo
+# CD's constraint CRDs and constraints instead of applying them (ADMISSION_POLICY_TIMEOUT seconds per
+# wait, default 300).
 install_admission() {
-  local i=$1 ns=$2 stage adopt=false old
+  local i=$1 ns=$2 stage adopt=false old managed wait_s msg
   old=$(admission_standalone_releases)
   [ -z "$old" ] || adopt=true
+  managed=$(policy_managed_by)
+  wait_s=${ADMISSION_POLICY_TIMEOUT:-300}
   admission_setup
   for stage in 1 2 3 4; do
     if [ "$stage" -lt 4 ] && admission_stage_ready $((stage + 1)); then continue; fi
-    ADMISSION_STAGE=$stage merged_values gatekeeper admission "" "$work/gatekeeper.values.yaml"
-    say "step $i/${#STEPS[@]}: gatekeeper, stage $stage/4${old:+ (adopting the objects of ${old//$'\n'/ })} ..."
-    LIFECYCLE_POST_RENDERER=ztd-webhook-scope LIFECYCLE_TAKE_OWNERSHIP=$adopt \
-      deploy "$i" gatekeeper "$ns" "$(chart_path umbrella)" "$work/gatekeeper.values.yaml" ""
+    if [ "$stage" -eq 3 ] && [ "$managed" = argocd ]; then
+      say "step $i/${#STEPS[@]}: gatekeeper, stage 3/4: the constraints are Argo CD's; waiting for them to be enforced ..."
+    else
+      ADMISSION_STAGE=$stage merged_values gatekeeper admission "" "$work/gatekeeper.values.yaml"
+      say "step $i/${#STEPS[@]}: gatekeeper, stage $stage/4${old:+ (adopting the objects of ${old//$'\n'/ })} ..."
+      LIFECYCLE_POST_RENDERER=ztd-webhook-scope LIFECYCLE_TAKE_OWNERSHIP=$adopt \
+        deploy "$i" gatekeeper "$ns" "$(chart_path umbrella)" "$work/gatekeeper.values.yaml" ""
+    fi
     [ "$stage" -eq 4 ] && break
-    local deadline=$(( $(date +%s) + 300 ))
+    local deadline=$(( $(date +%s) + wait_s ))
     until admission_stage_ready $((stage + 1)); do
-      [ "$(date +%s)" -lt "$deadline" ] || die "admission stage $stage: what stage $((stage + 1)) needs is not in place after 5 minutes"
+      if [ "$(date +%s)" -ge "$deadline" ]; then
+        msg="what stage $((stage + 1)) needs is not in place after ${wait_s}s"
+        if [ "$managed" = argocd ] && [ "$stage" -ge 2 ]; then
+          msg="Argo CD has not provided the admission policy after ${wait_s}s: $([ "$stage" -eq 2 ] && echo "the constraint CRDs (from its constraint templates) are not Established" || echo "the constraints are not enforced by every Ready webhook replica"); check its Applications admission-templates, admission-constraints and admission-exemptions"
+        fi
+        die "admission stage $stage: $msg"
+      fi
       sleep 5
     done
   done
