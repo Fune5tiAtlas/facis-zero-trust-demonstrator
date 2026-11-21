@@ -114,6 +114,9 @@ spec:
           volumeMounts:
             - {name: config, mountPath: /etc/tsa-bundle, readOnly: true}
             - {name: desired, mountPath: /etc/tsa-desired, readOnly: true}
+            # The ledger of imported revisions: survives a restart of this container, not of the pod
+            # (which restarts the TSA empty too).
+            - {name: state, mountPath: /var/lib/tsa-bundle}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
@@ -127,6 +130,8 @@ spec:
           emptyDir: {sizeLimit: 8Mi}
         - name: work
           emptyDir: {sizeLimit: 8Mi}
+        - name: state
+          emptyDir: {sizeLimit: 16Mi}
         - name: tmp
           emptyDir: {sizeLimit: 32Mi}
 ---
