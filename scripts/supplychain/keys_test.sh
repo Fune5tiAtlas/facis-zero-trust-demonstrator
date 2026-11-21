@@ -70,6 +70,7 @@ refused "a key file on disk is refused" "must be env://" check_key STUB_PUBLIC="
 # sbom-backfill.sh: the verification against the key set and the decision.
 # shellcheck source=scripts/supplychain/sbom-backfill.sh disable=SC1091
 . "$here/sbom-backfill.sh"
+# shellcheck disable=SC2034 # read by the sourced functions
 COSIGN="$work/bin/cosign" KEYS_DIR="$work/repo/docs/contracts/keys"
 echo '{}' > "$work/sbom.json"
 echo openbao-transit-cosign.pub > "$work/transit.sig"
@@ -80,8 +81,35 @@ check "a pair signed with an older key of the set verifies against that key" \
 if verify_any "$work/sbom.json" "$work/unknown.sig" >/dev/null; then fail "a pair signed with no key of the set verifies against none" "it verified"
 else ok "a pair signed with no key of the set verifies against none"; fi
 check "a verifying pair is left as it is" test "$(sbom_action complete "$transit" "$interim" "$interim")" = "done"
-check "a release with no or half a pair is signed" test "$(sbom_action incomplete "" "$transit" "$interim")" = sign
+check "a release with no SBOM at all is signed" test "$(sbom_action none "" "$transit" "$interim")" = sign
+check "half a pair of a release signed with another key is never replaced" test "$(sbom_action partial "" "$interim" "$transit")" = refuse
+check "half a pair of a release signed with the current key is completed" test "$(sbom_action partial "" "$interim" "$interim")" = sign
 check "a failing pair of a release signed with the current key is re-signed" test "$(sbom_action complete "" "$interim" "$interim")" = sign
 check "a failing pair of a release signed with another key is never re-signed" test "$(sbom_action complete "" "$interim" "$transit")" = refuse
+
+# fetch_assets, with a gh stub: the asset list is $STUB_ASSETS, a download fails when $STUB_DOWNLOAD=fail.
+gh() {
+  case "$1 $2" in
+    "release view") [ "${STUB_LIST:-}" != fail ] || return 1; tr ' ' '\n' <<<"$STUB_ASSETS" ;;
+    "release download")
+      [ "${STUB_DOWNLOAD:-}" != fail ] || return 1
+      local dir=""; shift 3
+      while [ $# -gt 0 ]; do case "$1" in --dir) dir=$2; shift ;; --pattern) echo x > "$dir/$2"; shift ;; esac; shift; done ;;
+  esac
+}
+fetched() { # expected assets...
+  local want=$1 got; shift
+  rm -rf "$work/fetch"; mkdir -p "$work/fetch"
+  got="$(STUB_ASSETS="$*" fetch_assets v1.0.0 "$work/fetch")" && [ "$got" = "$want" ]
+}
+check "a release without SBOM assets is none" fetched none release-manifest.json chart.tgz
+check "a release with only the signature is partial" fetched partial sbom.json.sig
+check "a release with both is complete" fetched complete sbom.json sbom.json.sig release-manifest.json
+for mode in STUB_DOWNLOAD STUB_LIST; do
+  rm -rf "$work/fetch"; mkdir -p "$work/fetch"
+  if (export "$mode=fail" STUB_ASSETS="sbom.json sbom.json.sig"; fetch_assets v1.0.0 "$work/fetch" >/dev/null); then
+    fail "a failed ${mode#STUB_} fails the release, never reads as missing" "it was read as $(STUB_ASSETS="sbom.json sbom.json.sig" fetch_assets v1.0.0 "$work/fetch")"
+  else ok "a failed ${mode#STUB_} fails the release, never reads as missing"; fi
+done
 
 [ "$failures" -eq 0 ] || { echo "$failures case(s) failed"; exit 1; }
