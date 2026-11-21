@@ -9,7 +9,7 @@ compatible addition; anything else is a v2.
 
 | Interface | Purpose | v1 artefacts | Status |
 |---|---|---|---|
-| IF-01 | Security-state event stream to the demonstrator UI | [event](contracts/if01-event.v1.schema.json), [snapshot](contracts/if01-snapshot.v1.schema.json), [feed API](contracts/if01-feed.v1.openapi.yaml) | v1 |
+| IF-01 | Security-state event stream to the demonstrator UI | [event](contracts/if01-event.v1.schema.json), [event v2](contracts/if01-event.v2.schema.json), [snapshot](contracts/if01-snapshot.v1.schema.json), [feed API](contracts/if01-feed.v1.openapi.yaml) | v1 |
 | IF-02 | Connector authorization surface — registration and token issuance | [connector API](contracts/if02-connector.v1.openapi.yaml), [rules](#if-02-connector-authorization-surface) | v1 (1.1) |
 | IF-03 | Credential verification outcome | [JWS payload](contracts/if03-verification-outcome.v1.schema.json), [JWS header](contracts/if03-jws-header.v1.schema.json), [signing rules](#if-03-signed-verification-outcome) | v1 |
 | IF-04 | Observability and evidence | The IF-01 event schema, as a JSON log line; [rules](#if-04-observability-and-evidence) | v1 |
@@ -111,6 +111,65 @@ way.
   `as_of_seq + 1`.
 - **Content.** A decision or admission event is `allowed` or `denied`, and a denial names its
   reason code. Events carry no secrets or tokens; `detail` is at most 512 characters.
+
+### Version 2: the decision fields
+
+[`if01-event.v2.schema.json`](contracts/if01-event.v2.schema.json) is the v1 event with
+`"version": 2` and, on a `decision`, five members that are always present: `caller_spiffe_id`,
+`token_subject`, `resource` (method and configured target), `bundle_revision` and `rule_id`. A
+member the request never reached — the token subject of a request refused before authentication,
+the bundle and rule of one refused before policy, the caller of one whose mesh identity is not
+allowed — is the literal `not_evaluated`, never omitted. v2 adds the sources `policy-a` and
+`policy-b`. v1 stays valid and unchanged; the guard and the policy evaluator write v2
+(`hook.NewLogSinkV2`), the policy-hook verification probe writes v1, and the feed bridge serves
+both.
+
+The guard refuses some requests before policy. Its verifier's runtime codes are mapped to the
+registry; the runtime code stays in the event's `detail`, so two causes under one code (a missing
+and an invalid proof) remain distinguishable in the audit trail. The test
+`TestRefusalsUseTheRegistry` (`services/guard`) holds the table to the registry.
+
+| Runtime code (event `detail`) | Registry code | Status |
+|---|---|---|
+| `route_denied`, `host_denied` | `POL-RULE-DENY`, rule `guard-route-allowlist` | 403 |
+| `mesh_caller_denied` | `MESH-PAIR-DENIED` | 403 |
+| `token_absent` | `TOK-MISSING` | 401 |
+| `token_malformed`, `signature_invalid`, `issuer_mismatch`, `audience_mismatch` | `TOK-INVALID` | 401 |
+| `token_expired` | `TOK-EXPIRED` | 401 |
+| `proof_absent`, `proof_invalid` | `TOK-PROOF-INVALID` | 401 |
+| `key_binding_mismatch` | `TOK-JKT-MISMATCH` | 401 |
+| `proof_replayed` | `TOK-REPLAY` | 401 |
+| `scope_insufficient` | `TOK-SCOPE` | 403 |
+| `request_invalid` | `TOK-REQUEST-INVALID` | 400 |
+| `replay_unavailable` | `TOK-STORE-UNAVAILABLE` | 503 |
+| `key_set_unavailable`, `unclassified` | `TOK-SERVER-ERROR` | 500 |
+
+The M3 policy evaluator answers a denial with one rule per reason, so insufficient scope and a
+policy rule are distinct: `m3-default-deny` (the request's shape, caller, audience or proof),
+`m3-client-blocked` (a rule naming the client), `m3-presentation-required`
+(`POL-PRESENTATION-REQUIRED`, the OID4VP link in the body), `m3-tenant-route` (the configured
+route does not match the scope) and `m3-scope-required` (no scope the policy grants). Every answer
+is one v2 event under the guard's correlation id, with the rule id and the bundle revision.
+
+### Feed bridge: ownership and sequencing
+
+The bridge is `cmd/feed-bridge` (`internal/feedbridge`); it serves `/snapshot` and `/events` of
+the [feed API](contracts/if01-feed.v1.openapi.yaml) from the IF-01 log lines it reads. Ownership:
+
+- **Sequence numbers are the producers'.** Each process names its own run (`guard-<start time>`,
+  `policy-<start time>`) and numbers its events from 0, so `(run_id, seq)` is unique and the
+  bridge never renumbers. A repeated seq is an at-least-once duplicate and is dropped; a seq that
+  skips ahead is recorded as a `gap` event (`VIS-STALE`) under the first missing number.
+- **The buffer is the bridge's**: the last 1000 events per run; a reader asking for older ones
+  receives a `gap` event first, then reads the snapshot again.
+- **Retention is the collectors'**, not the bridge's: the same lines travel the IF-04 path of the
+  observability release (node collector → zone gateway → entry) into one file per zone on the
+  entry's volume, rotated by size with nine backups (`deployment/helm/values/otel-entry.yaml`,
+  `logExport`); `scripts/verify-observability` proves the export (`logs-exported`,
+  `if01-fields-kept`). The bridge keeps nothing on disk.
+- **Not built here**: the bridge's deployment and its mesh identity towards the UI; it runs as a
+  binary fed with the components' log streams (`kubectl logs`); reading the exported files would
+  need an OTLP-JSON reader, which is not written.
 
 ## IF-02 — connector authorization surface
 

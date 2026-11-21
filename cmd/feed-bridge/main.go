@@ -1,5 +1,5 @@
 // Command feed-bridge serves the IF-01 feed (/snapshot, /events) from the IF-01 log lines it reads
-// on standard input, for example a component's log stream or a collector's exported lines.
+// on standard input, for example the log streams of the guard and the policy evaluator.
 package main
 
 import (
