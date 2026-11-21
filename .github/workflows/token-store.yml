@@ -11,6 +11,7 @@ on:
       - services/connector/**
       - services/participant/**
       - services/protectedresource/**
+      - services/verification-service/**
       - cmd/participant/**
       - cmd/protected-resource/**
       - cmd/sdjwt-fixture/**
@@ -21,6 +22,7 @@ on:
       - deployment/docker/connector/**
       - deployment/docker/participant/**
       - deployment/docker/protected-resource/**
+      - deployment/docker/verification-service/**
       - deployment/helm/token-store/**
       - scripts/verify-token-store/**
       - scripts/tools/pins.env
@@ -34,6 +36,7 @@ on:
       - services/connector/**
       - services/participant/**
       - services/protectedresource/**
+      - services/verification-service/**
       - cmd/participant/**
       - cmd/protected-resource/**
       - cmd/sdjwt-fixture/**
@@ -44,6 +47,7 @@ on:
       - deployment/docker/connector/**
       - deployment/docker/participant/**
       - deployment/docker/protected-resource/**
+      - deployment/docker/verification-service/**
       - deployment/helm/token-store/**
       - scripts/verify-token-store/**
       - scripts/tools/pins.env
@@ -104,7 +108,7 @@ jobs:
           for tokens in opaque jwt; do
             CONNECTOR_TEST_TOKENS=$tokens go test -count=1 -race -timeout 20m -v \
               ./services/token-store/... ./services/connector/... ./internal/... \
-              ./services/participant/... ./services/protectedresource/... \
+              ./services/participant/... ./services/protectedresource/... ./services/verification-service/... \
               ./cmd/participant/... ./cmd/protected-resource/... ./cmd/sdjwt-fixture/... \
               | tee "$RUNNER_TEMP/token-path-$tokens.log"
             if grep -q -- '--- SKIP' "$RUNNER_TEMP/token-path-$tokens.log"; then
