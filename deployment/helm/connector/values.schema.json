@@ -83,6 +83,18 @@
     "openbao": {
       "type": "object",
       "properties": {
+        "auth": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["method", "role", "mount", "audience", "expirationSeconds"],
+          "properties": {
+            "method": { "type": "string", "enum": ["token", "kubernetes"] },
+            "role": { "type": "string", "pattern": "^([A-Za-z0-9._-]+)?$" },
+            "mount": { "type": "string", "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$" },
+            "audience": { "type": "string", "pattern": "^[A-Za-z0-9._:/-]+$" },
+            "expirationSeconds": { "type": "integer", "minimum": 600 }
+          }
+        },
         "address": {
           "type": "string",
           "minLength": 1
@@ -99,7 +111,8 @@
       "required": [
         "address",
         "signingKey",
-        "signingKeyVersion"
+        "signingKeyVersion",
+        "auth"
       ],
       "additionalProperties": false
     },

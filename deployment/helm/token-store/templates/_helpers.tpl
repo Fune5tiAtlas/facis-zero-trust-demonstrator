@@ -34,6 +34,15 @@ app.kubernetes.io/component: server
 {{- if not (regexMatch "^https?://(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9.-]+)(:[0-9]{1,5})?/?$" (.Values.openbao.address | toString)) -}}
 {{- fail "openbao.address must be the key-value store's base URL, http(s)://host[:port] with a DNS name or an IP, nothing more" -}}
 {{- end -}}
+{{- if and (eq .Values.openbao.auth.method "kubernetes") (not .Values.openbao.auth.role) -}}
+{{- fail "openbao.auth.method kubernetes needs openbao.auth.role" -}}
+{{- end -}}
+{{- if not (has .Values.openbao.auth.method (list "token" "kubernetes")) -}}
+{{- fail "openbao.auth.method must be token or kubernetes" -}}
+{{- end -}}
+{{- if lt (int .Values.openbao.auth.expirationSeconds) 600 -}}
+{{- fail "openbao.auth.expirationSeconds must be 600 or more (the kubelet's minimum)" -}}
+{{- end -}}
 {{- if not .Values.serviceAccount.name -}}
 {{- fail "serviceAccount.name must name the ServiceAccount the service runs as; it is the last segment of the store's SPIFFE ID" -}}
 {{- end -}}
