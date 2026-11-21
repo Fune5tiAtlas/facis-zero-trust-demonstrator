@@ -312,6 +312,20 @@ Activation: register the runner with the repository, give it the labels, check i
 `scripts/tools/install.sh` (linux/amd64). `scripts/supplychain/runner-labels_test.sh` holds the
 check to its refusals.
 
+### Signing log audit
+
+No log of a job that holds the key may show key material (FZTD-57). Each signing workflow ends with
+a `Signing log audit` job that runs once the signing jobs have completed, successful or failed, reads
+their published logs through the API (`actions: read`, no secret) and runs
+`scripts/secrets/log_audit.py signing-audit`: PEM private-key blocks, the same blocks base64-encoded,
+cosign's encrypted-key markers, a password or token variable printed with a value instead of `***`,
+and Vault/OpenBao token shapes. It records counts and verdicts only, never a matched text, in the
+`signing-log-audit` artefact, and fails on any hit. A job that never started — skipped, or refused by
+the environment — is recorded and not scanned; a run in which none of the named jobs exists fails,
+because the names no longer match the workflow. The canary audit of the secrets baseline is a
+separate mode of the same script and is unchanged. `scripts/secrets/log_audit_test.py` holds the
+patterns and the verdicts to their cases.
+
 ### Key source
 
 `SIGNING_KEY_SOURCE` selects where the signing key comes from; `scripts/supplychain/key-source.sh`

@@ -536,3 +536,30 @@ jobs:
           name: release
           path: dist/release
           overwrite: true
+
+  # FZTD-57: the candidate or release images job and, on a tag, the release job.
+  # Once the signing jobs have completed, successful or not, their published logs must hold no private-key
+  # material (scripts/secrets/log_audit.py signing-audit); the record is counts and verdicts only.
+  signing-log-audit:
+    name: Signing log audit
+    needs: [candidate, release]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # downloads the signing jobs' published logs
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Audit the signing jobs' logs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/secrets/log_audit.py signing-audit --job "Candidate images" --job "Release images" --job "Release" --out bundles/signing
+
+      - name: Keep the audit record
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signing-log-audit
+          path: bundles/signing
