@@ -42,6 +42,9 @@ type Syncer struct {
 	ref     string
 	rev     atomic.Value // string
 	misses  int          // consecutive probes without an answer
+
+	// InFlight counts evaluations being forwarded to the TSA; the gate keeps it.
+	InFlight atomic.Int64
 }
 
 // ActivationWindow bounds the wait for an imported bundle to answer with its revision: the TSA
@@ -78,7 +81,34 @@ func (s *Syncer) Probe(ctx context.Context) (revision string, ok bool) {
 }
 
 // load imports a verified bundle and waits until an evaluation reports its revision.
+//
+// The TSA replaces the policy under a lock but drops its policy cache asynchronously, and an
+// evaluation that read the old policy before the swap can put it back into the cache afterwards,
+// where it stays until the next change. So load first waits for the evaluations it forwarded to
+// finish (the caller has stopped forwarding new ones), and imports again whenever the old revision is
+// still answering after reimportAfter: each import drops the cache again.
 func (s *Syncer) load(ctx context.Context, outer []byte, revision string) error {
+	for deadline := time.Now().Add(10 * time.Second); s.InFlight.Load() > 0 && time.Now().Before(deadline); {
+		time.Sleep(50 * time.Millisecond)
+	}
+	got := ""
+	for deadline := time.Now().Add(ActivationWindow); time.Now().Before(deadline); {
+		if err := s.importBundle(ctx, outer); err != nil {
+			return err
+		}
+		for retry := time.Now().Add(reimportAfter); time.Now().Before(retry); time.Sleep(200 * time.Millisecond) {
+			if got, _ = s.Probe(ctx); got == revision {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("imported bundle evaluates as revision %q, not %q", got, revision)
+}
+
+// reimportAfter is how long the previous revision may keep answering before load imports again.
+var reimportAfter = 5 * time.Second
+
+func (s *Syncer) importBundle(ctx context.Context, outer []byte) error {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, s.TSA+"/v1/policy/import", bytes.NewReader(outer))
 	req.Header.Set("Content-Type", "application/zip")
 	resp, err := s.HTTP.Do(req)
@@ -90,14 +120,7 @@ func (s *Syncer) load(ctx context.Context, outer []byte, revision string) error 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("tsa import: %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	// The TSA swaps the policy under a lock and drops its compiled query asynchronously.
-	got := ""
-	for deadline := time.Now().Add(ActivationWindow); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
-		if got, _ = s.Probe(ctx); got == revision {
-			return nil
-		}
-	}
-	return fmt.Errorf("imported bundle evaluates as revision %q, not %q", got, revision)
+	return nil
 }
 
 // restore puts the last verified bundle back, or leaves nothing served if there is none or it fails.

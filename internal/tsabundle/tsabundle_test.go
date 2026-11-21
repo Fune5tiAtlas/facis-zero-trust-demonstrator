@@ -148,7 +148,8 @@ type fakeTSA struct {
 	mu       sync.Mutex
 	revision string
 	imports  int
-	fail     int // evaluations still to fail, as a slow or overloaded TSA does
+	fail     int  // evaluations still to fail, as a slow or overloaded TSA does
+	stale    bool // the next import is masked by a re-cached old policy, as in the TSA's cache race
 }
 
 var literalRevision = regexp.MustCompile(`"bundle_revision": "([^"]+)"`)
@@ -161,9 +162,14 @@ func (f *fakeTSA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		files, _ := unzip(body)
 		parts, _ := unzip(files[0].body)
+		f.imports++
+		if f.stale {
+			f.stale = false
+			return
+		}
 		var data struct{ Bundle struct{ Revision string } }
 		_ = json.Unmarshal(parts[2].body, &data)
-		f.revision, f.imports = data.Bundle.Revision, f.imports+1
+		f.revision = data.Bundle.Revision
 		if m := literalRevision.FindSubmatch(parts[1].body); m != nil {
 			f.revision = string(m[1])
 		}
@@ -209,7 +215,7 @@ func lying(t *testing.T, k *ecdsa.PrivateKey, revision, claims string) []byte {
 }
 
 func TestSyncerActivatesVerifiedBundlesOnlyAndRollsBack(t *testing.T) {
-	ActivationWindow = time.Second
+	ActivationWindow, reimportAfter = 2*time.Second, 300*time.Millisecond
 	trusted, other := newKey(t), newKey(t)
 	store := map[string][]byte{"v1": bundle(t, trusted, "v1"), "v1-resigned": bundle(t, trusted, "v1"), "v2": bundle(t, trusted, "v2"),
 		"forged": bundle(t, other, "v3"), "lying": lying(t, trusted, "v3", "v2")}
@@ -239,15 +245,20 @@ func TestSyncerActivatesVerifiedBundlesOnlyAndRollsBack(t *testing.T) {
 	if tsa.imports != imports+1 {
 		t.Fatal("a changed reference with the same revision was not imported")
 	}
+	imports = tsa.imports
+	tsa.stale = true // the first import is masked: imported again, then active
 	step(Desired{"v2", "v2"}, false, "v2", "v2")
+	if tsa.imports != imports+2 {
+		t.Fatalf("masked import: %d imports, want 2", tsa.imports-imports)
+	}
 	step(Desired{"forged", "v3"}, true, "v2", "v2")  // signed by another key: refused before import
 	step(Desired{"v1", "v5"}, true, "v2", "v2")      // a bundle that is not the declared revision
 	step(Desired{"missing", "v4"}, true, "v2", "v2") // registry failure
 	// Signed, data says v3, Rego answers v2: imported, found wrong, and the previous bundle restored.
 	imports = tsa.imports
 	step(Desired{"lying", "v3"}, true, "v2", "v2")
-	if tsa.imports != imports+2 {
-		t.Fatalf("lying candidate: %d imports, want the candidate and the restore", tsa.imports-imports)
+	if tsa.imports < imports+2 {
+		t.Fatalf("lying candidate: %d imports, want the candidate (possibly repeated) and the restore", tsa.imports-imports)
 	}
 	if !bytes.Equal(s.last, store["v2"]) {
 		t.Fatal("the cached bundle is not the last verified one")
