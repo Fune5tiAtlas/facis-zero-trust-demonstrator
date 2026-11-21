@@ -19,6 +19,21 @@ older server version cannot be installed.
 {{- fail (printf "planes.namespaceLabels may not set %s: the umbrella sets it" $k) }}
 {{- end }}
 {{- end }}
+{{- /* The admission label goes on the data-plane namespace alone: never a system namespace, never one shared with another plane entry. */}}
+{{- if .Values.admission.enforceDataPlane }}
+{{- $data := .Values.planes.data.namespace }}
+{{- if has $data (list "kube-system" "kube-public" "kube-node-lease" "gatekeeper-system" "istio-system" "spire-system") }}
+{{- fail (printf "admission.enforceDataPlane: planes.data.namespace %s is a system namespace, which must stay outside admission control" $data) }}
+{{- end }}
+{{- if eq $data .Values.planes.management.namespace }}
+{{- fail (printf "admission.enforceDataPlane: planes.data.namespace %s is also the management namespace" $data) }}
+{{- end }}
+{{- range .Values.planes.extra }}
+{{- if eq .name $data }}
+{{- fail (printf "admission.enforceDataPlane: planes.data.namespace %s is also listed in planes.extra" $data) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- range (include "ztd.planeNamespaces" . | fromJsonArray) }}
 ---
 apiVersion: v1

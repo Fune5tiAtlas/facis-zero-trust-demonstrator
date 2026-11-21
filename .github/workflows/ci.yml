@@ -328,6 +328,16 @@ jobs:
           if helm template deployment/helm/ztd -f deployment/helm/ztd/ci/values.yaml --set-string 'planes.namespaceLabels.facis\.ztd/admission-proof=true' >/dev/null 2>&1; then
             echo "planes.namespaceLabels accepted the admission label" >&2; exit 1
           fi
+          # With the opt-in on, a data-plane namespace that is a system namespace, the management
+          # namespace or an extra plane namespace is refused before anything renders.
+          for data in kube-system gatekeeper-system istio-system spire-system ztd-mgmt ztd-data-2; do
+            if helm template deployment/helm/ztd -f deployment/helm/ztd/ci/values.yaml --set-json "$extra" \
+                --set admission.enforceDataPlane=true --set planes.data.namespace=$data >/dev/null 2>"$RUNNER_TEMP/err"; then
+              echo "enforceDataPlane rendered with planes.data.namespace=$data" >&2; exit 1
+            fi
+            grep -q 'admission.enforceDataPlane: planes.data.namespace' "$RUNNER_TEMP/err" ||
+              { echo "planes.data.namespace=$data refused for another reason:" >&2; cat "$RUNNER_TEMP/err" >&2; exit 1; }
+          done
 
       # What the release relies on, against charts the test writes: a set that passes is packaged
       # at the version with matching checksums, and one failing chart leaves no package at all.
