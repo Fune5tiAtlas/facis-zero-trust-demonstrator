@@ -279,7 +279,8 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
-          # One pinned Helm for QA and for the lifecycle workflow; its flags differ by major version.
+          # One pinned Helm for chart QA and the lifecycle workflow; its flags differ by major version.
+          # The ORCE image builds its own Helm from source (deployment/docker/orce/Dockerfile).
           version: v4.3.0
 
       # The fixture chart under features/ is linted like a release chart: the TDR's lint and

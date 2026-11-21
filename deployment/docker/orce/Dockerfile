@@ -15,8 +15,8 @@
 # runs on the build host's platform and cross-compiles for linux/amd64.
 FROM --platform=$BUILDPLATFORM golang:1.27@sha256:f24164268fc1e741bbdc0066dbadcf1c8426c5a8489f0729c02c3905a53032fd AS helm
 
-ARG HELM_VERSION=v4.3.0
-ARG HELM_COMMIT=bec5b06ed841fe5269972d864d5177944fd5970f
+ARG HELM_VERSION=v4.3.2
+ARG HELM_COMMIT=8346aaa55e7161f7c547212d0a87f01367976727
 
 # The clone is checked against the commit the tag names; the linker flags are those of Helm's
 # own Makefile for a tagged, clean tree, so `helm version` reports the release as upstream's does.
@@ -34,8 +34,8 @@ RUN set -eux; \
 
 FROM ecofacis/xfsc-orce:2.0.13@sha256:52e4f98ff21a45225525057612f065ee8b32234f1f444d61cc83efded2949b80 AS orce
 
-ARG KUBECTL_VERSION=v1.35.8
-ARG KUBECTL_SHA256=874d5e72dbb819f43cff16bcd1e4f8bac5b7f2361fe1e55049b0a6c676fb0cbf
+ARG KUBECTL_VERSION=v1.35.10
+ARG KUBECTL_SHA256=c49a28f1f4efc4d475ed05f47f2ce8e563bf7bef69ed77fe1b924ea6d83b6327
 
 USER root
 COPY --from=helm /out/helm /usr/local/bin/helm
