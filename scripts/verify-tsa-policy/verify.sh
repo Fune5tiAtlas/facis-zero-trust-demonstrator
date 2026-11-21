@@ -5,8 +5,9 @@
 #   1. bundle v1 active: an entitled summary request is allowed (rule and revision v1);
 #   2. bundle v2 declared (a policy change withdrawing the summary scope): the same request is
 #      denied by rule m3-scope-withdrawn under v2, with no pod restarted;
-#   3. an unsigned bundle, one signed by another key and one whose policy was altered after signing
-#      are each refused, and v2 stays active;
+#   3. an unsigned bundle, one signed by another key, one whose policy was altered after signing and
+#      a correctly signed one whose Rego reports another revision than its data are each refused,
+#      and v2 stays (or, for the last, is restored as) the active bundle;
 #   4. v1 declared again (rollback): allowed under v1, still no restart;
 #   5. every decision the evaluator logged names its rule and bundle revision.
 #
@@ -93,6 +94,12 @@ mkdir -p "$work/v2"
 cp policies/tsa/facis/guard/1.0/policy.rego "$work/v2/"
 # v2 is a policy change: the summary scope is withdrawn.
 jq '.config.withdrawn_scopes = ["report:summary"]' policies/tsa/facis/guard/1.0/data.json > "$work/v2/data.json"
+# lying: correctly signed, its data says v4 but its Rego answers with v2 - only the check after import
+# can catch it, and the last verified bundle must be restored.
+mkdir -p "$work/lying"
+sed 's/"bundle_revision": revision/"bundle_revision": "v2"/' policies/tsa/facis/guard/1.0/policy.rego > "$work/lying/policy.rego"
+grep -q '"bundle_revision": "v2"' "$work/lying/policy.rego"
+cp policies/tsa/facis/guard/1.0/data.json "$work/lying/"
 # shellcheck disable=SC2016 # expanded in the toolbox
 cat > "$work/publish.sh" <<'EOF'
 set -euo pipefail
@@ -105,6 +112,8 @@ pub() { COSIGN_KEY=/w/$1/cosign.key bash scripts/supplychain/publish-tsa-bundle.
 pub trusted policies/tsa/facis/guard/1.0 v1 > /w/ref-v1
 OUT=/w/v2.zip pub trusted policies/tsa/facis/guard/1.0 v2 /w/v2/data.json > /w/ref-v2
 pub other policies/tsa/facis/guard/1.0 v3 > /w/ref-other
+mkdir -p /w/lying-src/facis/guard && cp -R /w/lying /w/lying-src/facis/guard/1.0
+pub trusted /w/lying-src/facis/guard/1.0 v4 > /w/ref-lying
 # Unsigned: a valid TSA bundle signed by the trusted key, pushed without the artefact signature.
 /w/tsa-bundle pack -src policies/tsa/facis/guard/1.0 -revision unsigned -out /w/u
 /tools/cosign sign-blob --yes --key /w/trusted/cosign.key --tlog-upload=false --new-bundle-format=false \
@@ -138,7 +147,7 @@ COSIGN_PASSWORD= /tools/cosign sign --yes --key /w/trusted/cosign.key --tlog-upl
 echo "$ref" > /w/ref-tampered
 EOF
 docker run --rm --network kind -e REG="$reg" -v "$work:/w" -v "$bin:/tools:ro" "$toolbox" bash /w/tamper.sh
-for r in v1 v2 other unsigned tampered; do echo "  $r $(cat "$work/ref-$r")"; done | tee "$out/bundles.txt"
+for r in v1 v2 other unsigned tampered lying; do echo "  $r $(cat "$work/ref-$r")"; done | tee "$out/bundles.txt"
 
 step "Install the TSA policy service and the guard chart"
 # The charts' PeerAuthentication and AuthorizationPolicy need the Istio CRDs; no mesh is installed.
@@ -211,7 +220,7 @@ expect "v2 declared, same request" "$(until_revision v2)" false m3-scope-withdra
 if [ "$(pods)" = "$before" ]; then pass "no pod replaced or restarted: $before"; else fail "pods changed: $before -> $(pods)"; fi
 
 step "3. refused bundles leave v2 active"
-for bad in "unsigned unsigned" "other v3" "tampered v2-tampered"; do
+for bad in "unsigned unsigned" "other v3" "tampered v2-tampered" "lying v4"; do
   read -r name revision <<<"$bad"
   set -- "$name" "$revision"
   since=$(date -u +%Y-%m-%dT%H:%M:%SZ)

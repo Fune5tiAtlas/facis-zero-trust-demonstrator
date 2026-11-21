@@ -47,11 +47,13 @@ guard ── IF-05 /decision ──▶ policy evaluator ── POST …/evaluati
 `services/policyevaluator/tsa.go`. With `tsa` in its configuration (guard chart value
 `tsa.evaluationURL`), the evaluator keeps its `/decision` interface and caller authentication and
 takes the decision from the TSA instead of its built-in rules. It sends the IF-05 input unchanged,
-reads the `decision` member of the result and acts on it only if it is an IF-05 decision that
-validates against the decision schema's rules and names a rule. Anything else — no answer within
-`tsa.timeoutMS` (default 500 ms, refused at 1 s or more since the guard's own bound on the policy
-call is 1 s), a TSA error, a result without a decision, a decision with an unknown member, no
-`rule_id` or no `bundle_revision` — is 503 `POL-PDP-UNAVAILABLE`. The adapter logs every decision as
+reads the `decision` member of the result and acts on it only if it validates against the IF-05
+decision schema itself (a copy embedded in the evaluator, kept identical to
+`docs/contracts/if05-policy-decision.v1.schema.json` by a test: member presence, `null`, unique
+obligations, lengths and the link's URI format included) and names a rule. Anything else — no answer
+within `tsa.timeoutMS` (default 500 ms, refused at 1 s or more since the guard's own bound on the
+policy call is 1 s), a TSA error, a result without a decision, a decision outside the schema, no
+`rule_id` — is 503 `POL-PDP-UNAVAILABLE`. The adapter logs every decision as
 one JSON line: `correlation_id`, `allow`, `rule_id`, `bundle_revision`, `reason_code`; and every
 failure with its `correlation_id` and the reason.
 
@@ -85,7 +87,9 @@ COSIGN_KEY=env://COSIGN_INTERIM_KEY COSIGN_PASSWORD=... \
 It packs the directory (with the zone's `data.json` when given) and writes the revision into the
 data, signs it with `cosign sign-blob`, checks that signature against the public key, pushes the
 artefact under the tag `<revision>`, signs the artefact by digest, and prints the digest reference.
-Use a revision that names the source, such as `git-<commit>`; it appears in every decision.
+Use a revision that names the source, such as `git-<commit>`; it appears in every decision. A
+revision names one bundle for good: the script refuses to publish under a revision whose tag already
+exists in the repository (the CI job uses `git-<commit>`, suffixed with the zone data file's name).
 
 ### Activating, governed by Git
 
@@ -105,7 +109,10 @@ would change anything in the pod template. The kubelet refreshes the mounted dec
 about a minute), and the sidecar, polling every `bundle.pollSeconds`:
 
 1. asks the TSA which revision it evaluates with (an evaluation of an empty input, which the policy
-   denies naming its revision); if it is the declared one, nothing happens;
+   denies naming its revision); if that is not the last bundle it activated (the TSA restarted
+   empty), it imports that bundle again from its cache; if the declared reference and revision are
+   the pair it activated, nothing more happens — a new digest under the same revision is a new
+   declaration;
 2. fetches the declared reference — only a digest reference under `bundle.repository` — and
    verifies its cosign signature by the trust root (the admission verifier's code,
    `internal/cosignverify`), then reads the manifest and its single bundle layer by digest;
@@ -114,14 +121,18 @@ about a minute), and the sidecar, polling every `bundle.pollSeconds`:
    the configured policy, nothing beside `policy.rego` and `data.json` (no `data-config.json`, which
    would make the TSA fetch data from wherever it names), and `data.bundle.revision` equal to the
    declared revision;
-4. only then imports it into the TSA, which checks the bundle signature again with the key it
-   fetches from the sidecar (`http://127.0.0.1:8080/trust-root.json`, the trust root as a JWK set);
-5. counts it active once an evaluation reports the new revision, and logs `bundle activated` with
-   the reference, the revision and the previous revision.
+4. only then stops forwarding evaluations (they fail closed for the moment of the swap) and imports
+   it into the TSA, which checks the bundle signature again with the key it fetches from the sidecar
+   (`http://127.0.0.1:8080/trust-root.json`, the trust root as a JWK set);
+5. counts it active once an evaluation reports the declared revision, caches it as the last
+   verified bundle, forwards evaluations again and logs `bundle activated` with the reference, the
+   revision and the previous revision. If no evaluation reports that revision within 10 s — a
+   correctly signed bundle whose Rego does not answer with its own revision — it imports the cached
+   previous bundle again (`previous bundle restored`) before refusing.
 
-Any failure is logged as `bundle refused` with the reason and the revision still active, and
-nothing is imported: the previous bundle stays active, and the sidecar tries again at the next
-poll. The TSA replaces a policy under a lock and recompiles it on the next evaluation, so each
+Any failure is logged as `bundle refused` with the reason and the revision still active. A bundle
+refused at steps 2 and 3 is never imported; one refused at step 5 is replaced by the previous one.
+The sidecar tries again at the next poll. The TSA replaces a policy under a lock and recompiles it on the next evaluation, so each
 decision is taken entirely under one revision, and it says which.
 
 ### Rolling back
@@ -155,8 +166,9 @@ bundles published with `publish-tsa-bundle.sh` and an ephemeral key:
 1. under v1 an entitled summary request is allowed (`m3-report-summary`, v1);
 2. v2, which withdraws the summary scope, is declared: the same request is denied
    (`m3-scope-withdrawn`, v2) and no pod was replaced or restarted;
-3. an unsigned bundle, one signed by another key and v2 with its policy altered after signing (with
-   a valid artefact signature) are each refused, and v2 stays active;
+3. an unsigned bundle, one signed by another key, v2 with its policy altered after signing (with a
+   valid artefact signature) and a correctly signed v4 whose Rego answers with revision v2 are each
+   refused; v2 stays active, and after the last it is restored;
 4. v1 is declared again: allowed under v1, still without a restart;
 5. every decision the evaluator answered is in its log with the same `rule_id` and
    `bundle_revision`.
