@@ -20,8 +20,16 @@ RUN tar -xzf /tmp/tfm.tgz --strip-components=1 \
  && mkdir -p shared && tar -xzf /tmp/shared.tgz -C shared --strip-components=1 \
  && mvn -q -B dependency:go-offline
 COPY patches/ /patches/
-RUN for p in /patches/*.patch; do git apply "$p"; done \
- && mvn -q -B clean package -DskipTests
+# Every patch must apply; the published key is removed from the build, and the build stops if any
+# source still names it, if the validity setting is not required, or if the WAR carries the key.
+RUN set -e; \
+    for p in /patches/*.patch; do git apply "$p" || exit 1; done; \
+    rm -rf src/main/resources/Vault/PrivateKey; \
+    if grep -rq 'Vault/PrivateKey/' src/main; then echo 'the published signing key is still referenced' >&2; exit 1; fi; \
+    grep -q 'trustlist.vc.validity is not set' src/main/java/eu/xfsc/train/tspa/services/VCServiceImpl.java; \
+    grep -q 'tspa.signing-key-file is not set' src/main/java/eu/xfsc/train/tspa/signer/VcSignHandler.java; \
+    mvn -q -B clean package -DskipTests; \
+    if jar tf target/tspa-service.war | grep -q 'Vault/PrivateKey/.'; then echo 'the WAR carries the published key' >&2; exit 1; fi
 
 FROM tomcat:10.1.16-jdk21-temurin-jammy@sha256:394d69a9ab4aaff2a7e073d90a0def17e46eb8515cfc368cfb50236025db66d1
 RUN sed -i 's/port="8080"/port="16003"/' "${CATALINA_HOME}/conf/server.xml"
