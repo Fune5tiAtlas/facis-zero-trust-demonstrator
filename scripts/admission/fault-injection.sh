@@ -104,9 +104,16 @@ gatekeeper=deploy/gatekeeper-controller-manager
 provider_replicas=$(admin -n gatekeeper-system get "$provider" -o jsonpath='{.spec.replicas}')
 gatekeeper_replicas=$(admin -n gatekeeper-system get "$gatekeeper" -o jsonpath='{.spec.replicas}')
 [ -n "$provider_replicas" ] && [ -n "$gatekeeper_replicas" ] || { echo "admission path not installed" >&2; exit 1; }
+# The installed digest allow-list (the provider's trust policy and the ztd-allowed-repositories
+# constraint must hold the same one), passed to every reinstall so a restore never drops it; the
+# installed list wins over any ALLOWED_DIGESTS in the environment.
+allowed_provider=$(admin -n gatekeeper-system get configmap ztd-admission-provider-trust -o jsonpath='{.data.policy\.json}' | jq -r '.allowedDigests // [] | sort | join(" ")')
+allowed_constraint=$(admin get k8sztdallowedrepositories ztd-allowed-repositories -o json | jq -r '.spec.parameters.allowedDigests // [] | sort | join(" ")')
+[ "$allowed_provider" = "$allowed_constraint" ] ||
+  { echo "allowedDigests differ: provider [$allowed_provider], constraint [$allowed_constraint]; reinstall first" >&2; exit 1; }
 other="$(mktemp)"
-# install.sh with the recorded replica counts, so a restore never changes them.
-reinstall() { KUBECONFIG="$ADMIN_KUBECONFIG" GATEKEEPER_REPLICAS="$gatekeeper_replicas" PROVIDER_REPLICAS="$provider_replicas" scripts/admission/install.sh; }
+# install.sh with the recorded replica counts and allow-list, so a restore never changes them.
+reinstall() { KUBECONFIG="$ADMIN_KUBECONFIG" GATEKEEPER_REPLICAS="$gatekeeper_replicas" PROVIDER_REPLICAS="$provider_replicas" ALLOWED_DIGESTS="$allowed_provider" scripts/admission/install.sh; }
 restore() {
   local status=$?
   set +e
