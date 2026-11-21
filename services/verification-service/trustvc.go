@@ -98,70 +98,76 @@ type cacheKey struct {
 }
 
 type verifiedList struct {
-	list  any
-	until time.Time
+	list    any
+	until   time.Time // of the cache entry
+	expires time.Time // of the VC
 }
 
-// trustList returns the trust list the VC at vcURI vouches for, after the checks above; did is the
-// DID the TCR resolved from the pointer.
-func (v *vcVerifier) trustList(ctx context.Context, did, vcURI string) (any, error) {
+// trustList returns the trust list the VC at vcURI vouches for, after the checks above, and the
+// VC's expiry, the deadline of any trust taken from it; did is the DID the TCR resolved from the
+// pointer.
+func (v *vcVerifier) trustList(ctx context.Context, did, vcURI string) (any, time.Time, error) {
 	raw, err := v.get(ctx, vcURI)
 	if err != nil {
-		return nil, fmt.Errorf("trust-list VC: %w", err)
+		return nil, time.Time{}, fmt.Errorf("trust-list VC: %w", err)
 	}
 	now := v.now()
 	key := cacheKey{sha256.Sum256(raw), did}
 	v.mu.Lock()
 	if c, ok := v.cache[key]; ok && now.Before(c.until) {
 		v.mu.Unlock()
-		return c.list, nil
+		return c.list, c.expires, nil
 	}
 	v.mu.Unlock()
 
 	var vc map[string]any
 	if err := json.Unmarshal(raw, &vc); err != nil {
-		return nil, errors.New("trust-list VC: not a JSON object")
+		return nil, time.Time{}, errors.New("trust-list VC: not a JSON object")
 	}
 	if err := checkContexts(vc["@context"]); err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	if nestedContext(vc, true) {
-		return nil, errors.New("trust-list VC: @context below the root")
+		return nil, time.Time{}, errors.New("trust-list VC: @context below the root")
 	}
 	if iss, _ := vc["issuer"].(string); iss == "" || iss != did || !strings.HasPrefix(iss, "did:web:") {
-		return nil, errors.New("trust-list VC: issuer is not the DID the TCR resolved")
+		return nil, time.Time{}, errors.New("trust-list VC: issuer is not the DID the TCR resolved")
 	}
 	until, err := vcWindow(vc, now)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	if err := v.verifyProof(ctx, vc, did); err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	subject, _ := vc["credentialSubject"].(map[string]any)
 	listURI, _ := subject["trustlistURI"].(string)
 	wantHash, _ := subject["hash"].(string)
 	if listURI == "" || wantHash == "" {
-		return nil, errors.New("trust-list VC: no trustlistURI or hash")
+		return nil, time.Time{}, errors.New("trust-list VC: no trustlistURI or hash")
 	}
 	listRaw, err := v.get(ctx, listURI)
 	if err != nil {
-		return nil, fmt.Errorf("trust list: %w", err)
+		return nil, time.Time{}, fmt.Errorf("trust list: %w", err)
 	}
 	if multihashSHA256(listRaw) != wantHash {
-		return nil, errors.New("trust list: hash does not match the VC")
+		return nil, time.Time{}, errors.New("trust list: hash does not match the VC")
+	}
+	// The fetches above took time: the window is checked again before the list is used.
+	if !v.now().Before(until) {
+		return nil, time.Time{}, errors.New("trust-list VC: expired")
 	}
 	var list any
 	if err := json.Unmarshal(listRaw, &list); err != nil {
-		return nil, errors.New("trust list: not JSON")
+		return nil, time.Time{}, errors.New("trust list: not JSON")
 	}
 	v.mu.Lock()
 	if v.cache == nil || len(v.cache) > 64 {
 		v.cache = map[cacheKey]verifiedList{} // ponytail: dropped wholesale; a handful of frameworks
 	}
-	v.cache[key] = verifiedList{list: list, until: minTime(now.Add(vcCacheTTL), until)}
+	v.cache[key] = verifiedList{list: list, until: minTime(now.Add(vcCacheTTL), until), expires: until}
 	v.mu.Unlock()
-	return list, nil
+	return list, until, nil
 }
 
 func checkContexts(c any) error {

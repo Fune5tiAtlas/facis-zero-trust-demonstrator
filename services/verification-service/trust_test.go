@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/verificationtest"
 )
@@ -36,15 +37,15 @@ func TestTrustedKeepsOnlyListedIssuersAndFailsClosed(t *testing.T) {
 	if err != nil || len(keyed) != 2 {
 		t.Fatalf("%v %v", keyed, err)
 	}
-	set, dropped := trusted(context.Background(), keyed, pinnedList(kit.TrustListFile))
+	set, _, dropped := trusted(context.Background(), keyed, pinnedList(kit.TrustListFile))
 	if len(set) != 1 || set[kit.Issuer] == nil || len(dropped) != 1 || dropped[0] != kit.Unlisted {
 		t.Errorf("set %v, dropped %v", set, dropped)
 	}
-	failing := func(context.Context, string) (bool, error) { return true, errors.New("down") }
-	if set, _ := trusted(context.Background(), keyed, failing); len(set) != 0 {
+	failing := func(context.Context, string) (bool, time.Time, error) { return true, time.Time{}, errors.New("down") }
+	if set, _, _ := trusted(context.Background(), keyed, failing); len(set) != 0 {
 		t.Errorf("a failing trust source trusted %v", set)
 	}
-	if _, err := pinnedList(kit.TrustListFile+".missing")(context.Background(), kit.Issuer); err == nil {
+	if _, _, err := pinnedList(kit.TrustListFile+".missing")(context.Background(), kit.Issuer); err == nil {
 		t.Error("a missing trust list did not fail")
 	}
 }
@@ -91,9 +92,12 @@ func TestRefreshFailsClosedAndAsksTheTrustSourceEveryTime(t *testing.T) {
 	asked := 0
 	listedNow := true
 	tc := trustConfig{keysFile: kit.IssuerKeysFile, acceptedVCT: []string{verificationtest.CredentialVCT}, statusPrefixes: []string{kit.StatusPrefix},
-		listed: func(_ context.Context, iss string) (bool, error) { asked++; return listedNow && iss == kit.Issuer, nil }}
+		listed: func(_ context.Context, iss string) (bool, time.Time, error) {
+			asked++
+			return listedNow && iss == kit.Issuer, time.Time{}, nil
+		}}
 	tc.refresh(context.Background(), s)
-	if p := s.policy.Load(); p == nil || p.Trusted[kit.Issuer] == nil {
+	if p := s.policyAt(time.Now()); p == nil || p.Trusted[kit.Issuer] == nil {
 		t.Fatal("no policy after a good load")
 	}
 	good, _ := os.ReadFile(kit.IssuerKeysFile)
@@ -105,7 +109,7 @@ func TestRefreshFailsClosedAndAsksTheTrustSourceEveryTime(t *testing.T) {
 		tc.refresh(context.Background(), s)
 		breakIt()
 		tc.refresh(context.Background(), s)
-		if s.policy.Load() != nil {
+		if s.policyAt(time.Now()) != nil {
 			t.Errorf("%s: the previous trust set is still in force", name)
 		}
 	}
@@ -114,7 +118,7 @@ func TestRefreshFailsClosedAndAsksTheTrustSourceEveryTime(t *testing.T) {
 	before := asked
 	listedNow = false
 	tc.refresh(context.Background(), s)
-	if asked == before || s.policy.Load() != nil {
+	if asked == before || s.policyAt(time.Now()) != nil {
 		t.Errorf("a delisted issuer is still trusted after a refresh (asked %d→%d)", before, asked)
 	}
 }

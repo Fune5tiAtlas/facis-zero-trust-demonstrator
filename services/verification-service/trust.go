@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/if03"
 )
@@ -17,24 +18,30 @@ import (
 // TCR answer.
 const maxTrustDoc = 1 << 20
 
-// lister says whether TRAIN lists issuer as an active trust service. An error is "not known", and
-// the issuer is not trusted until the next refresh says otherwise (fail closed).
-type lister func(ctx context.Context, issuer string) (bool, error)
+// lister says whether TRAIN lists issuer as an active trust service, and until when the listing
+// may be relied on (the expiry of the trust-list VC that lists it; zero for a source without one).
+// An error is "not known", and the issuer is not trusted until the next refresh says otherwise
+// (fail closed).
+type lister func(ctx context.Context, issuer string) (ok bool, until time.Time, err error)
 
 // trusted is the credential issuers a presentation may come from: those of keyed (the issuer keys
 // file, if03.ParseIssuers' format) that listed reports. An issuer with keys but no listing, or
 // whose listing cannot be read, is left out, so its credentials are CRED-ISSUER-UNTRUSTED.
-func trusted(ctx context.Context, keyed if03.Issuers, listed lister) (if03.Issuers, []string) {
-	out := if03.Issuers{}
-	var dropped []string
+// Each kept issuer's deadline, when its source has one, is in until.
+func trusted(ctx context.Context, keyed if03.Issuers, listed lister) (set if03.Issuers, until map[string]time.Time, dropped []string) {
+	set, until = if03.Issuers{}, map[string]time.Time{}
 	for iss, keys := range keyed {
-		if ok, err := listed(ctx, iss); err != nil || !ok {
+		ok, deadline, err := listed(ctx, iss)
+		if err != nil || !ok {
 			dropped = append(dropped, iss)
 			continue
 		}
-		out[iss] = keys
+		set[iss] = keys
+		if !deadline.IsZero() {
+			until[iss] = deadline
+		}
 	}
-	return out, dropped
+	return set, until, dropped
 }
 
 func readIssuers(path string) (if03.Issuers, error) {
@@ -62,16 +69,16 @@ func readBounded(path string) ([]byte, error) {
 // DNS: it stands in for TRAIN where no TCR is reachable and must never be a zone's trust source of
 // record.
 func pinnedList(path string) lister {
-	return func(_ context.Context, issuer string) (bool, error) {
+	return func(_ context.Context, issuer string) (bool, time.Time, error) {
 		b, err := readBounded(path)
 		if err != nil {
-			return false, err
+			return false, time.Time{}, err
 		}
 		var doc any
 		if err := json.Unmarshal(b, &doc); err != nil {
-			return false, errors.New("the trust list is not JSON")
+			return false, time.Time{}, errors.New("the trust list is not JSON")
 		}
-		return listsActive(doc, issuer), nil
+		return listsActive(doc, issuer), time.Time{}, nil
 	}
 }
 
@@ -84,21 +91,21 @@ func pinnedList(path string) lister {
 // issuer. Any failure leaves the issuer unlisted.
 func tcrList(client *http.Client, base string, pointers []string, vcs *vcVerifier) lister {
 	endpoint := strings.TrimRight(base, "/") + "/tcr/v1/resolve"
-	return func(ctx context.Context, issuer string) (bool, error) {
+	return func(ctx context.Context, issuer string) (bool, time.Time, error) {
 		body, _ := json.Marshal(map[string]any{"issuer": issuer, "trustSchemePointers": pointers})
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
-			return false, err
+			return false, time.Time{}, err
 		}
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := client.Do(req)
 		if err != nil {
-			return false, errors.New("tcr unreachable")
+			return false, time.Time{}, errors.New("tcr unreachable")
 		}
 		defer func() { _ = resp.Body.Close() }()
 		raw, err := io.ReadAll(io.LimitReader(resp.Body, maxTrustDoc+1))
 		if err != nil || len(raw) > maxTrustDoc || resp.StatusCode != http.StatusOK {
-			return false, errors.New("tcr answer refused")
+			return false, time.Time{}, errors.New("tcr answer refused")
 		}
 		var answer struct {
 			ResolvedResults []struct {
@@ -111,7 +118,7 @@ func tcrList(client *http.Client, base string, pointers []string, vcs *vcVerifie
 			} `json:"resolvedResults"`
 		}
 		if json.Unmarshal(raw, &answer) != nil {
-			return false, errors.New("tcr answer is not JSON")
+			return false, time.Time{}, errors.New("tcr answer is not JSON")
 		}
 		var refused error
 		for _, r := range answer.ResolvedResults {
@@ -119,17 +126,17 @@ func tcrList(client *http.Client, base string, pointers []string, vcs *vcVerifie
 				continue
 			}
 			for _, e := range r.ResolvedDoc.Endpoints {
-				list, err := vcs.trustList(ctx, r.DID, e.VCURI)
+				list, until, err := vcs.trustList(ctx, r.DID, e.VCURI)
 				if err != nil {
 					refused = err
 					continue
 				}
 				if listsActive(list, issuer) {
-					return true, nil
+					return true, until, nil
 				}
 			}
 		}
-		return false, refused
+		return false, time.Time{}, refused
 	}
 }
 

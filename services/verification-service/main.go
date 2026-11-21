@@ -153,7 +153,7 @@ func serve(ctx context.Context, o options, log *slog.Logger, kv *transit.Client,
 	ops.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		c, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
-		if s.policy.Load() == nil || pool.Ping(c) != nil {
+		if s.policyAt(time.Now()) == nil || pool.Ping(c) != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}

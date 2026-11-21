@@ -3,11 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -133,10 +136,10 @@ func (s *trainSite) lister() lister {
 
 func TestAVerifiedCurrentTrustListListsTheIssuer(t *testing.T) {
 	s := newTrainSite(t)
-	if ok, err := s.lister()(context.Background(), listedIssuer); !ok || err != nil {
+	if ok, _, err := s.lister()(context.Background(), listedIssuer); !ok || err != nil {
 		t.Fatalf("listed %v, err %v", ok, err)
 	}
-	if ok, _ := s.lister()(context.Background(), "did:web:other.test"); ok {
+	if ok, _, _ := s.lister()(context.Background(), "did:web:other.test"); ok {
 		t.Error("an issuer the list does not name was listed")
 	}
 }
@@ -185,7 +188,7 @@ func TestTrustListVCRefusals(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s := newTrainSite(t)
 			c(s)
-			ok, err := s.lister()(context.Background(), listedIssuer)
+			ok, _, err := s.lister()(context.Background(), listedIssuer)
 			if ok || err == nil {
 				t.Errorf("listed %v, err %v", ok, err)
 			}
@@ -203,15 +206,15 @@ func TestAVerifiedVCIsCachedNoLongerThanItsExpiry(t *testing.T) {
 	clock := now
 	v := &vcVerifier{http: s.srv.Client(), now: func() time.Time { return clock }}
 	l := tcrList(s.srv.Client(), s.srv.URL, []string{"trust.zone-a.test"}, v)
-	if ok, err := l(context.Background(), listedIssuer); !ok || err != nil {
+	if ok, _, err := l(context.Background(), listedIssuer); !ok || err != nil {
 		t.Fatalf("%v %v", ok, err)
 	}
 	s.broken["/.well-known/did.json"] = true // a cache hit needs no DID document
-	if ok, err := l(context.Background(), listedIssuer); !ok || err != nil {
+	if ok, _, err := l(context.Background(), listedIssuer); !ok || err != nil {
 		t.Fatalf("cached: %v %v", ok, err)
 	}
 	clock = now.Add(2 * time.Minute) // past the VC's expiry, inside vcCacheTTL
-	if ok, err := l(context.Background(), listedIssuer); ok || err == nil {
+	if ok, _, err := l(context.Background(), listedIssuer); ok || err == nil {
 		t.Errorf("an expired VC was served from the cache: %v %v", ok, err)
 	}
 }
@@ -279,7 +282,7 @@ func TestAVCSignedByOurTSPAVerifies(t *testing.T) {
 	}
 	at := func(now time.Time) error {
 		v := &vcVerifier{http: &http.Client{Transport: files}, now: func() time.Time { return now }}
-		list, err := v.trustList(context.Background(), "did:web:tspa.local.test", "https://tspa.example/vc")
+		list, _, err := v.trustList(context.Background(), "did:web:tspa.local.test", "https://tspa.example/vc")
 		if err == nil && !listsActive(list, "did:web:connector-b.facis-ztd.local") {
 			return errors.New("the verified list does not list the published entry")
 		}
@@ -317,7 +320,7 @@ func TestANestedContextCannotSubstituteTheHash(t *testing.T) {
 		cs["hash"] = multihashSHA256(forged)
 	})
 	s.list = forged
-	ok, err := s.lister()(context.Background(), "did:web:attacker.test")
+	ok, _, err := s.lister()(context.Background(), "did:web:attacker.test")
 	if ok || err == nil {
 		t.Fatalf("a nested context substituted the list: %v %v", ok, err)
 	}
@@ -328,10 +331,58 @@ func TestANestedContextCannotSubstituteTheHash(t *testing.T) {
 func TestACachedVCIsNotAcceptedForAnotherDID(t *testing.T) {
 	s := newTrainSite(t)
 	v := &vcVerifier{http: s.srv.Client(), now: time.Now}
-	if _, err := v.trustList(context.Background(), s.did, s.srv.URL+"/vc"); err != nil {
+	if _, _, err := v.trustList(context.Background(), s.did, s.srv.URL+"/vc"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v.trustList(context.Background(), "did:web:other.test", s.srv.URL+"/vc"); err == nil {
+	if _, _, err := v.trustList(context.Background(), "did:web:other.test", s.srv.URL+"/vc"); err == nil {
 		t.Error("bytes verified under one DID were accepted for another")
 	}
+}
+
+// Trust taken from a trust-list VC ends with the VC, not at the next refresh: the deadline is kept
+// with the issuer's keys and checked whenever the policy is used.
+func TestAnIssuerIsWithdrawnWhenItsTrustListExpiresBetweenRefreshes(t *testing.T) {
+	s := newTrainSite(t)
+	now := time.Now()
+	s.publish(now.Add(-time.Hour), now.Add(time.Minute), nil)
+	keys := writeIssuerKeys(t, listedIssuer)
+	srv := &server{log: slog.New(slog.NewJSONHandler(io.Discard, nil))}
+	trustConfig{keysFile: keys, listed: s.lister(), acceptedVCT: []string{"urn:vct"}, statusPrefixes: []string{"https://status.test/"}}.refresh(context.Background(), srv)
+	if p := srv.policyAt(now); p == nil || p.Trusted[listedIssuer] == nil {
+		t.Fatal("not trusted while its trust list is current")
+	}
+	if p := srv.policyAt(now.Add(2 * time.Minute)); p != nil {
+		t.Errorf("still trusted after its trust list expired: %v", p.Trusted)
+	}
+}
+
+// The window is checked again after the DID document and the list were fetched.
+func TestAVCThatExpiresDuringRetrievalIsRefused(t *testing.T) {
+	s := newTrainSite(t)
+	now := time.Now()
+	s.publish(now.Add(-time.Hour), now.Add(time.Minute), nil)
+	calls := 0
+	v := &vcVerifier{http: s.srv.Client(), now: func() time.Time {
+		calls++
+		if calls > 1 {
+			return now.Add(2 * time.Minute) // after the fetches
+		}
+		return now
+	}}
+	if _, _, err := v.trustList(context.Background(), s.did, s.srv.URL+"/vc"); err == nil {
+		t.Error("a VC that expired while it was being checked was accepted")
+	}
+}
+
+func writeIssuerKeys(t *testing.T, iss string) string {
+	t.Helper()
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	jwk := jose.PublicJWK(&k.PublicKey)
+	jwk.Kid = "k1"
+	b, _ := json.Marshal(map[string]any{iss: map[string]any{"keys": []jose.JWK{jwk}}})
+	path := t.TempDir() + "/issuer-keys.json"
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

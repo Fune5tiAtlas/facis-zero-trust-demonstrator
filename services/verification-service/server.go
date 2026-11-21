@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -46,7 +47,7 @@ var (
 type server struct {
 	store     store
 	callers   meshcaller.Authenticator // the one identity allowed to call, from the mesh
-	policy    atomic.Pointer[presentation.Policy]
+	trust     atomic.Pointer[trustState]
 	sign      jose.SignFunc // the outcome key, in transit
 	issuer    string        // iss of the outcomes
 	kid       string        // the outcome key's id, as the consumers' trust set names it
@@ -96,7 +97,7 @@ func (s *server) create(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, http.StatusBadRequest, codeRequestInvalid, "malformed-request", "")
 		return
 	}
-	policy := s.policy.Load()
+	policy := s.policyAt(now)
 	if policy == nil {
 		http.Error(w, "not ready", http.StatusServiceUnavailable)
 		return
@@ -135,8 +136,7 @@ func (s *server) respond(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	r.Body = http.MaxBytesReader(w, r.Body, 2*oid4vp.MaxVPToken)
 	formErr := r.ParseForm()
-	policy := s.policy.Load()
-	if policy == nil {
+	if s.policyAt(s.now()) == nil {
 		http.Error(w, "not ready", http.StatusServiceUnavailable) // not consumed
 		return
 	}
@@ -160,6 +160,13 @@ func (s *server) respond(w http.ResponseWriter, r *http.Request) {
 	// judge with that time, never with the one taken before the wait.
 	if now = s.now(); !req.expires.After(now) {
 		s.refuse(w, r, http.StatusNotFound, codeRequestUnknown, "expired", id)
+		return
+	}
+	// The policy at the time of judging: an issuer whose trust list expired meanwhile is out.
+	policy := s.policyAt(now)
+	if policy == nil {
+		_ = s.store.record(r.Context(), id, "", "", "", "no-trusted-issuer")
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
 		return
 	}
 	if formErr != nil {
@@ -262,6 +269,39 @@ func answer(w http.ResponseWriter, status int, body map[string]any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
+// trustState is the policy of the last refresh and the deadline of each issuer whose listing has
+// one: the expiry of the trust-list VC that listed it.
+type trustState struct {
+	policy presentation.Policy
+	until  map[string]time.Time
+}
+
+// policyAt is the policy in force at now: an issuer whose listing has expired since the refresh
+// is withdrawn at once, not at the next refresh. Nil when no issuer is left.
+func (s *server) policyAt(now time.Time) *presentation.Policy {
+	st := s.trust.Load()
+	if st == nil {
+		return nil
+	}
+	p := st.policy
+	var expired []string
+	for iss, deadline := range st.until {
+		if !now.Before(deadline) {
+			expired = append(expired, iss)
+		}
+	}
+	if len(expired) > 0 {
+		p.Trusted = maps.Clone(p.Trusted)
+		for _, iss := range expired {
+			delete(p.Trusted, iss)
+		}
+	}
+	if len(p.Trusted) == 0 {
+		return nil
+	}
+	return &p
+}
+
 // trustConfig is where the policy's trust comes from.
 type trustConfig struct {
 	keysFile       string   // credential issuers and their keys (if03.ParseIssuers' format)
@@ -279,16 +319,16 @@ func (t trustConfig) refresh(ctx context.Context, s *server) {
 	keyed, err := readIssuers(t.keysFile)
 	if err != nil {
 		s.log.ErrorContext(ctx, "issuer keys not read; every issuer is withdrawn and the service is not ready", "err", err)
-		s.policy.Store(nil)
+		s.trust.Store(nil)
 		return
 	}
-	set, dropped := trusted(ctx, keyed, t.listed)
+	set, until, dropped := trusted(ctx, keyed, t.listed)
 	if len(dropped) > 0 {
 		s.log.WarnContext(ctx, "issuers not listed by the trust source", "issuers", dropped)
 	}
 	if len(set) == 0 {
 		s.log.ErrorContext(ctx, "no trusted issuer; the service is not ready")
-		s.policy.Store(nil)
+		s.trust.Store(nil)
 		return
 	}
 	vct := map[string]bool{}
@@ -298,6 +338,6 @@ func (t trustConfig) refresh(ctx context.Context, s *server) {
 	// A new status-list client per trust set: it believes a list only when signed by a trusted issuer.
 	p := presentation.Policy{Trusted: set, AcceptedVCT: vct,
 		Status: &statuslist.Client{HTTP: t.statusHTTP, Trusted: set, AllowedPrefixes: t.statusPrefixes}}
-	s.policy.Store(&p)
+	s.trust.Store(&trustState{policy: p, until: until})
 	s.log.InfoContext(ctx, "trust set loaded", "issuers", len(set))
 }

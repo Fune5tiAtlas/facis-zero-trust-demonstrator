@@ -84,7 +84,7 @@ func newHarness(t *testing.T) *harness {
 		acceptedVCT: []string{verificationtest.CredentialVCT}, statusPrefixes: []string{h.kit.StatusPrefix}}
 	h.refresh = func() { tc.refresh(t.Context(), s) }
 	h.refresh()
-	if s.policy.Load() == nil {
+	if s.policyAt(time.Now()) == nil {
 		t.Fatal("no policy")
 	}
 	h.srv = httptest.NewServer(s.routes())
