@@ -153,12 +153,14 @@ module at the release tag, and `sbom.json.sig`, its signature. For each release,
    public key before anything is uploaded.
 
 A release counts as done only when both assets are attached and the signature verifies against a key
-of the set — every public key committed under `docs/contracts/keys/`. A release with no SBOM, an
-unsigned one or a half-finished upload is signed from its tag on the next run; the monthly run, or
-one started by hand, covers every release (`scripts/supplychain/sbom-backfill.sh`). A pair that
-verifies against no key of the set is regenerated only when its release was signed with the current
-key — the key its `release-manifest.json` names, or the interim key for a release without one —
-and otherwise fails the run for a person to decide: an old release is never re-signed with a new key.
+of the set — every public key committed under `docs/contracts/keys/`. A release that carries neither
+file is signed from its tag on the next run; the monthly run, or one started by hand, covers every
+release (`scripts/supplychain/sbom-backfill.sh`). A half-finished upload, or a pair that verifies
+against no key of the set, is regenerated only when its release was signed with the current key — the
+key its `release-manifest.json` names, or the interim key for a release without one — and otherwise
+fails the run for a person to decide: an existing asset of an old release is never replaced under a
+new key. Which assets a release carries is read from its asset list; a listing or a download that
+fails fails the run for that release, so an unreadable asset is never taken for a missing one.
 Removing a public key from the set is how a key is retired; the releases it signed then fail that run. A release the
 [release workflow](#release) creates carries the pair from the start, written by the same script with
 the same key, so this workflow finds it verifying and leaves it.
