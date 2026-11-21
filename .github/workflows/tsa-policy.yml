@@ -26,7 +26,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish the guard bundle at this commit (revision git-<commit>)
+        description: Publish the guard bundle at this commit (revision git-<commit>[-<zone data name>])
         type: boolean
         default: false
       data:
@@ -115,11 +115,14 @@ jobs:
           COSIGN_INTERIM_KEY: ${{ secrets.COSIGN_INTERIM_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_INTERIM_PASSWORD }}
           DATA: ${{ inputs.data }}
+        # One revision per commit and zone data; the script refuses a revision already published.
         run: |
-          ref=$(scripts/supplychain/publish-tsa-bundle.sh policies/tsa/facis/guard/1.0 "git-${GITHUB_SHA::12}" \
+          revision="git-${GITHUB_SHA::12}"
+          [ -z "$DATA" ] || revision="$revision-$(basename "$DATA" .json)"
+          ref=$(scripts/supplychain/publish-tsa-bundle.sh policies/tsa/facis/guard/1.0 "$revision" \
             "ghcr.io/${GITHUB_REPOSITORY,,}/tsa-policy-bundles" docs/contracts/keys/interim-cosign.pub ${DATA:+"$DATA"})
           {
             echo "### TSA bundle (interim key)"
             echo "- reference: \`$ref\`"
-            echo "- revision: \`git-${GITHUB_SHA::12}\`"
+            echo "- revision: \`$revision\`"
           } >> "$GITHUB_STEP_SUMMARY"

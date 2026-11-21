@@ -22,6 +22,12 @@ tsa_bundle="${TSA_BUNDLE:-go run ./cmd/tsa-bundle}"
 http=()
 [ "${COSIGN_ALLOW_HTTP_REGISTRY:-}" = true ] && http=(--allow-http-registry)
 
+# A revision names one bundle for good: decisions and audit records carry the revision, not the
+# digest, so publishing another bundle under a revision that exists is refused.
+if "$cosign" triangulate ${http[@]+"${http[@]}"} "$repository:$revision" >/dev/null 2>&1; then
+  echo "publish-tsa-bundle: revision $revision is already published in $repository; use a new revision" >&2
+  exit 1
+fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 # shellcheck disable=SC2086 # TSA_BUNDLE may be a command with arguments
