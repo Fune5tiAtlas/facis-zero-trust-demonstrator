@@ -3,7 +3,10 @@
 What the platform baseline on the two OSC zone clusters (`zerotrust-a`, `zerotrust-b`) shows at M3, how
 each item is reproduced, and where a run's record lands. Run records are not committed: the evidence
 pack writes under `bundles/` (ignored by Git), and the records of the M3 runs are delivered with the
-milestone submission, identified by the run, the commit and the cluster's `kube-system` UID.
+milestone submission, identified by the run, the commit and the cluster's `kube-system` UID. Each run's
+index is committed under `docs/evidences/admission/` (the 21 Nov 2026 runs on zone A and IONOS), and
+`admission-evidence.yml` runs the pack from the pipeline, recording its own run and the fixture run in the
+index ([CI/CD](ci-cd.md#admission-evidence)).
 
 Everything here is signed with the **interim key**
 ([docs/contracts/keys/interim-cosign.pub](contracts/keys/interim-cosign.pub)), not the client trust chain,
