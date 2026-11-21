@@ -85,10 +85,14 @@ admission_umbrella_upgrade() {
 
 # admission_provider_upgrade <helm args...>: change the provider's values in place in either layout,
 # keeping every other value (--reuse-values). The --set* args name the provider's own values
-# (replicas, trust.publicKeys, ...); they are prefixed admissionProvider. for the umbrella.
+# (replicas, trust.publicKeys, ...); they are prefixed admissionProvider. for the umbrella, where
+# Gatekeeper's live replica count is passed too, so that changing the provider never scales
+# Gatekeeper (as in the standalone layout, where the provider is a release of its own).
 admission_provider_upgrade() {
-  local args=()
+  local args=() replicas
   if [ "$(admission_layout)" = umbrella ]; then
+    replicas=$(kubectl -n "$admission_ns" get deploy gatekeeper-controller-manager -o jsonpath='{.spec.replicas}')
+    args+=(--set "gatekeeper.replicas=$replicas")
     while [ $# -gt 0 ]; do
       case "$1" in
         --set|--set-file|--set-json|--set-string) args+=("$1" "admissionProvider.$2"); shift 2 ;;
