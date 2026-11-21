@@ -207,6 +207,17 @@ until_revision() {
   echo "$d"
   return 1
 }
+# until_answered: a decision, asking again while the answer is the fail-closed 503 (a loaded node
+# can make one evaluation miss the bound; that is a refusal, never a wrong decision, and stays in
+# decisions.jsonl).
+until_answered() {
+  for _ in $(seq 1 10); do
+    d=$(decide)
+    jq -e '.bundle_revision' <<<"$d" >/dev/null 2>&1 && break
+    sleep 3
+  done
+  echo "$d"
+}
 expect() { # expect <label> <decision> <allow> <rule> <revision>
   if [ "$(jq -c '[.allow, .rule_id, .bundle_revision]' <<<"$2")" = "[$3,\"$4\",\"$5\"]" ]; then pass "$1: $2"; else fail "$1: $2"; fi
 }
@@ -233,7 +244,7 @@ for bad in "unsigned unsigned" "other v3" "tampered v2-tampered" "lying v4"; do
     sleep 2
   done
   if [ -n "$reason" ]; then pass "$1 bundle refused: $reason"; else fail "$1 bundle not refused"; fi
-  expect "after the $1 bundle" "$(decide)" false m3-scope-withdrawn v2
+  expect "after the $1 bundle" "$(until_answered)" false m3-scope-withdrawn v2
 done
 
 step "4. rollback to v1"
@@ -242,7 +253,8 @@ expect "v1 declared again" "$(until_revision v1)" true m3-report-summary v1
 if [ "$(pods)" = "$before" ]; then pass "still no pod replaced or restarted"; else fail "pods changed: $before -> $(pods)"; fi
 
 step "5. decision log"
-kubectl -n "$guard_ns" logs deploy/ztd-policy-evaluator > "$out/evaluator.log"
+{ kubectl -n "$guard_ns" logs deploy/ztd-policy-evaluator --previous 2>/dev/null || true
+  kubectl -n "$guard_ns" logs deploy/ztd-policy-evaluator; } > "$out/evaluator.log"
 kubectl -n "$tsa_ns" logs deploy/tsa-policy-engine -c bundle > "$out/bundle-sidecar.log"
 kubectl -n "$tsa_ns" logs deploy/tsa-policy-engine -c tsa > "$out/tsa.log"
 # Every decision answered must appear in the evaluator's log under its correlation id, with the
