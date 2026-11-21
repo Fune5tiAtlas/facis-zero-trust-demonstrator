@@ -29,8 +29,8 @@ signature, envelope, disclosures, holder binding, validity, status reference), `
 | Single use | One PostgreSQL table, `verification_request`. A request is consumed by one `UPDATE … WHERE consumed_at IS NULL AND expires_at > now AND caller = $caller` before the presentation is judged, so of any number of concurrent answers one is judged. `challenge` is `UNIQUE`: a connector challenge opens one request, ever, across restarts and replicas. Rows are deleted 24 h after they expire. |
 | Outcome custody | The outcome key is a transit key (`--signing-key`, created non-exportable as `ecdsa-p256` if missing), the key-custody pattern of the token store and the connector (#45). The service pins the version current at start; its `kid` is `<key>-v<version>`. Only the public key ever enters the process. |
 | Consumers' trust | `verification-service trust-set` prints `{"<issuer>": {"keys": [<JWK>]}}`, the format of the connector's `--vp-trusted-issuers-file` and the store's `trusted_issuers`. |
-| Trust in credential issuers | The issuers and their keys come from a file (`--issuer-keys-file`, the same trust-set format); an issuer is trusted only while the trust source lists it. The set is rebuilt every `--trust-refresh` (5 min); an issuer whose listing cannot be read is dropped (fail closed). |
-| Trust source | **TRAIN:** `--tcr-url` and `--trust-scheme-pointers`. The service calls the TCR's `POST /tcr/v1/resolve` ([TSPA page, §4](tspa-publish-api.md)) and trusts the issuer when a returned trust list has `vcVerified: true` and holds an active service whose `ServiceTypeIdentifier` is the issuer (the TCR's lookup key). **FIXTURE:** `--trust-list-file`, a trust list in the JSON form TSPA serves, read from a file and matched the same way. It checks no signature, no hash and no DNS, the service logs a warning at start, and it exists only where no TCR is reachable. Exactly one of the two is accepted. |
+| Trust in credential issuers | The issuers and their keys come from a file (`--issuer-keys-file`, the same trust-set format); an issuer is trusted only while the trust source lists it. The set is rebuilt every `--trust-refresh` (5 min), asking the trust source again each time. It fails closed: an issuer whose listing cannot be read is dropped, and a keys file that cannot be read or parsed (or is empty) withdraws every issuer and makes the service not ready until a refresh succeeds. |
+| Trust source | **TRAIN:** `--tcr-url` and `--trust-scheme-pointers`. The service calls the TCR's `POST /tcr/v1/resolve` ([TSPA page, §4](tspa-publish-api.md)) and trusts the issuer when a returned trust list has `vcVerified: true` and holds an active service whose `ServiceTypeIdentifier` is the issuer (the TCR's lookup key), and only inside the list's validity window: `vcVerified` covers the VC's signature and the list's hash but the documented TCR never checks the VC's `expirationDate` ([TSPA page, §1](tspa-publish-api.md)), so the service requires `expirationDate` or `validUntil` (and honours `validFrom` or `issuanceDate`) on the resolved trust list in the TCR's answer and refuses the issuer when the window is missing, unreadable, not begun or passed. The documented TCR returns no window, so against it every issuer is refused until the TCR returns the window of the VC it verified (an upstream change, like the fixes in `scripts/verify-tspa-api/tcr-findings/`). **FIXTURE:** `--trust-list-file`, a trust list in the JSON form TSPA serves, read from a file and matched the same way. It checks no signature, no hash and no DNS, the service logs a warning at start, and it exists only where no TCR is reachable. Exactly one of the two is accepted. |
 | Caller identity | Every request must carry exactly one `X-Forwarded-Client-Cert` element whose `URI` is one of `--callers` (`internal/meshcaller`, the guard's authenticator); anything else is 403. A request is answered only by the identity that opened it. |
 | Readiness | `/readyz` on the ops port is 200 while PostgreSQL answers and at least one issuer is trusted. |
 
@@ -52,6 +52,7 @@ where two failures share a code. The caller sees only the contract's answer.
 | Form or `vp_token` malformed | 400 `CRED-REQUEST-INVALID` | none (request consumed) | `malformed-form`, `malformed-vp-token` |
 | Request answered before | 404 `CRED-REQUEST-UNKNOWN` | none | `replayed` |
 | Request unknown, expired, or opened by another caller | 404 `CRED-REQUEST-UNKNOWN` | none | `unknown`, `expired`, `other-caller` |
+| Request expired while its answer waited on the row | 404 `CRED-REQUEST-UNKNOWN` | none (request consumed; expiry re-checked with a fresh clock, which is also the time judged with) | `expired` |
 | Challenge offered a second time | 400 `CRED-REQUEST-INVALID` | none | `challenge-replayed` |
 | Request body malformed or expiry out of bounds | 400 `CRED-REQUEST-INVALID` | none | `malformed-request` |
 | No, another or more than one forwarded identity | 403 | none | log record `caller refused` |
@@ -67,8 +68,12 @@ chart declares both directions:
 - **Inbound:** a `PeerAuthentication` in `STRICT` mode for the service's pods, so only mesh mutual
   TLS reaches the API port, and the service's own check of the forwarded identity above. The
   forwarded header is trustworthy only where the sidecar replaces any value a client sent
-  (`SANITIZE_SET`), which on the integrated base is zone-wide (zone-policy's EnvoyFilter); the
-  service also refuses two elements, what a forwarded client value would produce.
+  (`SANITIZE_SET`). **Required integration:** the zone-policy EnvoyFilter `xfcc-sanitize-set` of
+  the integrated M3 base (`feat/m3-closeout`,
+  `deployment/helm/zone-policy/templates/envoyfilter-xfcc-sanitize.yaml`), which sets it on every
+  inbound sidecar. This branch's base does not have it: the caller check is valid only in a zone
+  where that filter is installed, and must not be relied on anywhere else. The service also refuses
+  two elements, what Istio's default `APPEND_FORWARD` would produce from a forged client value.
 - **Outbound, at the caller:** a `DestinationRule` for the service's host with `ISTIO_MUTUAL` and
   `subjectAltNames: [spiffe://<trust domain>/ns/<namespace>/sa/verification-service]`, so the token
   store's proxy refuses any server certificate but this service's.
@@ -112,6 +117,7 @@ The recorded run is in [evidences/verified-presentation](evidences/verified-pres
 - A run under a live mesh: the DestinationRule refusing a wrong server certificate and the
   `STRICT` PeerAuthentication refusing plain text are Istio's, rendered and applied here but
   exercised only on a cluster with istiod and SPIRE.
-- A run against a live TCR and a TSPA-published trust list.
+- A run against a live TCR and a TSPA-published trust list; with the documented TCR it would refuse
+  every issuer (no validity window in its answer).
 - Rotation of the outcome key: the service pins the version at start, so a rotation needs a
   restart and the consumers' trust sets must carry the new key first.
