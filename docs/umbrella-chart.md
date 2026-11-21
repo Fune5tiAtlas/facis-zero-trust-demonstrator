@@ -109,8 +109,15 @@ proxy and `istio-validation` init container included. They run Istio's own `prox
 project does not sign; [istiod.yaml](../deployment/helm/values/istiod.yaml) references it by digest
 only, and that exact reference must be on the admission digest allow-list
 (`admissionProvider.trust.allowedDigests` in the zone file for the admission release below, or
-`ALLOWED_DIGESTS` of `scripts/admission/install.sh`; either way it reaches the provider's
-`trust.allowedDigests` and the `ztd-allowed-repositories` constraint). Before turning it on, run
+`ALLOWED_DIGESTS` of `scripts/admission/install.sh`). Where Helm owns the policy (standalone, or
+`admission.policy.managedBy: helm`), that one list reaches both the provider's `trust.allowedDigests`
+and the `ztd-allowed-repositories` constraint. Where Argo CD keeps the policy (zone A and zone B,
+`managedBy: argocd`) the zone file reaches the provider only: the same digests must be added to the
+`allowedDigests` of the constraint in Argo CD's policy source and synced, and
+`scripts/admission/preflight-data-plane.sh <namespace>` must pass - it checks the namespace's images
+against both the provider's policy and the live constraint - before the data plane is enforced. The
+zone installer refuses `enforceDataPlane` with `managedBy: argocd` while the live constraint lacks a
+digest of the zone's `admissionProvider.trust.allowedDigests`. Before turning it on, run
 `scripts/admission/preflight-data-plane.sh <namespace>` (read-only), which names every image there
 that would be denied. With the label on, a Gatekeeper or provider outage denies admission in the data
 plane (fail closed), and `scripts/admission/fault-injection.sh` expects it to.

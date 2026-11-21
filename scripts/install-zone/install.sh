@@ -477,6 +477,21 @@ admission_stage_ready() {
   esac
 }
 
+# data_plane_parity: with admission.enforceDataPlane and admission.policy.managedBy argocd, refuse to
+# label the data plane until Argo CD's ztd-allowed-repositories constraint holds every digest of the
+# zone's admissionProvider.trust.allowedDigests (the injected Istio proxy among them): otherwise the
+# provider would admit what the constraint denies, and every meshed pod there would be refused.
+data_plane_parity() {
+  local want have missing d
+  python3 -c 'import sys, yaml; z = yaml.safe_load(open(sys.argv[1])) or {}; sys.exit(0 if (z.get("admission") or {}).get("enforceDataPlane") is True else 1)' "$ZONE_VALUES" || return 0
+  [ "$(policy_managed_by)" = argocd ] || return 0
+  want=$(python3 -c 'import sys, yaml; z = yaml.safe_load(open(sys.argv[1])) or {}; print(" ".join(((z.get("admissionProvider") or {}).get("trust") or {}).get("allowedDigests") or []))' "$ZONE_VALUES")
+  have=" $(kubectl get k8sztdallowedrepositories ztd-allowed-repositories -o json 2>/dev/null | jq -r '.spec.parameters.allowedDigests // [] | join(" ")') "
+  missing=
+  for d in $want; do [[ "$have" == *" $d "* ]] || missing="$missing $d"; done
+  [ -z "$missing" ] || die "admission.enforceDataPlane with the policy kept by Argo CD: the live constraint ztd-allowed-repositories lacks the allow-listed digest(s)${missing}; sync them into Argo CD's policy source and run scripts/admission/preflight-data-plane.sh <namespace> first; nothing was changed"
+}
+
 # policy_managed_by: admission.policy.managedBy of the zone file, helm by default.
 policy_managed_by() {
   python3 -c 'import sys, yaml; z = yaml.safe_load(open(sys.argv[1])) or {}; print(((z.get("admission") or {}).get("policy") or {}).get("managedBy", "helm"))' "$ZONE_VALUES"
@@ -615,6 +630,9 @@ install() {
       die "the admission stack is installed by scripts/admission/install.sh (releases ${old//$'\n'/ }); ADMISSION_ADOPT=1 lets release gatekeeper adopt it (docs/umbrella-chart.md, migration); nothing was changed"
     fi
   fi
+  # An enforced data plane needs the allow-list in the constraint too: where Argo CD keeps the policy,
+  # the zone file reaches only the provider, so the live constraint is checked before release ztd.
+  if wanted ztd ${want[@]+"${want[@]}"}; then data_plane_parity; fi
   # Every release is checked to render, with its zone facts, before the first one is installed.
   render ${want[@]+"${want[@]}"} >/dev/null
   plan
