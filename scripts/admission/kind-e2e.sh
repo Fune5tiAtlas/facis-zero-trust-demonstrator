@@ -13,7 +13,11 @@
 #   migrate     standalone, then the umbrella adopts it (ADMISSION_ADOPT=1); the Deployments, the
 #               provider's TLS Secret and the constraints must be the same objects afterwards
 #   rollback    migrate, then back to standalone (scripts/admission/install.sh FROM_UMBRELLA=1), with
-#               the same objects again
+#               the same objects again; the rollback is interrupted once after Gatekeeper and re-run
+# The umbrella layout also upgrades the installed release: during a readiness blip (no Gatekeeper
+# webhook replica) nothing may be removed; with a changed constraint and a new pool namespace the
+# namespace comes only after the change is enforced; and (POLICY=helm) the handoff to Argo CD is
+# refused without admission.policy.keep, and with it leaves every policy object in place.
 # The trust-removal step changes the provider in whichever layout is installed. POLICY=argocd (umbrella
 # layouts) sets admission.policy.managedBy: argocd and stands in for Argo CD: the policy objects are
 # applied with kubectl, as install.sh applies them, once Gatekeeper's CRDs exist; the release must
@@ -187,11 +191,71 @@ case "$layout" in
     expect_layout umbrella "$umbrella_releases"
     if [ "$(identity)" = "$before" ]; then pass "migrate: the same Deployments, provider CA and constraints"; else fail "migrate: objects replaced: $(diff <(echo "$before") <(identity) || true)"; fi
     if [ "$layout" = rollback ]; then
+      # Interrupted once Gatekeeper is back as its own release, before the provider and the pool.
+      standalone FROM_UMBRELLA=1 > "$work/rollback.log" 2>&1 &
+      pid=$!
+      until grep -q '^== Provider' "$work/rollback.log" || ! kill -0 "$pid" 2>/dev/null; do sleep 1; done
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" || true
+      echo "rollback interrupted; releases now: $(releases)"
       standalone FROM_UMBRELLA=1
       expect_layout standalone "$standalone_releases"
       if [ "$(identity)" = "$before" ]; then pass "rollback: the same Deployments, provider CA and constraints"; else fail "rollback: objects replaced: $(diff <(echo "$before") <(identity) || true)"; fi
     fi ;;
 esac
+# zone_set <python statement on zone>: change the kind zone file.
+zone_set() {
+  python3 - "$work/zone.yaml" "$1" <<'PY'
+import sys, yaml
+path, statement = sys.argv[1:]
+zone = yaml.safe_load(open(path))
+exec(statement)
+yaml.safe_dump(zone, open(path, "w"), sort_keys=False)
+PY
+}
+zone_install() { KUBE_CONTEXT="kind-$cluster" ZONE_VALUES="$work/zone.yaml" scripts/install-zone/install.sh install gatekeeper; }
+inventory() { helm get manifest gatekeeper -n gatekeeper-system | grep -c '^kind:'; }
+pool_uids() { kubectl get namespace ztd-adm-001 ztd-adm-002 -o jsonpath='{range .items[*]}{.metadata.uid} {end}'; }
+if [ "$layout" = umbrella ]; then
+  step "Upgrades of the umbrella's admission release"
+  # A readiness blip: no Gatekeeper webhook replica, so no constraint is acknowledged.
+  before=$(identity) objects=$(inventory) pools=$(pool_uids)
+  kubectl -n gatekeeper-system scale deploy/gatekeeper-controller-manager --replicas=0 >/dev/null
+  kubectl -n gatekeeper-system wait --for=delete pod -l control-plane=controller-manager --timeout=120s >/dev/null 2>&1 || true
+  if zone_install > "$work/blip.log" 2>&1 && [ "$(identity)" = "$before" ] && [ "$(inventory)" -ge "$objects" ] && [ "$(pool_uids)" = "$pools" ]; then
+    pass "upgrade during a readiness blip: nothing removed ($(inventory) objects, the same Deployments, constraints and pool)"
+  else fail "upgrade during a readiness blip: $(tail -3 "$work/blip.log") inventory $objects -> $(inventory)"; fi
+  # A changed constraint (one more allow-listed digest) and a new pool namespace together.
+  extra=docker.io/library/busybox@sha256:0000000000000000000000000000000000000000000000000000000000000001
+  zone_set "zone['admissionProvider']['trust']['allowedDigests'].append('$extra'); zone.setdefault('admissionPool', {})['namespaces'] = ['ztd-adm-001', 'ztd-adm-002', 'ztd-adm-003']"
+  [ "$policy" = helm ] || kubectl patch k8sztdallowedrepositories ztd-allowed-repositories --type=json \
+    -p "[{\"op\":\"add\",\"path\":\"/spec/parameters/allowedDigests/-\",\"value\":\"$extra\"}]" >/dev/null
+  if zone_install > "$work/change.log" 2>&1; then
+    order=$(grep -nE 'pool: ztd-adm-001 ztd-adm-002\)|adding the pool namespaces' "$work/change.log" | cut -d: -f1 | tr '\n' ' ')
+    digests=$(kubectl get k8sztdallowedrepositories ztd-allowed-repositories -o json | jq -r '.spec.parameters.allowedDigests | join(" ")')
+    if [ "$(wc -w <<<"$order")" -eq 2 ] && [[ "$digests" == *"$extra"* ]] && kubectl get namespace ztd-adm-003 >/dev/null 2>&1 &&
+      admission_enforced k8sztdallowedrepositories/ztd-allowed-repositories; then
+      pass "policy change with a new pool namespace: the change enforced first, then ztd-adm-003 added"
+    else fail "policy change with a new pool namespace: order [$order], digests [$digests]: $(tail -3 "$work/change.log")"; fi
+  else fail "policy change with a new pool namespace: $(tail -3 "$work/change.log")"; fi
+  if [ "$policy" = helm ]; then
+    # The handoff to Argo CD: refused while the policy objects lack keep; with it, they stay.
+    revision=$(helm status gatekeeper -n gatekeeper-system -o json | jq .version)
+    zone_set "zone['admission']['policy']['managedBy'] = 'argocd'"
+    if ! zone_install > "$work/handoff.log" 2>&1 && grep -q 'admission.policy.keep' "$work/handoff.log" &&
+      [ "$(helm status gatekeeper -n gatekeeper-system -o json | jq .version)" = "$revision" ]; then
+      pass "handoff to Argo CD without keep: refused, nothing changed"
+    else fail "handoff to Argo CD without keep: $(tail -3 "$work/handoff.log")"; fi
+    before=$(identity)
+    zone_set "zone['admission']['policy'].update(managedBy='helm', keep=True)"
+    zone_install > "$work/handoff.log" 2>&1 || fail "handoff step 1 (keep): $(tail -3 "$work/handoff.log")"
+    zone_set "zone['admission']['policy']['managedBy'] = 'argocd'"
+    if zone_install > "$work/handoff.log" 2>&1 && [ "$(identity)" = "$before" ] &&
+      ! helm get manifest gatekeeper -n gatekeeper-system | grep -qE '^kind: (ConstraintTemplate|Config$|K8sZtd)'; then
+      pass "handoff to Argo CD with keep: the release holds no policy object, every one still in place"
+    else fail "handoff to Argo CD with keep: $(tail -3 "$work/handoff.log")"; fi
+  fi
+fi
 if [ "$policy" = argocd ]; then
   owners=$(policy_owners)
   if [ -z "$owners" ]; then pass "policy objects owned by no Helm release (Argo CD's)"; else fail "policy objects owned by Helm release(s): $owners"; fi
