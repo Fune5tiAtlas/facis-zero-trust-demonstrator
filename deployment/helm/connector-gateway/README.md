@@ -30,7 +30,9 @@ digest; an admission-labelled namespace needs the admitted mirror and the inject
 
 Adopting an entry applied by hand (zone B's `ztd-edge`): `helm upgrade --install ztd-edge . --take-ownership
 --force-conflicts` with `name: ztd-edge` and the ingress values; the Service is updated in place, so it
-keeps its UID, node port and load-balancer address, and the Deployment rolls once. Remove the hand-applied
+keeps its UID, node port and load-balancer address, and the Deployment rolls once. The hand-applied pod
+has no preStop pause, so a call in flight while it is replaced can fail; the chart's pod pauses 5 s before
+it stops, and its own rollouts lose no call. An uninstall keeps the entry's Service (`helm.sh/resource-policy: keep`). Remove the hand-applied
 rule `ztd-m3-edge-public` afterwards: `ztd-edge-public` replaces it. `scripts/verify-connector-routing/kind.sh`
 rehearses exactly this.
 
