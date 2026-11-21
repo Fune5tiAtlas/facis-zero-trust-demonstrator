@@ -68,6 +68,12 @@ planes:
 admission:
   enforceDataPlane: false
   install: false
+  # Who owns the admission policy objects (constraint templates, constraints, exemptions): helm -
+  # the admission release renders them (kind, IONOS) - or argocd - an Argo CD on the cluster keeps
+  # them from Git and the release renders none of them; the installer then waits for Argo CD's
+  # constraints to be enforced instead of applying them (zone A, zone B).
+  policy:
+    managedBy: helm
 
 # --------------------------------------------------------------------------------------------
 # The admission release only (admission.install, above). The zone installer sets every `enabled`

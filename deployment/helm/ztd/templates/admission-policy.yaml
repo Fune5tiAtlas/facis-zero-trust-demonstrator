@@ -15,6 +15,9 @@ release ztd renders with it.
 {{- if and $release .Values.openbao.enabled }}
 {{- fail "the admission release renders the admission stack only: openbao.enabled must be false in it" }}
 {{- end }}
+{{- if and (eq .Values.admission.policy.managedBy "argocd") (or $policy.templates $policy.constraints) }}
+{{- fail "admission.policy.managedBy is argocd: the policy objects are Argo CD's, and the admission release renders none of them" }}
+{{- end }}
 {{- if and $policy.constraints (not (and $policy.templates .Values.admissionProvider.enabled)) }}
 {{- fail "admissionPolicy.constraints needs admissionPolicy.templates and admissionProvider.enabled" }}
 {{- end }}
