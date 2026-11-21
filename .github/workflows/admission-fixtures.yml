@@ -1,7 +1,7 @@
 name: Admission fixtures
 
 # The admission test images for a real cluster (the IONOS proof): a runnable image signed and attested
-# with the interim key, and one image per refusal case - unsigned, signed by an untrusted key, missing
+# with the selected key (SIGNING_KEY_SOURCE, interim by default), and one image per refusal case - unsigned, signed by an untrusted key, missing
 # the SBOM, missing the mock attestation, non-Linux, an image index - published under
 # ghcr.io/<owner>/<repository>/fixtures/ and each checked against its expected verdict with the
 # admission provider's own code. Started by hand or by pushing a branch named fixtures/<anything>.
@@ -39,7 +39,7 @@ jobs:
     name: Publish the admission fixtures
     needs: [signing-runner]
     runs-on: ${{ fromJSON(needs.signing-runner.outputs.labels) }}
-    # The interim signing key lives only in this protected environment's secrets.
+    # The signing key, or the token that reaches it, lives only in this protected environment's secrets.
     environment: release
     permissions:
       contents: read
@@ -58,10 +58,21 @@ jobs:
           scripts/tools/install.sh "$RUNNER_TEMP/bin" cosign syft grype
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
+      # The key source (SIGNING_KEY_SOURCE) and its public key: references and paths only, into the job's env.
+      - name: Select the signing key
+        env:
+          SIGNING_KEY_SOURCE: ${{ vars.SIGNING_KEY_SOURCE }}
+          SIGNING_TRANSIT_KEY: ${{ vars.SIGNING_TRANSIT_KEY }}
+          SIGNING_TRANSIT_PATH: ${{ vars.SIGNING_TRANSIT_PATH }}
+          SIGNING_VAULT_ADDR: ${{ vars.SIGNING_VAULT_ADDR }}
+        run: scripts/supplychain/key-source.sh >> "$GITHUB_ENV"
+
       - name: Check the signing key
         env:
           COSIGN_INTERIM_KEY: ${{ secrets.COSIGN_INTERIM_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_INTERIM_PASSWORD }}
+          COSIGN_CLIENT_KEY: ${{ secrets.COSIGN_CLIENT_KEY }}
+          COSIGN_PASSWORD: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || secrets.COSIGN_INTERIM_PASSWORD }}
+          VAULT_TOKEN: ${{ secrets.SIGNING_VAULT_TOKEN }}
         run: scripts/supplychain/check-key.sh
 
       - name: Log in to GHCR
@@ -75,9 +86,10 @@ jobs:
 
       - name: Publish, sign and check every fixture
         env:
-          COSIGN_KEY: env://COSIGN_INTERIM_KEY
           COSIGN_INTERIM_KEY: ${{ secrets.COSIGN_INTERIM_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_INTERIM_PASSWORD }}
+          COSIGN_CLIENT_KEY: ${{ secrets.COSIGN_CLIENT_KEY }}
+          COSIGN_PASSWORD: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || secrets.COSIGN_INTERIM_PASSWORD }}
+          VAULT_TOKEN: ${{ secrets.SIGNING_VAULT_TOKEN }}
           IMAGEVERIFY_FLAGS: -registry-username ${{ github.actor }}
           IMAGEVERIFY_PASSWORD: ${{ github.token }}
         run: scripts/admission/publish-fixtures.sh "${{ steps.repo.outputs.path }}" fixtures.txt
@@ -86,7 +98,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "### Admission fixtures (interim key - not the client trust chain)"
+            echo "### Admission fixtures (signing key: $SIGNING_KEY_SOURCE, $SIGNING_PUBLIC_KEY)"
             [ -f fixtures.txt ] && sed 's/^\([^ ]*\) \(.*\)$/- \1: `\2`/' fixtures.txt
           } >> "$GITHUB_STEP_SUMMARY"
 

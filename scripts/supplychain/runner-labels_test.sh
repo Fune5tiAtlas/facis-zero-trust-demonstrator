@@ -22,5 +22,6 @@ refused "a string, not an array" '"self-hosted"'
 refused "an empty array" '[]'
 refused "a label that is not a string" '["self-hosted", 1]'
 refused "an empty label" '["self-hosted", ""]'
+# shellcheck disable=SC2016 # the expression is the input, literally
 refused "a label with an expression" '["${{ secrets.X }}"]'
 [ "$failures" -eq 0 ] || { echo "$failures case(s) failed"; exit 1; }

@@ -109,7 +109,8 @@ them as not run.
 ## Image signing
 
 The candidate job of `release.yml` builds every image under `deployment/docker/` for `linux/amd64`,
-labels it `eu.facis.ztd.signing-key=interim` and pushes it to `ghcr.io/<owner>/<repository>/<name>`.
+labels it `eu.facis.ztd.signing-key=<source>` (`interim` by default) and pushes it to
+`ghcr.io/<owner>/<repository>/<name>`.
 Then, for each image digest:
 
 1. `scripts/supplychain/sbom.sh` — the Syft SBOM of the image, scanned by digest, enriched by Grype with
@@ -118,14 +119,15 @@ Then, for each image digest:
    enforces;
 3. `scripts/supplychain/sign-attest.sh` — the cosign signature and both attestations, the same commands
    the CI interop and kind tests use;
-4. verification of every digest against the committed public key
-   (`docs/contracts/keys/interim-cosign.pub`), with the admission provider's own code
+4. verification of every digest against the committed public key of the selected source
+   (`docs/contracts/keys/interim-cosign.pub` by default), with the admission provider's own code
    (`cmd/imageverify`) and with `cosign verify` / `verify-attestation`.
 
-The private key is the `COSIGN_INTERIM_KEY` secret (with `COSIGN_INTERIM_PASSWORD`) of the protected
-`release` environment; without it, or without the public key, the job fails before anything is
-signed. The interim key is not the client trust chain; it is replaced by the client key and Harbor.
-The job creates no tag and no release.
+The key is the one the repository variable `SIGNING_KEY_SOURCE` selects ([Key source](#key-source));
+by default the `COSIGN_INTERIM_KEY` secret (with `COSIGN_INTERIM_PASSWORD`) of the protected
+`release` environment. Without it, or without its committed public key, the job fails before
+anything is signed. The interim key is not the client trust chain; it is replaced by the client key
+and Harbor. The job creates no tag and no release.
 
 It checks the key before it builds anything: the secret must be set and must be the private half of
 the committed public key, so a missing environment, secret or key file stops the job before an image
@@ -143,21 +145,28 @@ module at the release tag, and `sbom.json.sig`, its signature. For each release,
    module the tag's tidy `go.mod` requires present at the required version, replacements resolved. With
    module graph pruning a tidy `go.mod` lists every module that supplies a package to any build or test, on
    any platform and build tag, so transitive dependencies are included;
-3. signs it with `cosign sign-blob` and the interim key, in the profile the images use (key-based, no
-   transparency log), and verifies the signature before anything is uploaded.
+3. signs it with `cosign sign-blob` and the selected key ([Key source](#key-source)), in the profile
+   the images use (key-based, no transparency log), and verifies the signature against that source's
+   public key before anything is uploaded.
 
-A release counts as done only when both assets are attached and the signature verifies. A release with
-no SBOM, an unsigned one, a half-finished upload or a pair that does not verify is regenerated from its
-tag on the next run; the monthly run, or one started by hand, covers every release. A release the
+A release counts as done only when both assets are attached and the signature verifies against a key
+of the set — every public key committed under `docs/contracts/keys/`. A release with no SBOM, an
+unsigned one or a half-finished upload is signed from its tag on the next run; the monthly run, or
+one started by hand, covers every release (`scripts/supplychain/sbom-backfill.sh`). A pair that
+verifies against no key of the set is regenerated only when its release was signed with the current
+key — the key its `release-manifest.json` names, or the interim key for a release without one —
+and otherwise fails the run for a person to decide: an old release is never re-signed with a new key.
+Removing a public key from the set is how a key is retired; the releases it signed then fail that run. A release the
 [release workflow](#release) creates carries the pair from the start, written by the same script with
 the same key, so this workflow finds it verifying and leaves it.
 
 To verify a release's SBOM:
 
 ```bash
-gh release download <tag> --pattern 'sbom.json*'
-cosign verify-blob --key docs/contracts/keys/interim-cosign.pub --insecure-ignore-tlog=true \
-  --signature sbom.json.sig sbom.json
+gh release download <tag> --pattern 'sbom.json*' --pattern release-manifest.json
+# the key the release was signed with; a release without a manifest was signed with the interim key
+key=$(jq -r .publicKey release-manifest.json 2>/dev/null || echo docs/contracts/keys/interim-cosign.pub)
+cosign verify-blob --key "$key" --insecure-ignore-tlog=true --signature sbom.json.sig sbom.json
 ```
 
 The interim key is replaced by the client key with the rest of the signing chain. The key lives in the
@@ -237,7 +246,7 @@ The release job, in order:
    refuses the set, and no release is created. The script writes `release-manifest.json` — every
    asset with its SHA-256, and the images and charts with what each digest belongs to — and
    `RELEASE_NOTES.md`, the same list for the release page with the commands that check it;
-5. the manifest signed with the interim key (`cosign sign-blob`, the profile of the images) and
+5. the manifest signed with the selected key (`cosign sign-blob`, the profile of the images) and
    verified;
 6. `gh release create`, with the notes and every asset. A rerun completes or replaces the release
    with its own set: an asset of the same name is overwritten, one the set does not carry is removed.
@@ -254,7 +263,8 @@ To consume a release:
 ```bash
 gh release download vX.Y.Z
 sha256sum -c SHA256SUMS
-cosign verify-blob --key docs/contracts/keys/interim-cosign.pub --insecure-ignore-tlog=true \
+key=$(jq -r .publicKey release-manifest.json)       # a path in this repository's docs/contracts/keys/, never a downloaded key
+cosign verify-blob --key "$key" --insecure-ignore-tlog=true \
   --signature release-manifest.json.sig release-manifest.json
 jq -r '.images[].reference' release-manifest.json   # what a zone file pins
 ```
@@ -293,6 +303,35 @@ Activation: register the runner with the repository, give it the labels, check i
 `jq`, `gh` and Python 3; Go, Helm and Node are installed by the jobs, cosign, Syft and Grype by
 `scripts/tools/install.sh` (linux/amd64). `scripts/supplychain/runner-labels_test.sh` holds the
 check to its refusals.
+
+### Key source
+
+`SIGNING_KEY_SOURCE` selects where the signing key comes from; `scripts/supplychain/key-source.sh`
+turns it into the cosign key reference and the one public key every check verifies against, and the
+`Select the signing key` step writes both into the job's environment (references and paths, never
+key material). `check-key.sh` then requires the key to be reachable and to be the private half of
+that public key before anything is built.
+
+| `SIGNING_KEY_SOURCE` | cosign key | Inputs | Public key |
+|---|---|---|---|
+| `interim` (default) | `env://COSIGN_INTERIM_KEY` | secrets `COSIGN_INTERIM_KEY`, `COSIGN_INTERIM_PASSWORD` | `docs/contracts/keys/interim-cosign.pub` |
+| `client` | `env://COSIGN_CLIENT_KEY` | secrets `COSIGN_CLIENT_KEY` (a cosign key file), `COSIGN_CLIENT_PASSWORD` | `docs/contracts/keys/client-cosign.pub` |
+| `openbao-transit` | `hashivault://<SIGNING_TRANSIT_KEY>` | variables `SIGNING_TRANSIT_KEY`, `SIGNING_VAULT_ADDR`, optional `SIGNING_TRANSIT_PATH` (default `transit`); secret `SIGNING_VAULT_TOKEN` | `docs/contracts/keys/openbao-transit-cosign.pub` |
+
+With `openbao-transit` the private key never leaves OpenBao: cosign's HashiCorp Vault KMS asks the
+transit engine to sign. OpenBao serves the same transit API, so this is expected to work unchanged —
+*an inference, not yet run against the deployed OpenBao*. The transit key must be of a type cosign
+accepts (`ecdsa-p256` is the safe choice), the token's policy needs only `read` on
+`<mount>/keys/<key>` and `update` on `<mount>/sign/<key>`, and the signing runner must reach
+`SIGNING_VAULT_ADDR`. The signing steps receive the secrets of all three sources; a client password
+left empty falls back to the interim one, and the key check then fails.
+
+Activation, per source: commit the source's public key under `docs/contracts/keys/` by pull request
+(`cosign public-key --key hashivault://<key>` prints it for transit), add its secrets to the
+`release` environment and its variables to the repository, then set `SIGNING_KEY_SOURCE`. The
+committed public key is the only verification key of the source: the release manifest and notes,
+`sbom.yml` and the did:web anchor all read it from there. `scripts/supplychain/keys_test.sh` holds the
+selection, the key check and the SBOM key set to their refusals.
 
 ## Lifecycle scenarios on the client targets
 

@@ -7,14 +7,15 @@
 #   COSIGN_KEY=<key or env://VAR> COSIGN_PASSWORD=... \
 #     scripts/supplychain/sign-verify.sh <registry/path> <images.txt> <out-dir>
 #
-# PUBLIC_KEY overrides the committed interim public key (tests only); IMAGEVERIFY_FLAGS and
+# The public key is the selected source's (SIGNING_PUBLIC_KEY, from key-source.sh), the interim key's
+# by default; PUBLIC_KEY overrides both (tests only). IMAGEVERIFY_FLAGS and
 # COSIGN_VERIFY_FLAGS pass registry options for a local test registry.
 set -euo pipefail
 
 [ $# -eq 3 ] || { echo "usage: $0 <registry/path> <images.txt> <out-dir>" >&2; exit 2; }
 repository="$1" list="$2" out="$3"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-public="${PUBLIC_KEY:-docs/contracts/keys/interim-cosign.pub}"
+public="${PUBLIC_KEY:-${SIGNING_PUBLIC_KEY:-docs/contracts/keys/interim-cosign.pub}}"
 cosign="${COSIGN:-cosign}"
 [ -n "${COSIGN_KEY:-}" ] || { echo "sign-verify: COSIGN_KEY is not set - refusing to publish unsigned images" >&2; exit 1; }
 [ -s "$public" ] || { echo "sign-verify: public key $public is missing - nothing could verify the signatures" >&2; exit 1; }

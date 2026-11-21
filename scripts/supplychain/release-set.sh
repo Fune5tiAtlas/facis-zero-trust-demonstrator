@@ -26,7 +26,10 @@ set -euo pipefail
 [ $# -eq 4 ] || { echo "usage: $0 <version> <revision> <set dir> <out dir>" >&2; exit 2; }
 version="$1" revision="$2" dir="$3" out="$4"
 created="${CREATED:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-public_key=docs/contracts/keys/interim-cosign.pub
+# The public key of the selected source (key-source.sh); the interim key's by default.
+public_key="${SIGNING_PUBLIC_KEY:-docs/contracts/keys/interim-cosign.pub}"
+key_note=""
+[ "$public_key" != docs/contracts/keys/interim-cosign.pub ] || key_note=" - the interim key, not the client trust chain"
 
 refuse() { echo "release-set: $*" >&2; exit 1; }
 sha() { sha256sum "$1" | cut -d' ' -f1; }
@@ -172,7 +175,7 @@ asset_sha() { jq -r --arg name "$1" '.assets[] | select(.name == $name) | .sha25
   echo "The FACIS Zero Trust Demonstrator at version $version, built from commit \`$revision\` on $created."
   echo "Everything the release ships is listed here with its digest; the same list is \`release-manifest.json\`,"
   echo "signed as \`release-manifest.json.sig\`. The images, the SBOMs and the manifest are signed with the"
-  echo "interim key, \`$public_key\` - not the client trust chain."
+  echo "key \`$public_key\`$key_note."
   echo
   echo "## Images"
   echo
