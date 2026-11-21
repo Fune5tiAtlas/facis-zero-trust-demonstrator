@@ -19,7 +19,8 @@ and Jobs, and to every container, init container and ephemeral container in them
 Platform images the project does not build or sign, such as the Istio proxy the injector adds to
 every meshed pod, are admitted by an explicit list of exact references
 (`host/repository@sha256:<digest>`, no tag), not re-signed. The list is one input,
-`ALLOWED_DIGESTS` of [install.sh](../../scripts/admission/install.sh), written to two places:
+`ALLOWED_DIGESTS` of [install.sh](../../scripts/admission/install.sh) - in the umbrella layout,
+`admissionProvider.trust.allowedDigests` of the zone file - written to two places:
 
 - the provider's `trust.allowedDigests` ([deployment/helm/admission](../helm/admission#digest-allow-list)):
   an identical reference is answered `verified` without the signature, attestation and platform
@@ -61,6 +62,14 @@ it is reviewed with every change.
 
 ## Install
 
+Two layouts. **Umbrella** (a zone file with `admission.install: true`): the zone installer installs
+this policy, Gatekeeper, the provider and the admission pool as one release, `gatekeeper` of the
+umbrella chart in `gatekeeper-system`, in four stages, with the same values and post-renderer as
+below; the umbrella reads the policy here through `deployment/helm/ztd/files/admission` (links, one
+copy). See [Admission in the umbrella](../../docs/umbrella-chart.md#admission-in-the-umbrella), with
+the migration and rollback runbook. **Standalone** (every zone until it migrates):
+[install.sh](../../scripts/admission/install.sh), which is what the commands below do.
+
 Order: Gatekeeper, the provider ([deployment/helm/admission](../helm/admission)), the templates, the
 constraints.
 
@@ -96,4 +105,7 @@ then `helm uninstall gatekeeper -n gatekeeper-system`.
   the webhook scope (a labelled namespace of any name is enforced, an unlabelled `ztd-adm-*` one is
   not), provider down, trusted key removed while the provider cache is warm (the next admission after
   the provider logs the new policy revision is denied), and Gatekeeper down (denied in labelled
-  namespaces, admitted elsewhere); the `admission-kind` job in CI.
+  namespaces, admitted elsewhere); the `admission-kind` job in CI. `LAYOUT=umbrella` runs it on a clean
+  install of the umbrella's admission release, `LAYOUT=migrate` after the umbrella adopted a
+  standalone install (same Deployments, provider CA and constraints), `LAYOUT=rollback` after the way
+  back to standalone.
