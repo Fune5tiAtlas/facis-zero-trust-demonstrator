@@ -10,7 +10,11 @@
 # and packages only the charts under deployment/helm/: a fixture is never released. Charts named on
 # the command line are both checked and packaged. A chart's valid baseline values are its
 # ci/values.yaml when it has one; each ci/<variant>-values.yaml is checked as well, layered on the
-# baseline (the umbrella's ci/admission-values.yaml: its admission release). A chart with
+# baseline (the umbrella's ci/admission-values.yaml: its admission release); a variant with a
+# ci/<variant>-post-renderer file, which names a Helm post-renderer plugin directory (relative to
+# the repository, or absolute), is rendered and dry-run through that plugin, installed for this run only (the
+# admission release through deployment/admission/webhook-scope, as the zone installer installs it;
+# helm lint takes no post-renderer). A chart with
 # dependencies is built from its committed Chart.lock first.
 #
 # --server-dry-run makes `helm install --dry-run=server` mandatory: the current kube context is used,
@@ -115,19 +119,32 @@ record() {
 
 # gate <chart> <release-name> [values...]: the lint, render and - when requested - server dry-run
 # of one chart, a directory or a package. The same three checks for the source and for the package.
+# render_flags: extra flags for the render and the dry run only (a variant's post-renderer).
+render_flags=()
 gate() {
   local chart=$1 name=$2
   shift 2
   record "helm lint" helm lint "$chart" "$@"
   lint=$result
-  record "helm template" sh -c 'helm template "$@" >/dev/null' _ check "$chart" "$@"
+  record "helm template" sh -c 'helm template "$@" >/dev/null' _ check "$chart" "$@" ${render_flags[@]+"${render_flags[@]}"}
   template=$result
   dryrun=not-run
   if [ "$server" = true ]; then
     record "helm install --dry-run=server" sh -c 'helm install "$@" --dry-run=server --hide-secret >/dev/null' _ \
-      "gate-$name" "$chart" -n default "$@"
+      "gate-$name" "$chart" -n default "$@" ${render_flags[@]+"${render_flags[@]}"}
     dryrun=$result
   fi
+}
+
+# post_renderer <plugin dir>: install the plugin into this run's Helm data directory (helm_data,
+# set by the caller and removed on exit), print its name.
+helm_data=""
+trap '[ -z "$helm_data" ] || rm -rf "$helm_data"' EXIT
+post_renderer() {
+  local name
+  name=$(sed -n 's/^name: *//p' "$1/plugin.yaml" | head -1)
+  helm plugin list 2>/dev/null | awk 'NR > 1 {print $1}' | grep -qx "$name" || helm plugin install "$1" >/dev/null || return 1
+  echo "$name"
 }
 
 # variants <chart-dir> <gate target> <name>: the gate once more for each ci/<variant>-values.yaml, on
@@ -137,8 +154,23 @@ variants() {
   for file in "$1"/ci/*-values.yaml; do
     [ -f "$file" ] || continue
     variant=$(basename "$file" -values.yaml)
-    echo "  variant $variant"
+    render_flags=()
+    if [ -f "$1/ci/$variant-post-renderer" ]; then
+      local plugin
+      if [ -z "$helm_data" ]; then
+        helm_data=$(mktemp -d)
+        export HELM_DATA_HOME="$helm_data" HELM_PLUGINS="$helm_data/plugins"
+      fi
+      plugin=$(head -1 "$1/ci/$variant-post-renderer")
+      case "$plugin" in /*) ;; *) plugin="$root/$plugin" ;; esac
+      if ! plugin=$(post_renderer "$plugin"); then
+        echo "  FAIL  post-renderer of variant $variant"; failures=$((failures + 1)); continue
+      fi
+      render_flags=(--post-renderer "$plugin")
+    fi
+    echo "  variant $variant${render_flags[1]:+ (post-renderer ${render_flags[1]})}"
     gate "$2" "$3-$variant" -f "$1/ci/values.yaml" -f "$file"
+    render_flags=()
     if [ -n "$evidence" ]; then
       printf '{"chart":"%s","version":"%s","path":"%s","variant":"%s","lint":"%s","template":"%s","serverDryRun":"%s"}\n' \
         "$3" "$version" "${1#"$root"/}" "$variant" "$lint" "$template" "$dryrun" > "$evidence/$3-$variant.json"
