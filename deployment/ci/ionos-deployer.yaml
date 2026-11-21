@@ -31,8 +31,12 @@ rules:
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
-    resources: ["services", "configmaps"]
+    resources: ["services"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Helm's release records (HELM_DRIVER=configmap): no patch or watch needed.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "create", "update", "delete"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

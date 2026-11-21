@@ -41,7 +41,7 @@ jobs:
   release:
     name: Release to deploy
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' &&
        startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: ubuntu-latest
@@ -157,9 +157,11 @@ jobs:
           DIGEST: ${{ steps.verify.outputs.digest }}
           TAKE_OWNERSHIP: ${{ inputs.take_ownership && '--take-ownership' || '' }}
         run: |
+          # --reset-then-reuse-values keeps site values set at install (imagePullSecrets, ingress.host)
+          # while the verified image below replaces the previous one.
           # shellcheck disable=SC2086 # TAKE_OWNERSHIP is one flag or nothing
           helm upgrade --install orce "$CHART" --namespace "$NAMESPACE" \
-            --rollback-on-failure --wait --timeout 10m \
+            --rollback-on-failure --wait --timeout 10m --reset-then-reuse-values \
             --set-string image.repository="$REPOSITORY" --set-string image.digest="$DIGEST" $TAKE_OWNERSHIP
 
       - name: Smoke test
