@@ -209,5 +209,20 @@ layout "$work/set"
 rm "$work/set/bdd/traceability.md"
 refused "reports without the traceability sheet are refused" "traceability.md is missing" run "$work/set" "$work/out"
 
+echo "== The trust anchor"
+layout "$work/set"
+check "a set without did.json names no trust anchor" run "$work/set" "$work/out"
+check "the manifest's trust anchor is null" [ "$(jq -r .trustAnchor "$manifest")" = null ]
+printf '{"id":"did:web:trust.example.org","verificationMethod":[{"id":"did:web:trust.example.org#k"}]}\n' > "$work/set/did.json"
+check "a set with a did:web document is accepted" run "$work/set" "$work/out"
+check "the manifest names the trust anchor" [ "$(jq -r .trustAnchor "$manifest")" = did:web:trust.example.org ]
+check "did.json is an asset with its digest" \
+  [ "$(jq -r '.assets[] | select(.name == "did.json") | .kind + " " + .sha256' "$manifest")" = "did-document $(sha "$work/set/did.json")" ]
+check "the notes name the trust anchor" grep -q 'did:web:trust.example.org' "$notes"
+printf '{"id":"did:example:x","verificationMethod":[{}]}\n' > "$work/set/did.json"
+refused "a did.json that is not did:web is refused" "not a did:web document" run "$work/set" "$work/out"
+printf '{"id":"did:web:trust.example.org","verificationMethod":[]}\n' > "$work/set/did.json"
+refused "a did.json without a verification method is refused" "not a did:web document" run "$work/set" "$work/out"
+
 [ "$failures" -eq 0 ] || { echo "$failures case(s) failed"; exit 1; }
 echo "every case passed"

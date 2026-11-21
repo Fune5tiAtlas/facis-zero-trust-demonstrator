@@ -1,12 +1,14 @@
 name: Release
 
 # The two stages of the release. The candidate stage: every image built, pushed to this repository's
-# GHCR namespace, signed and attested by digest with the interim key (Grype-enriched SBOM and the mock
-# attestation), and verified by digest with the admission provider's own code and with cosign against
-# the committed public key; it creates no tag and no release. The release stage, on a tag vX.Y.Z: the
-# same jobs with the tag's version as the image tag, then the charts packaged at that version by the
-# gate, the repository SBOM signed, the BDD suite run for the tag, and the GitHub release created with
-# every artefact and the notes that list each one with its digest (scripts/supplychain/release-set.sh).
+# GHCR namespace (or the Harbor project the HARBOR_* variables name), signed and attested by digest with
+# the selected key (SIGNING_KEY_SOURCE, interim by default; the Grype-enriched SBOM and the mock
+# attestation), and verified by digest, with read credentials, with the admission provider's own code
+# and with cosign against the source's committed public key; it creates no tag and no release.
+# The release stage, on a tag vX.Y.Z: the same jobs with the tag's version as the image tag, then the
+# charts packaged at that version by the gate, the repository SBOM signed, the BDD suite run for the
+# tag, and the GitHub release created with every artefact and the notes that list each one with its
+# digest (scripts/supplychain/release-set.sh).
 # A piece missing or at another version refuses the set, so a release never carries less than the set.
 #
 # Nothing is built unless the chart gate (TDR-BDD-11) passed. A later job that publishes charts or
@@ -16,7 +18,8 @@ name: Release
 #
 # Started by hand, by pushing a branch named candidate/<anything> - which also works in a fork whose
 # default branch does not carry this workflow - or by pushing a release tag. The release environment
-# must admit those branches, main, the PR branches and the tags v* (see docs/ci-cd.md).
+# admits main, candidate/* and the tags v* and nothing else; a run from any other ref stops before the
+# signing job starts (docs/ci-cd.md, Release tags and the release environment).
 on:
   workflow_dispatch:
   push:
@@ -98,16 +101,33 @@ jobs:
           name: chart-gate
           path: bundles/bdd
 
+  # The runner every job that holds the signing key runs on: the repository variable SIGNING_RUNNER, a
+  # JSON array of labels, checked here; GitHub's hosted runner while it is unset (docs/ci-cd.md).
+  signing-runner:
+    name: Signing runner
+    runs-on: ubuntu-latest
+    outputs:
+      labels: ${{ steps.labels.outputs.labels }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the runner labels
+        id: labels
+        env:
+          SIGNING_RUNNER: ${{ vars.SIGNING_RUNNER }}
+        run: echo "labels=$(scripts/supplychain/runner-labels.sh)" >> "$GITHUB_OUTPUT"
+
   candidate:
     # The release images on a tag, the candidate images otherwise: one job, one signing profile.
     name: ${{ startsWith(github.ref, 'refs/tags/v') && 'Release images' || 'Candidate images' }}
-    needs: [chart-gate]
-    runs-on: ubuntu-latest
-    # The interim signing key lives only in this protected environment's secrets.
+    needs: [chart-gate, signing-runner]
+    runs-on: ${{ fromJSON(needs.signing-runner.outputs.labels) }}
+    # The signing key, or the token that reaches it, lives only in this protected environment's secrets.
     environment: release
     permissions:
       contents: read
-      packages: write # pushes the images and their signatures to GHCR
+      packages: write # pushes the images and their signatures to GHCR (unused once Harbor is the registry)
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -122,22 +142,52 @@ jobs:
           scripts/tools/install.sh "$RUNNER_TEMP/bin" cosign syft grype
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
+      # The key source (SIGNING_KEY_SOURCE) and its public key: references and paths only, into the job's env.
+      - name: Select the signing key
+        env:
+          SIGNING_KEY_SOURCE: ${{ vars.SIGNING_KEY_SOURCE }}
+          SIGNING_TRANSIT_KEY: ${{ vars.SIGNING_TRANSIT_KEY }}
+          SIGNING_TRANSIT_PATH: ${{ vars.SIGNING_TRANSIT_PATH }}
+          SIGNING_VAULT_ADDR: ${{ vars.SIGNING_VAULT_ADDR }}
+        run: scripts/supplychain/key-source.sh >> "$GITHUB_ENV"
+
       # Before anything is built or pushed: the key must be present and match the committed public key.
       - name: Check the signing key
         env:
-          COSIGN_INTERIM_KEY: ${{ secrets.COSIGN_INTERIM_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_INTERIM_PASSWORD }}
+          COSIGN_INTERIM_KEY: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_KEY || '' }}
+          COSIGN_CLIENT_KEY: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_KEY || '' }}
+          COSIGN_PASSWORD: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_PASSWORD || (vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || '') }}
+          VAULT_TOKEN: ${{ vars.SIGNING_KEY_SOURCE == 'openbao-transit' && secrets.SIGNING_VAULT_TOKEN || '' }}
         run: scripts/supplychain/check-key.sh
 
-      - name: Log in to GHCR
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-
-      # GHCR names are lower case; the repository owner may not be.
-      - name: Image repository
+      # GHCR by default; the Harbor project HARBOR_HOST/HARBOR_PROJECT once those variables are set.
+      - name: Image registry
         id: repo
-        run: echo "path=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+        env:
+          HARBOR_HOST: ${{ vars.HARBOR_HOST }}
+          HARBOR_PROJECT: ${{ vars.HARBOR_PROJECT }}
+        run: scripts/supplychain/registry.sh >> "$GITHUB_OUTPUT"
+
+      # Push credentials: the job token for GHCR, the Harbor robot account allowed to push otherwise.
+      - name: Log in to the registry
+        env:
+          REGISTRY_KIND: ${{ steps.repo.outputs.kind }}
+          REGISTRY_HOST: ${{ steps.repo.outputs.host }}
+          REGISTRY_USER: ${{ vars.HARBOR_HOST == '' && github.actor || secrets.HARBOR_PUSH_USER }}
+          REGISTRY_PASSWORD: ${{ vars.HARBOR_HOST == '' && github.token || secrets.HARBOR_PUSH_PASSWORD }}
+        run: scripts/supplychain/registry-login.sh
+
+      # Read credentials for every check after the push, in a Docker config of their own: verification
+      # reads the registry with the read-only robot account (the job token for GHCR), not the pusher's.
+      - name: Log in to the registry for verification
+        env:
+          REGISTRY_KIND: ${{ steps.repo.outputs.kind }}
+          REGISTRY_HOST: ${{ steps.repo.outputs.host }}
+          REGISTRY_USER: ${{ vars.HARBOR_HOST == '' && github.actor || secrets.HARBOR_READ_USER }}
+          REGISTRY_PASSWORD: ${{ vars.HARBOR_HOST == '' && github.token || secrets.HARBOR_READ_PASSWORD }}
+        run: |
+          scripts/supplychain/registry-login.sh "$RUNNER_TEMP/verify-docker"
+          echo "VERIFY_DOCKER_CONFIG=$RUNNER_TEMP/verify-docker" >> "$GITHUB_ENV"
 
       # The release version on a tag, so the images carry the version the charts and the release do;
       # the commit on a candidate branch.
@@ -155,19 +205,20 @@ jobs:
 
       - name: Sign, attest and verify every image by digest
         env:
-          COSIGN_KEY: env://COSIGN_INTERIM_KEY
-          COSIGN_INTERIM_KEY: ${{ secrets.COSIGN_INTERIM_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_INTERIM_PASSWORD }}
-          # New GHCR packages are private: the provider-code check reads them with the job token.
-          IMAGEVERIFY_FLAGS: -registry-username ${{ github.actor }}
-          IMAGEVERIFY_PASSWORD: ${{ github.token }}
+          COSIGN_INTERIM_KEY: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_KEY || '' }}
+          COSIGN_CLIENT_KEY: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_KEY || '' }}
+          COSIGN_PASSWORD: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_PASSWORD || (vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || '') }}
+          VAULT_TOKEN: ${{ vars.SIGNING_KEY_SOURCE == 'openbao-transit' && secrets.SIGNING_VAULT_TOKEN || '' }}
+          # New packages are private: the provider-code check reads them with the read credentials.
+          IMAGEVERIFY_FLAGS: -registry-username ${{ vars.HARBOR_HOST == '' && github.actor || secrets.HARBOR_READ_USER }}
+          IMAGEVERIFY_PASSWORD: ${{ vars.HARBOR_HOST == '' && github.token || secrets.HARBOR_READ_PASSWORD }}
         run: scripts/supplychain/sign-verify.sh "${{ steps.repo.outputs.path }}" images.txt candidate
 
       - name: Summary
         if: always()
         run: |
           {
-            echo "### Images at ${{ steps.tag.outputs.tag }} (interim key - not the client trust chain)"
+            echo "### Images at ${{ steps.tag.outputs.tag }} (signing key: $SIGNING_KEY_SOURCE, $SIGNING_PUBLIC_KEY)"
             [ -f images.txt ] && sed 's/^/- `/; s/$/`/' images.txt
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -282,10 +333,10 @@ jobs:
   # scripts the jobs of ci.yml and sbom.yml run for a release published by hand.
   release:
     name: Release
-    needs: [chart-gate, candidate, secrets-log-audit]
+    needs: [chart-gate, signing-runner, candidate, secrets-log-audit]
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    # The interim key signs the repository SBOM and the manifest.
+    runs-on: ${{ fromJSON(needs.signing-runner.outputs.labels) }}
+    # The selected key signs the repository SBOM and the manifest.
     environment: release
     permissions:
       contents: write # creates the release and attaches the artefact set
@@ -317,10 +368,21 @@ jobs:
           scripts/tools/install.sh "$RUNNER_TEMP/bin" cosign syft
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
+      # The key source (SIGNING_KEY_SOURCE) and its public key: references and paths only, into the job's env.
+      - name: Select the signing key
+        env:
+          SIGNING_KEY_SOURCE: ${{ vars.SIGNING_KEY_SOURCE }}
+          SIGNING_TRANSIT_KEY: ${{ vars.SIGNING_TRANSIT_KEY }}
+          SIGNING_TRANSIT_PATH: ${{ vars.SIGNING_TRANSIT_PATH }}
+          SIGNING_VAULT_ADDR: ${{ vars.SIGNING_VAULT_ADDR }}
+        run: scripts/supplychain/key-source.sh >> "$GITHUB_ENV"
+
       - name: Check the signing key
         env:
-          COSIGN_INTERIM_KEY: ${{ secrets.COSIGN_INTERIM_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_INTERIM_PASSWORD }}
+          COSIGN_INTERIM_KEY: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_KEY || '' }}
+          COSIGN_CLIENT_KEY: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_KEY || '' }}
+          COSIGN_PASSWORD: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_PASSWORD || (vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || '') }}
+          VAULT_TOKEN: ${{ vars.SIGNING_KEY_SOURCE == 'openbao-transit' && secrets.SIGNING_VAULT_TOKEN || '' }}
         run: scripts/supplychain/check-key.sh
 
       # Every artefact of this run: the gate's row and the charts, the images with their SBOMs and the
@@ -330,10 +392,22 @@ jobs:
         with:
           path: ${{ runner.temp }}/run
 
-      - name: Log in to GHCR
+      # GHCR by default; the Harbor project HARBOR_HOST/HARBOR_PROJECT once those variables are set.
+      - name: Image registry
+        id: repo
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          HARBOR_HOST: ${{ vars.HARBOR_HOST }}
+          HARBOR_PROJECT: ${{ vars.HARBOR_PROJECT }}
+        run: scripts/supplychain/registry.sh >> "$GITHUB_OUTPUT"
+
+      # This job only reads the registry: the read-only robot account for Harbor, the job token for GHCR.
+      - name: Log in to the registry with read credentials
+        env:
+          REGISTRY_KIND: ${{ steps.repo.outputs.kind }}
+          REGISTRY_HOST: ${{ steps.repo.outputs.host }}
+          REGISTRY_USER: ${{ vars.HARBOR_HOST == '' && github.actor || secrets.HARBOR_READ_USER }}
+          REGISTRY_PASSWORD: ${{ vars.HARBOR_HOST == '' && github.token || secrets.HARBOR_READ_PASSWORD }}
+        run: scripts/supplychain/registry-login.sh
 
       # The images were pushed under the release version and signed by digest; the version tag of each
       # must still name the digest that was signed, or the release would list images it did not verify.
@@ -349,9 +423,10 @@ jobs:
 
       - name: Generate and sign the repository SBOM
         env:
-          COSIGN_KEY: env://COSIGN_INTERIM_KEY
-          COSIGN_INTERIM_KEY: ${{ secrets.COSIGN_INTERIM_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_INTERIM_PASSWORD }}
+          COSIGN_INTERIM_KEY: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_KEY || '' }}
+          COSIGN_CLIENT_KEY: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_KEY || '' }}
+          COSIGN_PASSWORD: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_PASSWORD || (vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || '') }}
+          VAULT_TOKEN: ${{ vars.SIGNING_KEY_SOURCE == 'openbao-transit' && secrets.SIGNING_VAULT_TOKEN || '' }}
         run: |
           mkdir -p "$RUNNER_TEMP/set"
           scripts/supplychain/repo-sbom.sh . "$RUNNER_TEMP/set/sbom.json"
@@ -396,6 +471,14 @@ jobs:
             echo "$(basename "$chart") oci://${reference%:*}@$digest" >> "$RUNNER_TEMP/run/charts/pushed.txt"
           done
 
+      # The did:web document of the signing key (cmd/didweb), once SIGNING_DID_WEB names where it is
+      # served (host[:port][/path]); the release carries it and the manifest names the DID.
+      - name: Generate the trust anchor
+        if: vars.SIGNING_DID_WEB != ''
+        env:
+          SIGNING_DID_WEB: ${{ vars.SIGNING_DID_WEB }}
+        run: go run ./cmd/didweb -did "$SIGNING_DID_WEB" -key "$SIGNING_PUBLIC_KEY" > "$RUNNER_TEMP/set/did.json"
+
       - name: Assemble and check the release set
         run: |
           set="$RUNNER_TEMP/set"
@@ -409,14 +492,21 @@ jobs:
       # The manifest carries the same list as the notes; signed, it can be checked without the page.
       - name: Sign the manifest
         env:
-          COSIGN_KEY: env://COSIGN_INTERIM_KEY
-          COSIGN_INTERIM_KEY: ${{ secrets.COSIGN_INTERIM_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_INTERIM_PASSWORD }}
+          COSIGN_INTERIM_KEY: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_KEY || '' }}
+          COSIGN_CLIENT_KEY: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_KEY || '' }}
+          COSIGN_PASSWORD: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_PASSWORD || (vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || '') }}
+          VAULT_TOKEN: ${{ vars.SIGNING_KEY_SOURCE == 'openbao-transit' && secrets.SIGNING_VAULT_TOKEN || '' }}
         run: |
           cosign sign-blob --yes --key "$COSIGN_KEY" --tlog-upload=false --new-bundle-format=false \
             --output-signature dist/release/release-manifest.json.sig dist/release/release-manifest.json >/dev/null
-          cosign verify-blob --key docs/contracts/keys/interim-cosign.pub --insecure-ignore-tlog=true \
+          cosign verify-blob --key "$SIGNING_PUBLIC_KEY" --insecure-ignore-tlog=true \
             --signature dist/release/release-manifest.json.sig dist/release/release-manifest.json
+
+      # The last gate: the manifest, the repository SBOM and every image with both attestations must
+      # verify against the selected source's committed public key, read with this job's read
+      # credentials; one that does not stops the job, and the tag stays without a release.
+      - name: Verify every signature of the release
+        run: scripts/supplychain/verify-release.sh dist/release
 
       # A tag with a prerelease identifier is a prerelease. A rerun completes or replaces the release
       # with this run's set - an asset of the same name is overwritten, one the set does not carry is
@@ -448,3 +538,30 @@ jobs:
           name: release
           path: dist/release
           overwrite: true
+
+  # FZTD-57: the candidate or release images job and, on a tag, the release job.
+  # Once the signing jobs have completed, successful or not, their published logs must hold no private-key
+  # material (scripts/secrets/log_audit.py signing-audit); the record is counts and verdicts only.
+  signing-log-audit:
+    name: Signing log audit
+    needs: [candidate, release]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # downloads the signing jobs' published logs
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Audit the signing jobs' logs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/secrets/log_audit.py signing-audit --job "Candidate images" --job "Release images" --job "Release" --out bundles/signing
+
+      - name: Keep the audit record
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signing-log-audit
+          path: bundles/signing

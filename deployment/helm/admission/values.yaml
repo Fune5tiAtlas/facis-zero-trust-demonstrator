@@ -33,6 +33,12 @@ tls:
 # A plain-http registry host (host:port) - a local test registry only. Empty in any real deployment.
 insecurePlainHTTPRegistry: ""
 
+# Read credentials for private registries (a Harbor read-only robot account): the name of a
+# kubernetes.io/dockerconfigjson Secret in the release namespace. Empty: registries are read
+# anonymously. Read at start; restart the provider after rotating the Secret.
+registryAuth:
+  secretName: ""
+
 resources:
   requests:
     cpu: 50m

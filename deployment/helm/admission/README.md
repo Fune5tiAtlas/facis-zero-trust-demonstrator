@@ -61,6 +61,7 @@ It runs as a non-root user with a read-only root filesystem and no service accou
 | `trust.publicKeys` | — (required) | trusted cosign public keys, PEM (ECDSA P-256) |
 | `tls.validityDays` | `825` | validity of the generated CA and server certificate; delete the Secret and upgrade to rotate |
 | `insecurePlainHTTPRegistry` | `""` | a plain-http test registry (`host:port`); empty in any real deployment |
+| `registryAuth.secretName` | `""` | a `kubernetes.io/dockerconfigjson` Secret in the release namespace with read credentials (a Harbor read-only robot account) for private registries; empty reads every registry anonymously. Mounted with mode `0440` and the pod's `fsGroup` set to `65532` (only when this is set), so the provider's user reads it and other users cannot. Read at start: restart the provider after rotating it |
 
 ## Metrics
 

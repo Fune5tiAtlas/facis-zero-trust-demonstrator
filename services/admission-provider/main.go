@@ -33,23 +33,37 @@ func main() {
 		concurrency = flag.Int("concurrency", 8, "registry verifications in flight at once")
 		reload      = flag.Duration("reload-interval", 10*time.Second, "how often TLS and trust files are re-read")
 		plainHTTP   = flag.String("insecure-plain-http-registry", "", "a registry host spoken to over http (a local test registry only)")
+		regAuth     = flag.String("registry-auth", "", "Docker config JSON with read credentials per registry host (a .dockerconfigjson); registries are read anonymously when empty")
 	)
 	flag.Parse()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
 	if err := run(*addr, *metricsAddr, &tlsFiles{certFile: *tlsCert, keyFile: *tlsKey, clientCAFile: *clientCA},
-		*policy, *timeout, *concurrency, *reload, *plainHTTP); err != nil {
+		*policy, *timeout, *concurrency, *reload, *plainHTTP, *regAuth); err != nil {
 		slog.Error("admission-provider stopped", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(addr, metricsAddr string, tf *tlsFiles, policy string, timeout time.Duration, concurrency int, reload time.Duration, plainHTTP string) error {
+func run(addr, metricsAddr string, tf *tlsFiles, policy string, timeout time.Duration, concurrency int, reload time.Duration, plainHTTP, regAuth string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
 	var opts ociclient.Options
 	if plainHTTP != "" {
 		opts.PlainHTTP = []string{plainHTTP}
+	}
+	// ponytail: read once at start; a rotated credential needs a restart (rollout restart), unlike trust.
+	if regAuth != "" {
+		creds, err := registryCredentials(regAuth)
+		if err != nil {
+			return err
+		}
+		opts.Credentials = creds
+		hosts := make([]string, 0, len(creds))
+		for h := range creds {
+			hosts = append(hosts, h)
+		}
+		slog.Info("registry read credentials loaded", "registries", hosts)
 	}
 	// The verifier starts with an empty policy (nothing allowed) until the trust files load.
 	v := cosignverify.New(ociclient.New(opts), &cosignverify.Policy{}, concurrency)

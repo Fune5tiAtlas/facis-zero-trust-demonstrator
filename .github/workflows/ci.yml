@@ -396,6 +396,24 @@ jobs:
       - name: Test the release set check
         run: scripts/supplychain/release-set_test.sh
 
+      - name: Test the signing runner check
+        run: scripts/supplychain/runner-labels_test.sh
+
+      - name: Test the key source, the key check and the SBOM key set
+        run: scripts/supplychain/keys_test.sh
+
+      - name: Test the registry selection
+        run: scripts/supplychain/registry_test.sh
+
+      - name: Test the release signature gate
+        run: scripts/supplychain/verify-release_test.sh
+
+      - name: Test the signing log audit
+        run: python3 -m unittest scripts/secrets/log_audit_test.py
+
+      - name: Test the environment audit's verdict
+        run: scripts/supplychain/env-audit_test.sh
+
   # The charts of a release published by hand on GitHub. A release the release workflow creates
   # from a tag carries its charts already and starts no workflow (GitHub's rule for the events of a
   # workflow's own token); this job delivers them when one is published by hand, and only once every

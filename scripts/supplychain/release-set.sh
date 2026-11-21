@@ -16,6 +16,7 @@
 #   charts/<name>-<version>.tgz  the release charts with their SHA256SUMS (check-charts.sh --package)
 #   charts/pushed.txt            optional: one "<file> <oci://...@sha256:...>" per chart pushed to a registry
 #   sbom.json, sbom.json.sig     the repository SBOM and its signature (repo-sbom.sh)
+#   did.json                     optional: the did:web document of the signing key (cmd/didweb)
 #   bdd/*.json                   the cucumber-JSON of every BDD run, with traceability.md and traceability.csv
 #
 # <out dir> receives release-manifest.json, RELEASE_NOTES.md and assets/: every file the release
@@ -26,7 +27,10 @@ set -euo pipefail
 [ $# -eq 4 ] || { echo "usage: $0 <version> <revision> <set dir> <out dir>" >&2; exit 2; }
 version="$1" revision="$2" dir="$3" out="$4"
 created="${CREATED:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-public_key=docs/contracts/keys/interim-cosign.pub
+# The public key of the selected source (key-source.sh); the interim key's by default.
+public_key="${SIGNING_PUBLIC_KEY:-docs/contracts/keys/interim-cosign.pub}"
+key_note=""
+[ "$public_key" != docs/contracts/keys/interim-cosign.pub ] || key_note=" - the interim key, not the client trust chain"
 
 refuse() { echo "release-set: $*" >&2; exit 1; }
 sha() { sha256sum "$1" | cut -d' ' -f1; }
@@ -123,6 +127,15 @@ cp "$charts_dir/SHA256SUMS" "$assets/SHA256SUMS"
 cyclonedx "$dir/sbom.json"
 cp "$dir/sbom.json" "$dir/sbom.json.sig" "$assets/"
 
+# The trust anchor, when the release publishes one: a did:web document carrying the signing key.
+did=""
+if [ -e "$dir/did.json" ]; then
+  did="$(jq -r 'select(.id | type == "string" and startswith("did:web:")) | select(.verificationMethod | type == "array" and length > 0) | .id' \
+    "$dir/did.json" 2>/dev/null)" || true
+  [ -n "$did" ] || refuse "did.json is not a did:web document with a verification method"
+  cp "$dir/did.json" "$assets/did.json"
+fi
+
 # The BDD evidence: the cucumber-JSON of every run and the sheet bddreport merged from them.
 shopt -s nullglob
 reports=("$dir"/bdd/*.json)
@@ -145,6 +158,7 @@ kind_of() {
     sbom.json) echo repository-sbom ;;
     sbom.json.sig) echo signature ;;
     mock-attestation.json) echo mock-attestation ;;
+    did.json) echo did-document ;;
     *.cdx.json) echo image-sbom ;;
     bdd-traceability.*) echo traceability ;;
     bdd-*.json) echo cucumber-json ;;
@@ -157,11 +171,12 @@ while read -r file; do
     '{name: $name, sha256: $sha, kind: $kind}')")
 done < <(find "$assets" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
 jq -n --arg version "$version" --arg tag "v$version" --arg revision "$revision" --arg created "$created" \
-  --arg key "$public_key" \
+  --arg key "$public_key" --arg did "$did" \
   --argjson images "$(printf '%s\n' "${images[@]}" | jq -s .)" \
   --argjson charts "$(printf '%s\n' "${charts[@]}" | jq -s .)" \
   --argjson assets "$(printf '%s\n' "${asset_list[@]}" | jq -s .)" \
   '{version: $version, tag: $tag, revision: $revision, created: $created, publicKey: $key,
+    trustAnchor: (if $did == "" then null else $did end),
     images: $images, charts: $charts, assets: $assets}' > "$out/release-manifest.json"
 
 # The release notes: the same list, for the release page.
@@ -172,7 +187,7 @@ asset_sha() { jq -r --arg name "$1" '.assets[] | select(.name == $name) | .sha25
   echo "The FACIS Zero Trust Demonstrator at version $version, built from commit \`$revision\` on $created."
   echo "Everything the release ships is listed here with its digest; the same list is \`release-manifest.json\`,"
   echo "signed as \`release-manifest.json.sig\`. The images, the SBOMs and the manifest are signed with the"
-  echo "interim key, \`$public_key\` - not the client trust chain."
+  echo "key \`$public_key\`$key_note."
   echo
   echo "## Images"
   echo
@@ -196,6 +211,13 @@ asset_sha() { jq -r --arg name "$1" '.assets[] | select(.name == $name) | .sha25
   echo "|---|---|"
   for file in sbom.json sbom.json.sig mock-attestation.json; do echo "| \`$file\` | \`$(asset_sha "$file")\` |"; done
   echo
+  if [ -n "$did" ]; then
+    echo "## Trust anchor"
+    echo
+    echo "\`did.json\` (sha256 \`$(asset_sha did.json)\`) is the document of \`$did\`, which carries the signing key;"
+    echo "the copy served by did:web must be byte for byte the same."
+    echo
+  fi
   echo "## BDD reports"
   echo
   echo "The cucumber-JSON of this release's BDD runs and the traceability sheet merged from them."
