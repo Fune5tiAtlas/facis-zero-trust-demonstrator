@@ -126,8 +126,10 @@ func TestGuardWithRealConnectorStorePolicyPostgresAndOpenBao(t *testing.T) {
 	const vpIssuer = "https://fixture.guard.test"
 	const vpKid = "fixture-1"
 	const oid4vpLink = "openid4vp://authorize?client_id=verifier.guard.test&request_uri=https%3A%2F%2Fverifier.guard.test%2Frequest"
-	// Short enough that the expired-token case needs no forged token: the catalogue waits it out.
-	const lifespan = 6 * time.Second
+	// Short enough that the expired-token case needs no forged token (the catalogue waits it out),
+	// long enough that the store's renewer (every 15 s, at 75 % of the lifetime) keeps the
+	// upstream route's token valid in between.
+	const lifespan = 90 * time.Second
 	fixtureKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -261,8 +263,8 @@ func TestGuardWithRealConnectorStorePolicyPostgresAndOpenBao(t *testing.T) {
 				t.Fatal("token was not substituted")
 			}
 			fresh := makeRequest(t, p)
-			if !runtime.Evaluate(t.Context(), fresh).Allowed {
-				t.Fatal("fresh proof refused")
+			if again := runtime.Evaluate(t.Context(), fresh); !again.Allowed {
+				t.Fatalf("fresh proof refused: %d %s", again.Status, again.ReasonCode)
 			}
 			if entry.role == "viewer" {
 				viewer = p
@@ -361,8 +363,8 @@ func TestGuardWithRealConnectorStorePolicyPostgresAndOpenBao(t *testing.T) {
 		}
 
 		replayed := makeRequest(t, viewer)
-		if !runtime.Evaluate(t.Context(), replayed).Allowed {
-			t.Fatal("first use refused")
+		if first := runtime.Evaluate(t.Context(), replayed); !first.Allowed {
+			t.Fatalf("first use refused: %d %s", first.Status, first.ReasonCode)
 		}
 		record(t, "replayed proof", runtime.Evaluate(t.Context(), replayed), 401, "TOK-REPLAY", "", false)
 
