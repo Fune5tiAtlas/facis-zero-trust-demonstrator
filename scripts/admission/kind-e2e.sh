@@ -91,11 +91,13 @@ provider_digest=$(curl -fsSI -H "Accept: $oci_manifest, $docker_manifest, applic
   "http://$host_reg/v2/ztd/admission-provider/manifests/e2e" | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2}')
 
 step "Install (scripts/admission/install.sh, as on a real cluster)"
-BIN="$bin" PROVIDER_IMAGE="$reg/ztd/admission-provider@$provider_digest" TRUST_REPOSITORY="$reg/ztd" TRUST_KEY="$work/cosign.pub" \
+# A third-party image admitted by exact digest (the injected Istio proxy); only dry runs use it.
+allow_listed=docker.io/istio/proxyv2@sha256:d86cba0dd1eb15c00b6901c69ce5ae3d2d5f8427a47751098cf8c3ab2a4a62e9
+ALLOWED_DIGESTS="$allow_listed" BIN="$bin" PROVIDER_IMAGE="$reg/ztd/admission-provider@$provider_digest" TRUST_REPOSITORY="$reg/ztd" TRUST_KEY="$work/cosign.pub" \
   GATEKEEPER_REPLICAS=2 PROVIDER_REPLICAS=1 PLAIN_HTTP_REGISTRY="$reg" scripts/admission/install.sh
 # The same values, for the trust-removal upgrade below.
 provider_values=(--set replicas=1 --set image.repository="$reg/ztd/admission-provider" --set image.digest="$provider_digest"
-  --set insecurePlainHTTPRegistry="$reg" --set-json "trust.repositories=[\"$reg/ztd\"]")
+  --set insecurePlainHTTPRegistry="$reg" --set-json "trust.repositories=[\"$reg/ztd\"]" --set-json "trust.allowedDigests=[\"$allow_listed\"]")
 unscoped=$(kubectl get validatingwebhookconfiguration gatekeeper-validating-webhook-configuration -o json | jq -r '
   .webhooks[] | select(any(.namespaceSelector.matchExpressions[]?; .key == "facis.ztd/admission-proof" and .operator == "In" and .values == ["true"]) | not) | .name')
 if [ -z "$unscoped" ]; then pass "both webhooks scoped to facis.ztd/admission-proof=true"; else fail "webhooks not scoped: $unscoped"; fi
@@ -165,6 +167,9 @@ expect_denied "mock attestation missing" ADM-NO-ATTESTATION "$(pod ztd-nomock "$
 expect_denied "non-Linux image" ADM-NOT-LINUX "$(pod ztd-windows "${img_windows}")"
 expect_denied "image index" ADM-INDEX-UNSUPPORTED "$(pod ztd-index "${img_index}")"
 expect_denied "registry not allowed" ADM-REGISTRY-DENIED "$(pod ztd-foreign "docker.io/library/busybox@${signed#*@}")"
+expect_allowed "allow-listed third-party digest" "$(pod ztd-allow-listed "$allow_listed")"
+expect_denied "other digest of an allow-listed repository" ADM-REGISTRY-DENIED "$(pod ztd-allow-other "${allow_listed%@*}@${signed#*@}")"
+expect_denied "allow-listed digest with a tag" ADM-NOT-DIGEST "$(pod ztd-allow-tag "${allow_listed%@*}:1.31.1@${allow_listed#*@}")"
 expect_denied "name outside the convention" ADM-NAME-INVALID "$(pod busybox "$signed")"
 expect_denied "unsigned init container" ADM-UNSIGNED "$(pod ztd-init "$signed" "$ns" "  initContainers:
     - name: init

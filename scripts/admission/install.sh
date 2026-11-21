@@ -8,7 +8,12 @@
 #
 #   BIN=<dir holding the Gatekeeper chart archive> PROVIDER_IMAGE=<repository@sha256:...> \
 #   TRUST_REPOSITORY=<host/path> TRUST_KEY=<cosign public key file> \
-#   [GATEKEEPER_REPLICAS=2] [PROVIDER_REPLICAS=2] [PLAIN_HTTP_REGISTRY=host:port] scripts/admission/install.sh
+#   [GATEKEEPER_REPLICAS=2] [PROVIDER_REPLICAS=2] [PLAIN_HTTP_REGISTRY=host:port] \
+#   [ALLOWED_DIGESTS="host/repository@sha256:<digest> ..."] scripts/admission/install.sh
+#
+# ALLOWED_DIGESTS (space-separated, default none) are third-party images admitted by exact digest
+# reference, such as the injected Istio proxy; the one list goes to both the provider's
+# trust.allowedDigests and the ztd-allowed-repositories constraint's allowedDigests.
 #
 # Break-glass: delete the ValidatingWebhookConfiguration gatekeeper-validating-webhook-configuration,
 # then helm uninstall gatekeeper -n gatekeeper-system.
@@ -21,6 +26,12 @@ cd "$root"
 : "${BIN:?set BIN}" "${PROVIDER_IMAGE:?set PROVIDER_IMAGE}" "${TRUST_REPOSITORY:?set TRUST_REPOSITORY}" "${TRUST_KEY:?set TRUST_KEY}"
 chart="$BIN/gatekeeper-$GATEKEEPER_CHART_VERSION.tgz"
 case "$PROVIDER_IMAGE" in *@sha256:*) ;; *) echo "PROVIDER_IMAGE must be a digest reference" >&2; exit 2 ;; esac
+allowed_digests=()
+for d in ${ALLOWED_DIGESTS:-}; do
+  [[ "$d" =~ ^[a-z0-9.:-]+/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]] || { echo "ALLOWED_DIGESTS entry '$d' is not host/repository@sha256:<digest>" >&2; exit 2; }
+  allowed_digests+=("$d")
+done
+allowed_json=$(printf '%s\n' ${allowed_digests[@]+"${allowed_digests[@]}"} | jq -Rsc 'split("\n") | map(select(. != ""))')
 
 # The webhook-scope post-renderer is a Helm plugin; it lives in this run's own Helm directory.
 helm_home="$(mktemp -d)"
@@ -51,6 +62,7 @@ echo "== Provider"
 provider_values=(--set replicas="${PROVIDER_REPLICAS:-2}" --set image.repository="${PROVIDER_IMAGE%@*}" --set image.digest="${PROVIDER_IMAGE#*@}"
   --set-json "trust.repositories=[\"$TRUST_REPOSITORY\"]" --set-file trust.publicKeys="$TRUST_KEY")
 [ -z "${PLAIN_HTTP_REGISTRY:-}" ] || provider_values+=(--set insecurePlainHTTPRegistry="$PLAIN_HTTP_REGISTRY")
+[ ${#allowed_digests[@]} -eq 0 ] || provider_values+=(--set-json "trust.allowedDigests=$allowed_json")
 helm upgrade --install admission deployment/helm/admission -n gatekeeper-system "${provider_values[@]}" --wait --timeout 5m >/dev/null
 
 echo "== Policy"
@@ -60,7 +72,8 @@ for kind in k8sztdimagedigest k8sztdallowedrepositories k8sztdnaming k8sztdverif
   kubectl wait --for=condition=established --timeout=120s "crd/$kind.constraints.gatekeeper.sh" >/dev/null
 done
 kubectl apply -f deployment/admission/exemptions.yaml >/dev/null
-sed "s|ghcr.io/eclipse-xfsc/facis-zero-trust-demonstrator|$TRUST_REPOSITORY|" deployment/admission/constraints/allowed-repositories.yaml | kubectl apply -f - >/dev/null
+sed -e "s|ghcr.io/eclipse-xfsc/facis-zero-trust-demonstrator|$TRUST_REPOSITORY|" -e "s|^    allowedDigests: \[\]$|    allowedDigests: $allowed_json|" \
+  deployment/admission/constraints/allowed-repositories.yaml | kubectl apply -f - >/dev/null
 for c in image-digest naming verified-images; do kubectl apply -f "deployment/admission/constraints/$c.yaml" >/dev/null; done
 # Each constraint must be acknowledged, current and error-free, by every Ready webhook replica.
 status_dir="$helm_home/status"
