@@ -164,9 +164,21 @@ jobs:
   # The whole admission catalogue in a real Gatekeeper: a kind cluster with Gatekeeper (pinned chart,
   # cache off), the provider and a local registry of test images signed with the release script and
   # an ephemeral key. Includes provider-down, Gatekeeper-down and trust-removal cases.
+  # The catalogue in every admission layout: standalone (scripts/admission/install.sh); the umbrella's
+  # admission release installed clean, with the policy owned by Helm and by a stand-in for Argo CD
+  # (with the upgrade, readiness-blip and handoff cases); and the migration to it and back.
   admission-kind:
-    name: Admission catalogue (kind)
+    name: Admission catalogue (kind, ${{ matrix.layout }}, policy ${{ matrix.policy }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { layout: standalone, policy: helm }
+          - { layout: umbrella, policy: helm }
+          - { layout: umbrella, policy: argocd }
+          - { layout: migrate, policy: argocd }
+          - { layout: rollback, policy: helm }
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -179,7 +191,14 @@ jobs:
       - name: Install the pinned tools
         run: scripts/tools/install.sh "$RUNNER_TEMP/bin" kind kubectl cosign syft gatekeeper-chart
 
+      - name: Install PyYAML for the zone installer
+        if: matrix.layout != 'standalone'
+        run: python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user pyyaml
+
       - name: Run the admission catalogue
+        env:
+          LAYOUT: ${{ matrix.layout }}
+          POLICY: ${{ matrix.policy }}
         run: BIN="$RUNNER_TEMP/bin" scripts/admission/kind-e2e.sh
 
   contracts:
