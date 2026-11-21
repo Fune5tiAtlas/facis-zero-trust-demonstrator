@@ -5,25 +5,31 @@
 # namespaces are checked with server-side dry runs, so nothing is created there.
 #
 #   ADMIN_KUBECONFIG=... TESTER_KUBECONFIG=... FIXTURES=<case ref list> EVIDENCE=<dir> \
-#   BIN=... PROVIDER_IMAGE=... TRUST_REPOSITORY=... TRUST_KEY=... [OUTSIDE_NAMESPACES="ns ..."] \
+#   [BIN=...] [OUTSIDE_NAMESPACES="ns ..."] \
 #   [CLUSTER_KIND=target|non-target] [DATA_NAMESPACE=ztd-data] [MGMT_NAMESPACE=ztd-mgmt] \
 #   scripts/admission/fault-injection.sh
 #
 # OUTSIDE_NAMESPACES are the namespaces outside admission control that must stay schedulable while
-# admission is down (default: the IONOS proof's ztd-orce, kube-system, ztd-bdd-tdr-001). CLUSTER_KIND
-# is recorded with the evidence (default non-target, as on IONOS).
+# admission is down (default: the IONOS proof's ztd-orce, kube-system, ztd-bdd-tdr-001); any of them
+# that carries facis.ztd/admission-proof=true on the cluster is under admission control, so it is left
+# out - a caller cannot make an enforced data plane count as outside. CLUSTER_KIND is recorded with
+# the evidence (default non-target, as on IONOS).
 #
 # Data plane: when DATA_NAMESPACE carries facis.ztd/admission-proof=true (the umbrella's
 # admission.enforceDataPlane), the provider-down and Gatekeeper-down steps also expect a pod there to
 # be denied, and pods in MGMT_NAMESPACE and kube-system to stay admitted. Read from the namespace, so
 # there is nothing to set; without the label (or without the namespace) the steps are unchanged.
 #
-# Layout: the standalone layout (scripts/admission/install.sh) is restored with install.sh and needs
-# BIN, PROVIDER_IMAGE, TRUST_REPOSITORY and TRUST_KEY; the umbrella layout (release gatekeeper of
-# deployment/helm/ztd, scripts/install-zone/install.sh) is restored by upgrading that release with its
-# own values (--reuse-values) and needs none of them: the trusted key installed at the start is
-# snapshotted from the release (TRUST_KEY is ignored there) and passed on every restore, so an
-# interruption after the key-removal step never leaves the test key installed.
+# Restore: before anything is changed, the provider's settings as installed are snapshotted
+# (admission_installed_provider: image, replicas, trust keys, repositories, allowedDigests,
+# registryAuth.secretName) and every restore puts them back - never values given by the caller, so an
+# interruption after the key-removal step never leaves the test key installed and a private-registry
+# credential is never dropped. The standalone layout (scripts/admission/install.sh) is restored with
+# install.sh RESTORE=1 from that snapshot and needs BIN (the pinned Gatekeeper chart); the umbrella
+# layout (release gatekeeper of deployment/helm/ztd) by upgrading that release with its own values and
+# needs the umbrella's dependencies built (helm dependency build deployment/helm/ztd). The restore is
+# proven runnable first - a server-side dry run of it - and the script refuses to inject any fault
+# otherwise, so a restore that cannot run never follows a fault (the break-glass removes the webhook).
 #
 # Steps: ZT-13 mechanism (non-Linux and index refused), provider down, Gatekeeper down, trusted key
 # removed while the provider cache is warm, break-glass (webhook removed, then restored with
@@ -40,13 +46,14 @@ cd "$root"
 layout=$(KUBECONFIG="$ADMIN_KUBECONFIG" admission_layout)
 helm_home="$(mktemp -d)"
 case "$layout" in
-  standalone) : "${BIN:?}" "${PROVIDER_IMAGE:?}" "${TRUST_REPOSITORY:?}" "${TRUST_KEY:?}" ;;
-  umbrella)
-    KUBECONFIG="$ADMIN_KUBECONFIG" admission_helm_home "$helm_home"
-    TRUST_KEY="$helm_home/trusted.pub"
-    KUBECONFIG="$ADMIN_KUBECONFIG" helm get values gatekeeper -n gatekeeper-system -o json | jq -jer '.admissionProvider.trust.publicKeys' > "$TRUST_KEY" ;;
+  standalone) : "${BIN:?set BIN, the directory with the pinned Gatekeeper chart}" ;;
+  umbrella) KUBECONFIG="$ADMIN_KUBECONFIG" admission_helm_home "$helm_home" ;;
   *) echo "admission path not installed" >&2; exit 1 ;;
 esac
+snapshot="$helm_home/provider.json"
+KUBECONFIG="$ADMIN_KUBECONFIG" admission_installed_provider > "$snapshot" || { echo "cannot read the installed provider" >&2; exit 1; }
+TRUST_KEY="$helm_home/trusted.pub"
+jq -j '.trust.publicKeys' "$snapshot" > "$TRUST_KEY"
 mkdir -p "$EVIDENCE"
 ns=ztd-adm-001
 log="$EVIDENCE/fault-injection.log"
@@ -98,9 +105,15 @@ eventually_denied() { # case code name image
   echo "$out" >> "$log"
   if [ "$status" -eq 0 ]; then fail "$1: admitted, expected $2"; elif grep -q -- "$2" <<<"$out"; then pass "$1: denied ($2)"; else fail "$1: denied without $2: $out"; fi
 }
+# The namespaces outside admission: the given ones without any that carries the admission label.
+enforced_namespaces=" $(admin get namespaces -l facis.ztd/admission-proof=true -o jsonpath='{.items[*].metadata.name}') "
+outside=()
+for n in ${OUTSIDE_NAMESPACES:-ztd-orce kube-system ztd-bdd-tdr-001}; do
+  [[ "$enforced_namespaces" == *" $n "* ]] || outside+=("$n")
+done
 outside_admitted() { # step
   local n
-  for n in ${OUTSIDE_NAMESPACES:-ztd-orce kube-system ztd-bdd-tdr-001}; do
+  for n in ${outside[@]+"${outside[@]}"}; do
     expect_admitted "$1: $n pod" admin ztd-other "$(fixture unsigned)" "$n"
   done
 }
@@ -138,7 +151,8 @@ other="$(mktemp)"
 reinstall() {
   if [ "$layout" = standalone ]; then
     KUBECONFIG="$ADMIN_KUBECONFIG" GATEKEEPER_REPLICAS="$gatekeeper_replicas" PROVIDER_REPLICAS="$provider_replicas" \
-      ALLOWED_DIGESTS="$allowed_provider" scripts/admission/install.sh
+      RESTORE=1 RESTORE_FROM="$snapshot" scripts/admission/install.sh &&
+      trusted_key_installed
   else
     KUBECONFIG="$ADMIN_KUBECONFIG" admission_umbrella_upgrade --set gatekeeper.replicas="$gatekeeper_replicas" \
       --set admissionProvider.replicas="$provider_replicas" \
@@ -166,6 +180,25 @@ restore() {
   rm -rf "$other" "$helm_home"
   exit "$status"
 }
+# The restore must be able to run before any fault is injected: a server-side dry run of it, which
+# also proves the charts it needs are there (the pinned Gatekeeper chart, or the umbrella's built
+# dependencies).
+restore_runnable() {
+  if [ "$layout" = standalone ]; then
+    # shellcheck source=scripts/tools/pins.env disable=SC1091
+    . scripts/tools/pins.env
+    [ -f "$BIN/gatekeeper-$GATEKEEPER_CHART_VERSION.tgz" ] || { echo "no Gatekeeper chart in BIN ($BIN)"; return 1; }
+    KUBECONFIG="$ADMIN_KUBECONFIG" helm upgrade admission deployment/helm/admission -n gatekeeper-system -f "$snapshot" --dry-run=server >/dev/null
+  else
+    KUBECONFIG="$ADMIN_KUBECONFIG" admission_umbrella_upgrade --set gatekeeper.replicas="$gatekeeper_replicas" \
+      --set admissionProvider.replicas="$provider_replicas" --set-file admissionProvider.trust.publicKeys="$TRUST_KEY" --dry-run=server >/dev/null
+  fi
+}
+if ! out=$(restore_runnable 2>&1); then
+  echo "the $layout restore cannot run, so no fault is injected: $out" >&2
+  rm -rf "$other" "$helm_home"
+  exit 1
+fi
 trap restore EXIT
 trap 'exit 130' INT TERM
 

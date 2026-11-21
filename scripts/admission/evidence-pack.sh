@@ -4,12 +4,11 @@
 # missing-mock-attestation images are refused with their reason codes), then the fault cases
 # (fault-injection.sh). Both always run; the pack and an index land in bundles/admission/<target>/.
 # Run by the cluster administrator after install.sh or the zone installer's admission release, with
-# the inputs fault-injection.sh takes (BIN, PROVIDER_IMAGE, TRUST_REPOSITORY and TRUST_KEY in the
-# standalone layout only; in the umbrella layout the provider image and key are read from the cluster).
+# the inputs fault-injection.sh takes (BIN in the standalone layout; the provider's settings are read
+# from the cluster in both layouts). TRUST_KEY, when given, only labels the key in the index.
 #
-#   ADMIN_KUBECONFIG=... FIXTURES=<case ref list> [BIN=... PROVIDER_IMAGE=... TRUST_REPOSITORY=... \
-#   TRUST_KEY=...] [OUTSIDE_NAMESPACES="ns ..."] [CLUSTER_KIND=target|non-target] \
-#   scripts/admission/evidence-pack.sh <target>
+#   ADMIN_KUBECONFIG=... FIXTURES=<case ref list> [BIN=...] [TRUST_KEY=<key file, for the index>] \
+#   [OUTSIDE_NAMESPACES="ns ..."] [CLUSTER_KIND=target|non-target] scripts/admission/evidence-pack.sh <target>
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -23,7 +22,7 @@ case "$kind" in target | non-target) ;; *) echo "CLUSTER_KIND must be target or 
 # shellcheck source=scripts/admission/checks.sh
 . scripts/admission/checks.sh
 layout=$(KUBECONFIG="$ADMIN_KUBECONFIG" admission_layout)
-[ "$layout" != standalone ] || : "${BIN:?}" "${PROVIDER_IMAGE:?}" "${TRUST_REPOSITORY:?}" "${TRUST_KEY:?}"
+[ "$layout" != standalone ] || : "${BIN:?set BIN, the directory with the pinned Gatekeeper chart}"
 FIXTURES="$(cd "$(dirname "$FIXTURES")" && pwd)/$(basename "$FIXTURES")"
 run="${BDD_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 out="bundles/admission/$target"
@@ -62,9 +61,9 @@ if TESTER_KUBECONFIG="$tester" CLUSTER_KIND="$kind" EVIDENCE="$out/faults" scrip
   faults=PASS
 fi
 
-provider_image=${PROVIDER_IMAGE:-$(admin -n gatekeeper-system get deploy ztd-admission-provider -o jsonpath='{.spec.template.spec.containers[0].image}')}
+provider_image=$(admin -n gatekeeper-system get deploy ztd-admission-provider -o jsonpath='{.spec.template.spec.containers[0].image}')
 trusted_key="\`${TRUST_KEY:-}\`"
-[ -n "${TRUST_KEY:-}" ] || trusted_key="admissionProvider.trust.publicKeys of release gatekeeper"
+[ -n "${TRUST_KEY:-}" ] || trusted_key="the provider's installed trust.publicKeys"
 {
   echo "# Admission evidence pack: $target"
   echo
