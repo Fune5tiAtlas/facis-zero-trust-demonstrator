@@ -165,8 +165,8 @@ deleted from the registry, so every revision ever declared can be restored and a
 revision was active when is in Git (what was declared) and in the sidecar's and evaluator's logs
 (what was activated and used).
 
-If the TSA container restarts it comes back empty; the health check notices it within three polls and imports
-the declared bundle again, and decisions fail closed in between.
+If the TSA container restarts it comes back empty; the health check notices it within three polls
+and imports the active bundle again, and decisions fail closed in between.
 
 ### Trust root
 
