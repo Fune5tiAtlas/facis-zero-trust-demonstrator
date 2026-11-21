@@ -21,7 +21,9 @@
 # Layout: the standalone layout (scripts/admission/install.sh) is restored with install.sh and needs
 # BIN, PROVIDER_IMAGE, TRUST_REPOSITORY and TRUST_KEY; the umbrella layout (release gatekeeper of
 # deployment/helm/ztd, scripts/install-zone/install.sh) is restored by upgrading that release with its
-# own values (--reuse-values) and needs none of them - its trusted key is read from the release.
+# own values (--reuse-values) and needs none of them: the trusted key installed at the start is
+# snapshotted from the release (TRUST_KEY is ignored there) and passed on every restore, so an
+# interruption after the key-removal step never leaves the test key installed.
 #
 # Steps: ZT-13 mechanism (non-Linux and index refused), provider down, Gatekeeper down, trusted key
 # removed while the provider cache is warm, break-glass (webhook removed, then restored with
@@ -41,10 +43,8 @@ case "$layout" in
   standalone) : "${BIN:?}" "${PROVIDER_IMAGE:?}" "${TRUST_REPOSITORY:?}" "${TRUST_KEY:?}" ;;
   umbrella)
     KUBECONFIG="$ADMIN_KUBECONFIG" admission_helm_home "$helm_home"
-    if [ -z "${TRUST_KEY:-}" ]; then
-      TRUST_KEY="$helm_home/trusted.pub"
-      KUBECONFIG="$ADMIN_KUBECONFIG" helm get values gatekeeper -n gatekeeper-system -o json | jq -er '.admissionProvider.trust.publicKeys' > "$TRUST_KEY"
-    fi ;;
+    TRUST_KEY="$helm_home/trusted.pub"
+    KUBECONFIG="$ADMIN_KUBECONFIG" helm get values gatekeeper -n gatekeeper-system -o json | jq -jer '.admissionProvider.trust.publicKeys' > "$TRUST_KEY" ;;
   *) echo "admission path not installed" >&2; exit 1 ;;
 esac
 mkdir -p "$EVIDENCE"
@@ -143,9 +143,15 @@ reinstall() {
     KUBECONFIG="$ADMIN_KUBECONFIG" admission_umbrella_upgrade --set gatekeeper.replicas="$gatekeeper_replicas" \
       --set admissionProvider.replicas="$provider_replicas" \
       --set-json "admissionProvider.trust.allowedDigests=$(jq -Rc 'split(" ") | map(select(. != ""))' <<<"$allowed_provider")" \
-      --wait --timeout 8m &&
-      KUBECONFIG="$ADMIN_KUBECONFIG" admission_wait_enforced
+      --set-file admissionProvider.trust.publicKeys="$TRUST_KEY" --wait --timeout 8m &&
+      KUBECONFIG="$ADMIN_KUBECONFIG" admission_wait_enforced &&
+      trusted_key_installed
   fi
+}
+# The provider's trust policy holds the snapshotted key again.
+trusted_key_installed() {
+  [ "$(admin -n gatekeeper-system get configmap ztd-admission-provider-trust -o jsonpath='{.data.policy\.json}' | jq -j '.publicKeys')" = "$(cat "$TRUST_KEY")" ] ||
+    { echo "the provider's trust policy does not hold the trusted key of the start" >&2; return 1; }
 }
 restore() {
   local status=$?
