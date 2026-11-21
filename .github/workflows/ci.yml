@@ -641,7 +641,8 @@ jobs:
 
   # Reachability of every client cluster from the pipeline: the API server answers and the
   # identity authenticates. Read-only identity, never on pull requests; a target whose kubeconfig secret
-  # is not set yet is reported as skipped, not as reachable.
+  # is not set yet is reported as skipped, not as reachable, unless the repository variable
+  # CLUSTER_REACHABILITY_REQUIRED names it (comma-separated targets): then a missing secret fails the job.
   cluster-reachability:
     name: Reachability of ${{ matrix.target }}
     if: github.event_name != 'pull_request'
@@ -663,9 +664,15 @@ jobs:
       - name: Check the cluster answers
         env:
           OBSERVER_KUBECONFIG: ${{ secrets[format('BDD_{0}_OBSERVER_KUBECONFIG', matrix.key)] }}
+          REQUIRED_TARGETS: ${{ vars.CLUSTER_REACHABILITY_REQUIRED }}
+          TARGET: ${{ matrix.target }}
         run: |
           if [ -z "$OBSERVER_KUBECONFIG" ]; then
-            echo "::notice::No observer kubeconfig for ${{ matrix.target }} - reachability not checked."
+            if [[ ",${REQUIRED_TARGETS// /}," == *",$TARGET,"* ]]; then
+              echo "::error::$TARGET is listed in CLUSTER_REACHABILITY_REQUIRED but BDD_${{ matrix.key }}_OBSERVER_KUBECONFIG is not set."
+              exit 1
+            fi
+            echo "::notice::No observer kubeconfig for $TARGET - reachability not checked."
             exit 0
           fi
           scripts/tools/install.sh "$RUNNER_TEMP/bin" kubectl

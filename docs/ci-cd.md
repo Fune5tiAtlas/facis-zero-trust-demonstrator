@@ -229,7 +229,9 @@ the API server answers the pipeline and that the observer identity authenticates
 `kubectl auth whoami`). It runs on pushes to `main`, on releases and on demand, never on pull requests,
 and does not depend on `BDD_CLUSTER_ENABLED`. A target is checked once its secret
 `BDD_<KEY>_OBSERVER_KUBECONFIG` is set (`IONOS`, `ZONE_A`, `ZONE_B`); until then the run says it was
-not checked, and never that it was reachable.
+not checked, and never that it was reachable. Once the secrets are in place, the repository variable
+`CLUSTER_REACHABILITY_REQUIRED` (comma-separated targets, for example `ionos,zone-a,zone-b`) makes the
+check mandatory: a listed target whose secret is missing fails the job instead of being skipped.
 
 The OSC zones have no BDD pool, so their observer is the service account in
 [deployment/ci/reachability-observer.yaml](https://github.com/eclipse-xfsc/facis-zero-trust-demonstrator/blob/main/deployment/ci/reachability-observer.yaml): the
