@@ -21,20 +21,22 @@ release ztd renders with it.
 {{- if and $policy.constraints (not (and $policy.templates .Values.admissionProvider.enabled)) }}
 {{- fail "admissionPolicy.constraints needs admissionPolicy.templates and admissionProvider.enabled" }}
 {{- end }}
+{{- /* admission.policy.keep marks every policy object helm.sh/resource-policy: keep - the first step
+of handing the policy to Argo CD (docs/umbrella-chart.md): when the release later stops rendering it,
+Helm leaves the objects in place instead of deleting them. */}}
+{{- $keep := .Values.admission.policy.keep }}
+{{- $docs := list }}
 {{- if $policy.templates }}
 {{- range $path, $_ := .Files.Glob "files/admission/templates/*.yaml" }}
----
-{{ $.Files.Get $path }}
+{{- $docs = append $docs ($.Files.Get $path | fromYaml) }}
 {{- end }}
----
-{{ .Files.Get "files/admission/exemptions.yaml" }}
+{{- $docs = append $docs (.Files.Get "files/admission/exemptions.yaml" | fromYaml) }}
 {{- end }}
 {{- if $policy.constraints }}
 {{- $trust := .Values.admissionProvider.trust }}
 {{- range $path, $_ := .Files.Glob "files/admission/constraints/*.yaml" }}
----
-{{- if hasSuffix "/allowed-repositories.yaml" $path }}
 {{- $c := $.Files.Get $path | fromYaml }}
+{{- if hasSuffix "/allowed-repositories.yaml" $path }}
 {{- $_ := set $c.spec.parameters "repositories" $trust.repositories }}
 {{- /* Only when set, as the provider's policy: a cluster whose constraint template predates the
 allow-list (no allowedDigests in its schema) then takes the constraint it already has. */}}
@@ -43,9 +45,14 @@ allow-list (no allowedDigests in its schema) then takes the constraint it alread
 {{- else }}
 {{- $_ := unset $c.spec.parameters "allowedDigests" }}
 {{- end }}
-{{ toYaml $c }}
-{{- else }}
-{{ $.Files.Get $path }}
+{{- end }}
+{{- $docs = append $docs $c }}
 {{- end }}
 {{- end }}
+{{- range $docs }}
+{{- if $keep }}
+{{- $_ := set .metadata "annotations" (merge (dict "helm.sh/resource-policy" "keep") (.metadata.annotations | default dict)) }}
+{{- end }}
+---
+{{ toYaml . }}
 {{- end }}

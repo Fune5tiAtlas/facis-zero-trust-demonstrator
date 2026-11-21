@@ -55,6 +55,7 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "keep": { "type": "boolean", "description": "mark the policy objects helm.sh/resource-policy: keep, the first step of handing them to Argo CD; default false" },
             "managedBy": { "type": "string", "enum": ["helm", "argocd"], "description": "who owns the admission policy objects: the admission release (helm) or an Argo CD on the cluster (argocd, the release renders none of them); default helm" }
           }
         },

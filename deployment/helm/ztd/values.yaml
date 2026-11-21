@@ -74,6 +74,10 @@ admission:
   # constraints to be enforced instead of applying them (zone A, zone B).
   policy:
     managedBy: helm
+    # true marks the policy objects helm.sh/resource-policy: keep, so that switching managedBy to
+    # argocd afterwards leaves them in place for Argo CD (the handoff in docs/umbrella-chart.md); the
+    # installer refuses that switch while the release holds a policy object without the mark.
+    keep: false
 
 # --------------------------------------------------------------------------------------------
 # The admission release only (admission.install, above). The zone installer sets every `enabled`
