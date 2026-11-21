@@ -265,12 +265,15 @@ type trustConfig struct {
 	statusHTTP     *http.Client
 }
 
-// refresh rebuilds the policy from the issuer keys and the trust source. The previous policy stays
-// in force when the keys file cannot be read; an issuer the trust source does not list is dropped.
+// refresh rebuilds the policy from the issuer keys and the trust source, asking the trust source
+// again every time. It fails closed: keys that cannot be read or parsed withdraw every issuer and
+// the service is not ready until a refresh succeeds; an issuer the trust source does not list now
+// is dropped.
 func (t trustConfig) refresh(ctx context.Context, s *server) {
 	keyed, err := readIssuers(t.keysFile)
 	if err != nil {
-		s.log.ErrorContext(ctx, "issuer keys not read; the trust set is unchanged", "err", err)
+		s.log.ErrorContext(ctx, "issuer keys not read; every issuer is withdrawn and the service is not ready", "err", err)
+		s.policy.Store(nil)
 		return
 	}
 	set, dropped := trusted(ctx, keyed, t.listed)

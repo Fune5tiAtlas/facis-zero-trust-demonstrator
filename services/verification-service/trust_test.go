@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -123,5 +125,42 @@ func TestParseNeedsExactlyOneTrustSource(t *testing.T) {
 	}, io.Discard)
 	if err != nil || len(o.callers) != 2 || !strings.HasSuffix(o.callers[1], "/sa/c") {
 		t.Errorf("from the environment: %+v %v", o, err)
+	}
+}
+
+// A refresh that cannot read the issuer keys, or reads an empty set, withdraws every issuer: the
+// policy is cleared (not ready) rather than kept from the last good read. A refresh also asks the
+// trust source again, so a delisted issuer is dropped at the next refresh.
+func TestRefreshFailsClosedAndAsksTheTrustSourceEveryTime(t *testing.T) {
+	kit := verificationtest.Provision(t, "https://issuer.zone-a.test")
+	s := &server{log: slog.New(slog.NewJSONHandler(io.Discard, nil))}
+	asked := 0
+	listedNow := true
+	tc := trustConfig{keysFile: kit.IssuerKeysFile, acceptedVCT: []string{verificationtest.CredentialVCT}, statusPrefixes: []string{kit.StatusPrefix},
+		listed: func(_ context.Context, iss string) (bool, error) { asked++; return listedNow && iss == kit.Issuer, nil }}
+	tc.refresh(context.Background(), s)
+	if p := s.policy.Load(); p == nil || p.Trusted[kit.Issuer] == nil {
+		t.Fatal("no policy after a good load")
+	}
+	good, _ := os.ReadFile(kit.IssuerKeysFile)
+	for name, breakIt := range map[string]func(){
+		"emptied":    func() { _ = os.WriteFile(kit.IssuerKeysFile, []byte("{}"), 0o600) },
+		"unreadable": func() { _ = os.Remove(kit.IssuerKeysFile) },
+	} {
+		_ = os.WriteFile(kit.IssuerKeysFile, good, 0o600)
+		tc.refresh(context.Background(), s)
+		breakIt()
+		tc.refresh(context.Background(), s)
+		if s.policy.Load() != nil {
+			t.Errorf("%s: the previous trust set is still in force", name)
+		}
+	}
+	_ = os.WriteFile(kit.IssuerKeysFile, good, 0o600)
+	tc.refresh(context.Background(), s)
+	before := asked
+	listedNow = false
+	tc.refresh(context.Background(), s)
+	if asked == before || s.policy.Load() != nil {
+		t.Errorf("a delisted issuer is still trusted after a refresh (asked %d→%d)", before, asked)
 	}
 }
