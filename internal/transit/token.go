@@ -36,11 +36,14 @@ type KubernetesAuth struct {
 	// HTTPClient carries the login; nil is a client without a proxy that never follows a redirect.
 	HTTPClient *http.Client
 
-	mu      sync.Mutex
-	client  *http.Client
-	token   string
-	renewAt time.Time // half the lease: log in again from here on
-	expires time.Time // the token is not used from here on
+	mu         sync.Mutex // guards the fields below
+	token      string
+	renewAt    time.Time  // half the lease: log in again, in the background, from here on
+	expires    time.Time  // the token is not used from here on
+	refreshing bool       // a background login is running
+	logging    sync.Mutex // one blocking login at a time
+	clientOnce sync.Once
+	client     *http.Client
 }
 
 // now is the clock; tests move it.
@@ -50,31 +53,68 @@ var now = time.Now
 // slow request do not reach OpenBao with an expired token.
 const expiryMargin = 5 * time.Second
 
-// Token is the TokenSource. It logs in when it holds no token or the token is past half its
-// lease. A failed login keeps a token that is still within its lease minus expiryMargin, and
-// returns the error once there is none: the caller's request fails, and readiness with it.
+// refreshTimeout bounds a background login, which no caller's deadline covers.
+const refreshTimeout = 30 * time.Second
+
+// Token is the TokenSource. With no usable token it logs in, in the caller's context, and fails
+// the call when the login fails: the caller's request fails, and readiness with it. A token past
+// half its lease is still handed out while one background login replaces it, so a slow login never
+// eats a caller's budget (a readiness probe's above all); a background login that fails is tried
+// again by the next call, and the token is used until expiryMargin before its lease ends.
 //
 // ponytail: a token OpenBao revokes before its lease ends is used until renewAt; the services'
 // readiness and startup report the refusal meanwhile. Add a drop-on-403 hook to Client if
 // revocation mid-lease must heal faster than half a lease.
 func (k *KubernetesAuth) Token(ctx context.Context) (string, error) {
+	if tok, ok := k.cached(); ok {
+		return tok, nil
+	}
+	k.logging.Lock()
+	defer k.logging.Unlock()
+	if tok, ok := k.cached(); ok { // another caller logged in meanwhile
+		return tok, nil
+	}
+	t := now()
+	token, lease, err := k.login(ctx)
+	if err != nil {
+		return "", err
+	}
+	k.store(t, token, lease)
+	return token, nil
+}
+
+// cached hands out a token within its lease and starts the background login once it is due.
+func (k *KubernetesAuth) cached() (string, bool) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	t := now()
-	if k.token != "" && t.Before(k.renewAt) {
-		return k.token, nil
+	if k.token == "" || !t.Before(k.expires) {
+		return "", false
 	}
+	if !t.Before(k.renewAt) && !k.refreshing {
+		k.refreshing = true
+		go k.refresh()
+	}
+	return k.token, true
+}
+
+func (k *KubernetesAuth) refresh() {
+	ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+	defer cancel()
+	t := now()
 	token, lease, err := k.login(ctx)
-	if err != nil {
-		if k.token != "" && t.Before(k.expires) {
-			return k.token, nil
-		}
-		k.token = ""
-		return "", err
+	if err == nil {
+		k.store(t, token, lease)
 	}
-	renew := min(lease/2, lease-expiryMargin)
-	k.token, k.renewAt, k.expires = token, t.Add(renew), t.Add(lease-expiryMargin)
-	return token, nil
+	k.mu.Lock()
+	k.refreshing = false
+	k.mu.Unlock()
+}
+
+func (k *KubernetesAuth) store(t time.Time, token string, lease time.Duration) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.token, k.renewAt, k.expires = token, t.Add(min(lease/2, lease-expiryMargin)), t.Add(lease-expiryMargin)
 }
 
 // login answers only what it needs: the token and its lease. Errors carry the HTTP status at
@@ -98,9 +138,7 @@ func (k *KubernetesAuth) login(ctx context.Context) (string, time.Duration, erro
 		return "", 0, errors.New("kubernetes auth: building request")
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if k.client == nil {
-		k.client = safeHTTPClient(k.HTTPClient)
-	}
+	k.clientOnce.Do(func() { k.client = safeHTTPClient(k.HTTPClient) })
 	resp, err := k.client.Do(req)
 	if err != nil {
 		return "", 0, errors.New("kubernetes auth: request failed")

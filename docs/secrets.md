@@ -196,10 +196,12 @@ before it expires) at `/var/run/secrets/openbao/token`; the pods still mount no 
 API server. The services take `--openbao-auth-role` (`CONNECTOR_OPENBAO_AUTH_ROLE`,
 `TOKEN_STORE_OPENBAO_AUTH_ROLE`), exclusive with the token file, with `--openbao-auth-mount`
 (default `kubernetes`) and `--openbao-jwt-file`. The login sits behind the per-call token source of
-the OpenBao client (`internal/transit.KubernetesAuth`): the first call logs in; the token is used
-until half its lease, when the next call logs in again with the token file read anew (the kubelet's
-rotation is picked up); a failed re-login keeps the current token until five seconds before its
-lease ends and then fails the call. A failed call is the services' readiness: the connector's and
+the OpenBao client (`internal/transit.KubernetesAuth`): the first call logs in; from half the
+token's lease on, calls still get the current token while one background login, with the token file
+read anew (the kubelet's rotation is picked up), replaces it, so a slow login never eats a caller's
+deadline (a readiness evaluation's above all); a failed background login is tried again by the next
+call, and the current token is used until five seconds before its lease ends, after which a call
+logs in itself and fails when the login fails. A failed call is the services' readiness: the connector's and
 the store's `signing_key` check answers `unreachable` and the pod leaves Ready, without a restart,
 and comes back on the next successful login. The token-store's operator commands (`acquire`,
 `keys`) keep the token file. Errors name the HTTP status only, never the JWT or the answer.

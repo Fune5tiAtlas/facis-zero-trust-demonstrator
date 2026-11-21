@@ -75,7 +75,11 @@ func TestOpenBaoKubernetesAuth(t *testing.T) {
 		if _, err := c.LatestKey(ctx, key); err != nil {
 			t.Fatalf("after half the lease: %v", err)
 		}
-		second, _ := k.Token(ctx)
+		second := first
+		for i := 0; i < 100 && second == first; i++ { // the renewal runs in the background
+			time.Sleep(50 * time.Millisecond)
+			second, _ = k.Token(ctx)
+		}
 		if second == first {
 			t.Fatal("no new login at half the lease")
 		}

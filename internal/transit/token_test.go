@@ -54,11 +54,27 @@ func setup(t *testing.T, lease int, jwt string) (*KubernetesAuth, *fakeLogin, st
 	if err := os.WriteFile(file, []byte(jwt+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	clock := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
-	now = func() time.Time { return clock }
+	var clock atomic.Int64
+	clock.Store(time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC).UnixNano())
+	now = func() time.Time { return time.Unix(0, clock.Load()) }
 	t.Cleanup(func() { now = time.Now })
 	return &KubernetesAuth{Addr: srv.URL, Role: "r", JWTFile: file}, f, file,
-		func(d time.Duration) { clock = clock.Add(d) }
+		func(d time.Duration) { clock.Add(int64(d)) }
+}
+
+// settle waits until no background login runs.
+func settle(t *testing.T, k *KubernetesAuth) {
+	t.Helper()
+	for range 200 {
+		k.mu.Lock()
+		r := k.refreshing
+		k.mu.Unlock()
+		if !r {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("background login did not finish")
 }
 
 func TestKubernetesAuthCachesAndRenewsAtHalfLease(t *testing.T) {
@@ -78,6 +94,12 @@ func TestKubernetesAuthCachesAndRenewsAtHalfLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	advance(time.Second)
+	// Due for renewal: the caller still gets the valid token at once, and one background login
+	// replaces it.
+	if tok, err := k.Token(ctx); err != nil || tok != "tok-1" {
+		t.Fatalf("a caller waited for the renewal: %q %v", tok, err)
+	}
+	settle(t, k)
 	if tok, err := k.Token(ctx); err != nil || tok != "tok-2" {
 		t.Fatalf("renewal at half the lease: %q %v", tok, err)
 	}
@@ -97,6 +119,11 @@ func TestKubernetesAuthKeepsValidTokenWhileLoginFailsThenFailsClosed(t *testing.
 	if tok, err := k.Token(ctx); err != nil || tok != "tok-1" {
 		t.Fatalf("a valid token was dropped on a failed renewal: %q %v", tok, err)
 	}
+	settle(t, k)
+	if tok, err := k.Token(ctx); err != nil || tok != "tok-1" {
+		t.Fatalf("a valid token was dropped after a failed background renewal: %q %v", tok, err)
+	}
+	settle(t, k)
 	advance(15 * time.Second) // 55s: inside the expiry margin
 	tok, err := k.Token(ctx)
 	if err == nil || tok != "" {
