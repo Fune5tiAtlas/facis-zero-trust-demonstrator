@@ -200,8 +200,10 @@ the OpenBao client (`internal/transit.KubernetesAuth`): the first call logs in; 
 token's lease on, calls still get the current token while one background login, with the token file
 read anew (the kubelet's rotation is picked up), replaces it, so a slow login never eats a caller's
 deadline (a readiness evaluation's above all); a failed background login is tried again by the next
-call, and the current token is used until five seconds before its lease ends, after which a call
-logs in itself and fails when the login fails. A failed call is the services' readiness: the connector's and
+call, and the current token is used until five seconds before its lease ends. After that a call
+waits for the one login in progress (all callers share it) until the login or the caller's own
+deadline ends, and fails when the login fails; a login never stores its token over one from a login
+that started later. A failed call is the services' readiness: the connector's and
 the store's `signing_key` check answers `unreachable` and the pod leaves Ready, without a restart,
 and comes back on the next successful login. The token-store's operator commands (`acquire`,
 `keys`) keep the token file. Errors name the HTTP status only, never the JWT or the answer.

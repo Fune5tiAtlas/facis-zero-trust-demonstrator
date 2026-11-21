@@ -19,11 +19,15 @@ import (
 // fakeLogin is OpenBao's /v1/auth/<mount>/login: it accepts the JWT "good-<n>" for role "r" and
 // answers with token "tok-<login count>" and the given lease; status overrides the answer.
 type fakeLogin struct {
-	logins atomic.Int32
-	status atomic.Int32
-	lease  int
-	jwts   []string
-	mu     sync.Mutex
+	// hold, when set, makes the first accepted login wait for it to close; arrived signals that
+	// login's arrival.
+	hold, arrived chan struct{}
+	arrivals      atomic.Int32
+	logins        atomic.Int32
+	status        atomic.Int32
+	lease         int
+	jwts          []string
+	mu            sync.Mutex
 }
 
 func (f *fakeLogin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -40,6 +44,10 @@ func (f *fakeLogin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.jwts = append(f.jwts, in.JWT)
 	f.mu.Unlock()
+	if f.hold != nil && f.arrivals.Add(1) == 1 {
+		close(f.arrived)
+		<-f.hold
+	}
 	n := f.logins.Add(1)
 	_ = json.NewEncoder(w).Encode(map[string]any{"auth": map[string]any{
 		"client_token": fmt.Sprintf("tok-%d", n), "lease_duration": f.lease}})
@@ -67,7 +75,7 @@ func settle(t *testing.T, k *KubernetesAuth) {
 	t.Helper()
 	for range 200 {
 		k.mu.Lock()
-		r := k.refreshing
+		r := k.flight != nil
 		k.mu.Unlock()
 		if !r {
 			return
@@ -198,5 +206,71 @@ func TestFileToken(t *testing.T) {
 	_ = os.WriteFile(file, []byte("b"), 0o600)
 	if tok, _ := src(context.Background()); tok != "b" {
 		t.Fatalf("replaced token not reread: %q", tok)
+	}
+}
+
+// A caller whose context ends stops waiting for a slow login at once; the login goes on, and the
+// next caller gets its token.
+func TestKubernetesAuthCallerDeadlineWhileLoginIsSlow(t *testing.T) {
+	k, f, _, _ := setup(t, 60, "good-1")
+	f.hold, f.arrived = make(chan struct{}), make(chan struct{})
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := k.Token(ctx); !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > time.Second {
+		t.Fatalf("a caller waited past its deadline: %v after %v", err, time.Since(start))
+	}
+	<-f.arrived
+	close(f.hold)
+	if tok, err := k.Token(context.Background()); err != nil || tok != "tok-1" {
+		t.Fatalf("the slow login's token: %q %v", tok, err)
+	}
+	if n := f.logins.Load(); n != 1 {
+		t.Fatalf("%d logins: the cancelled caller's login was not shared", n)
+	}
+}
+
+// A background renewal still in flight when the token expires: the caller waits for that same
+// login, not a second one.
+func TestKubernetesAuthExpiryJoinsBackgroundRenewal(t *testing.T) {
+	k, f, _, advance := setup(t, 60, "good-1")
+	ctx := context.Background()
+	if _, err := k.Token(ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.hold, f.arrived = make(chan struct{}), make(chan struct{})
+	advance(30 * time.Second)
+	if tok, _ := k.Token(ctx); tok != "tok-1" { // starts the background renewal
+		t.Fatalf("got %q", tok)
+	}
+	<-f.arrived
+	advance(30 * time.Second) // expired meanwhile
+	done := make(chan string)
+	go func() { tok, _ := k.Token(ctx); done <- tok }()
+	close(f.hold)
+	if tok := <-done; tok != "tok-2" || f.logins.Load() != 2 {
+		t.Fatalf("got %q after %d logins, want tok-2 after 2", tok, f.logins.Load())
+	}
+}
+
+// Two logins that overlap and end out of order: the later one's token stays.
+func TestKubernetesAuthOlderLoginNeverOverwritesNewer(t *testing.T) {
+	k, f, _, _ := setup(t, 60, "good-1")
+	f.hold, f.arrived = make(chan struct{}), make(chan struct{})
+	k.mu.Lock()
+	older := k.start()
+	k.mu.Unlock()
+	<-f.arrived // the older login is held at the server
+	k.mu.Lock()
+	newer := k.start()
+	k.mu.Unlock()
+	<-newer.done
+	close(f.hold)
+	<-older.done
+	if older.token != "tok-2" || newer.token != "tok-1" {
+		t.Fatalf("server order: older %q, newer %q", older.token, newer.token)
+	}
+	if tok, _ := k.Token(context.Background()); tok != "tok-1" {
+		t.Fatalf("the older login overwrote the newer token: %q", tok)
 	}
 }

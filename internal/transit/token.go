@@ -36,14 +36,23 @@ type KubernetesAuth struct {
 	// HTTPClient carries the login; nil is a client without a proxy that never follows a redirect.
 	HTTPClient *http.Client
 
-	mu         sync.Mutex // guards the fields below
-	token      string
-	renewAt    time.Time  // half the lease: log in again, in the background, from here on
-	expires    time.Time  // the token is not used from here on
-	refreshing bool       // a background login is running
-	logging    sync.Mutex // one blocking login at a time
+	mu      sync.Mutex // guards the fields below
+	token   string
+	renewAt time.Time // half the lease: log in again, in the background, from here on
+	expires time.Time // the token is not used from here on
+	gen     uint64    // the generation of the stored token: the login that started last wins
+	started uint64    // logins started
+	flight  *flight   // the login in progress, shared by every caller that needs it
+
 	clientOnce sync.Once
 	client     *http.Client
+}
+
+// flight is one login: done closes once token and err are set.
+type flight struct {
+	done  chan struct{}
+	token string
+	err   error
 }
 
 // now is the clock; tests move it.
@@ -53,68 +62,66 @@ var now = time.Now
 // slow request do not reach OpenBao with an expired token.
 const expiryMargin = 5 * time.Second
 
-// refreshTimeout bounds a background login, which no caller's deadline covers.
-const refreshTimeout = 30 * time.Second
+// loginTimeout bounds a login. A login runs detached from the caller that started it, so a caller
+// that gives up does not fail it for the others.
+const loginTimeout = 30 * time.Second
 
-// Token is the TokenSource. With no usable token it logs in, in the caller's context, and fails
-// the call when the login fails: the caller's request fails, and readiness with it. A token past
-// half its lease is still handed out while one background login replaces it, so a slow login never
-// eats a caller's budget (a readiness probe's above all); a background login that fails is tried
-// again by the next call, and the token is used until expiryMargin before its lease ends.
+// Token is the TokenSource. A token within its lease is handed out at once; from half its lease on,
+// one background login replaces it, so a slow login never eats a caller's deadline (a readiness
+// probe's above all), and a failed one is tried again by the next call. With no usable token the
+// caller waits for the one login in progress (starting it if none is) until the login ends or the
+// caller's context does, and fails when the login fails: the caller's request fails, and readiness
+// with it.
 //
 // ponytail: a token OpenBao revokes before its lease ends is used until renewAt; the services'
 // readiness and startup report the refusal meanwhile. Add a drop-on-403 hook to Client if
 // revocation mid-lease must heal faster than half a lease.
 func (k *KubernetesAuth) Token(ctx context.Context) (string, error) {
-	if tok, ok := k.cached(); ok {
+	k.mu.Lock()
+	t := now()
+	if k.token != "" && t.Before(k.expires) {
+		if !t.Before(k.renewAt) && k.flight == nil {
+			k.start()
+		}
+		tok := k.token
+		k.mu.Unlock()
 		return tok, nil
 	}
-	k.logging.Lock()
-	defer k.logging.Unlock()
-	if tok, ok := k.cached(); ok { // another caller logged in meanwhile
-		return tok, nil
+	f := k.flight
+	if f == nil {
+		f = k.start()
 	}
-	t := now()
-	token, lease, err := k.login(ctx)
-	if err != nil {
-		return "", err
-	}
-	k.store(t, token, lease)
-	return token, nil
-}
-
-// cached hands out a token within its lease and starts the background login once it is due.
-func (k *KubernetesAuth) cached() (string, bool) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	t := now()
-	if k.token == "" || !t.Before(k.expires) {
-		return "", false
-	}
-	if !t.Before(k.renewAt) && !k.refreshing {
-		k.refreshing = true
-		go k.refresh()
-	}
-	return k.token, true
-}
-
-func (k *KubernetesAuth) refresh() {
-	ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
-	defer cancel()
-	t := now()
-	token, lease, err := k.login(ctx)
-	if err == nil {
-		k.store(t, token, lease)
-	}
-	k.mu.Lock()
-	k.refreshing = false
 	k.mu.Unlock()
+	select {
+	case <-f.done:
+		return f.token, f.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 }
 
-func (k *KubernetesAuth) store(t time.Time, token string, lease time.Duration) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	k.token, k.renewAt, k.expires = token, t.Add(min(lease/2, lease-expiryMargin)), t.Add(lease-expiryMargin)
+// start begins a login; k.mu is held.
+func (k *KubernetesAuth) start() *flight {
+	k.started++
+	gen := k.started
+	f := &flight{done: make(chan struct{})}
+	k.flight = f
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), loginTimeout)
+		defer cancel()
+		t := now()
+		token, lease, err := k.login(ctx)
+		k.mu.Lock()
+		if err == nil && gen > k.gen { // never replace a token from a later login
+			k.token, k.gen = token, gen
+			k.renewAt, k.expires = t.Add(min(lease/2, lease-expiryMargin)), t.Add(lease-expiryMargin)
+		}
+		k.flight = nil
+		k.mu.Unlock()
+		f.token, f.err = token, err
+		close(f.done)
+	}()
+	return f
 }
 
 // login answers only what it needs: the token and its lease. Errors carry the HTTP status at
