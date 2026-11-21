@@ -17,7 +17,7 @@ The audit uses GITHUB_TOKEN (actions: read), GITHUB_REPOSITORY, GITHUB_RUN_ID, G
 GITHUB_API_URL. It checks that the producer's evidence (scan.json) names the same run and attempt, and
 writes log-audit.json: counts and booleans only.
 
-A second, separate mode audits the jobs that hold signing key material (FZTD-57), whatever their
+A second, separate mode audits the jobs that hold signing key material (ZT-10), whatever their
 outcome - a failed signing job is audited like a successful one:
 
   log_audit.py signing-audit --job NAME [--job NAME ...] --out DIR

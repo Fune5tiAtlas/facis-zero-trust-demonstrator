@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The audit of the release environment's allowlist (FZTD-57): a run from a ref the environment must not
+# The audit of the release environment's allowlist (ZT-10): a run from a ref the environment must not
 # admit is started, and its probe job - which names the release environment and holds no secret - must
 # have been refused by the environment before any step ran. Run by the Environment audit job of
 # signing-environment-audit.yml, by hand only.

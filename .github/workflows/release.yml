@@ -543,7 +543,7 @@ jobs:
           path: dist/release
           overwrite: true
 
-  # FZTD-57: the candidate or release images job and, on a tag, the release job.
+  # ZT-10: the candidate or release images job and, on a tag, the release job.
   # Once the signing jobs have completed, successful or not, their published logs must hold no private-key
   # material (scripts/secrets/log_audit.py signing-audit); the record is counts and verdicts only.
   signing-log-audit:

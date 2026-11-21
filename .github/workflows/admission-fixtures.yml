@@ -127,7 +127,7 @@ jobs:
           name: admission-fixtures
           path: fixtures.txt
 
-  # FZTD-57: the fixtures job.
+  # ZT-10: the fixtures job.
   # Once the signing jobs have completed, successful or not, their published logs must hold no private-key
   # material (scripts/secrets/log_audit.py signing-audit); the record is counts and verdicts only.
   signing-log-audit:

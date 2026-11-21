@@ -335,7 +335,7 @@ waits for that run and decides with `scripts/supplychain/env-audit.sh`: **refuse
 GitHub's "not allowed to deploy" annotation — read from the job's check run, `check_run_url` — before
 any step ran; **admitted** when a step ran;
 **inconclusive** otherwise (for example, the job waiting for a reviewer). Only *refused* passes. The
-record, `env-audit.json`, is the run's artefact and is the evidence for FZTD-57. Annotations that
+record, `env-audit.json`, is the run's artefact and is the evidence for ZT-10. Annotations that
 cannot be read fail the audit. The owned branch's deletion is armed before the branch is created,
 retried, and counts a branch already gone as deleted; a branch it cannot delete fails the audit, so
 none is left behind silently. A `probe_ref` given by hand is never deleted. An allowlisted ref (`main`, `candidate/*`, `v*`) is refused as a probe.
@@ -349,7 +349,7 @@ refusal, matched loosely (`not allowed to deploy to release` or `environment pro
 
 ### Signing log audit
 
-No log of a job that holds the key may show key material (FZTD-57). Each signing workflow ends with
+No log of a job that holds the key may show key material (ZT-10). Each signing workflow ends with
 a `Signing log audit` job that runs once the signing jobs have completed, successful or failed, reads
 their published logs through the API (`actions: read`, no secret) and runs
 `scripts/secrets/log_audit.py signing-audit`: PEM private-key blocks, the same blocks base64-encoded,

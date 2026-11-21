@@ -1,6 +1,6 @@
 name: Signing environment audit
 
-# FZTD-57: the record that the release environment refuses a run from a ref outside its allowlist (main,
+# ZT-10: the record that the release environment refuses a run from a ref outside its allowlist (main,
 # candidate/*, v* - docs/ci-cd.md). Started by hand only, once the environment's allowlist is applied;
 # until then it does nothing. The audit job creates a disposable branch at this commit (or uses the
 # probe_ref given), dispatches this workflow on it in probe mode, waits for that run and requires its

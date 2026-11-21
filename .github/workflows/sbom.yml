@@ -113,7 +113,7 @@ jobs:
           VAULT_TOKEN: ${{ vars.SIGNING_KEY_SOURCE == 'openbao-transit' && secrets.SIGNING_VAULT_TOKEN || '' }}
         run: scripts/supplychain/sbom-backfill.sh
 
-  # FZTD-57: the SBOM job.
+  # ZT-10: the SBOM job.
   # Once the signing jobs have completed, successful or not, their published logs must hold no private-key
   # material (scripts/secrets/log_audit.py signing-audit); the record is counts and verdicts only.
   signing-log-audit:
