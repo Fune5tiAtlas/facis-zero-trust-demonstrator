@@ -8,10 +8,13 @@ A release has one role.
 layer, their service accounts at the mesh layer) on `egress.port`, plain HTTP over mesh mutual TLS, and
 forwards every request to the peer zone's entry over TLS that the gateway originates and verifies: the CA
 in `egress.peer.caCert`, the subject alternative name `egress.peer.serverName` (default: the address).
-Its NetworkPolicy has one egress lane, to `egress.peer.address`/32 on `egress.peer.port`, the one
-external destination of the namespace; the address is a zone fact given at install, never committed.
-Renders `ztd-connector-gateway-callers` (AuthorizationPolicy) and the NetworkPolicy, both annotated
-`ztd.facis.io/connector-route` and `ztd.facis.io/l7-owner: sidecar`.
+Its one lane out of the cluster, to `egress.peer.address`/32 on `egress.peer.port`, is the
+CiliumNetworkPolicy `<name>-peer`, which selects the gateway's service account, not a label another pod
+could carry; the address is a zone fact given at install, never committed. `<name>-callers` (NetworkPolicy
+and AuthorizationPolicy) admit the callers. Each policy carries its hop (`ztd.facis.io/connector-hop`) and
+that hop's L7 owner: caller-to-gateway `sidecar`, gateway-to-peer `none`; in the ingress role
+outside-to-entry `none` (`<name>-entry`, `<name>-public`) and entry-to-upstream `sidecar` (`<name>-upstream`).
+`scripts/ci/check-policy-l7-owner.sh` holds every rendering to that mapping.
 
 **Ingress** (`ingress.enabled`): the zone's entry. TLS terminated with `ingress.tlsSecret` on
 `ingress.port` behind a Service of `ingress.service.type`, every request routed to the Service
