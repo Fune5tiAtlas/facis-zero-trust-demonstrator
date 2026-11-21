@@ -14,7 +14,10 @@
 #               provider's TLS Secret and the constraints must be the same objects afterwards
 #   rollback    migrate, then back to standalone (scripts/admission/install.sh FROM_UMBRELLA=1), with
 #               the same objects again
-# The trust-removal step changes the provider in whichever layout is installed.
+# The trust-removal step changes the provider in whichever layout is installed. POLICY=argocd (umbrella
+# layouts) sets admission.policy.managedBy: argocd and stands in for Argo CD: the policy objects are
+# applied with kubectl, as install.sh applies them, once Gatekeeper's CRDs exist; the release must
+# then neither render nor own them.
 #
 # Needs docker and helm; python3 with PyYAML for the umbrella layouts. KEEP=1 leaves the cluster and
 # registry running for inspection.
@@ -29,6 +32,8 @@ cd "$root"
 bin="$(cd "${BIN:-.tools/bin}" && pwd)"
 export PATH="$bin:$PATH"
 layout=${LAYOUT:-standalone}
+policy=${POLICY:-helm}
+case "$policy" in helm | argocd) ;; *) echo "POLICY must be helm or argocd" >&2; exit 2 ;; esac
 case "$layout" in standalone | umbrella | migrate | rollback) ;; *) echo "LAYOUT must be standalone, umbrella, migrate or rollback" >&2; exit 2 ;; esac
 
 cluster=ztd-admission
@@ -114,11 +119,11 @@ standalone() {
 }
 # The kind zone file with admission.install and the same settings as standalone() above.
 umbrella() {
-  python3 - deployment/helm/ztd/ci/values.yaml "$work/zone.yaml" "$reg" "$provider_digest" "$work/cosign.pub" "$allow_listed" <<'PY'
+  python3 - deployment/helm/ztd/ci/values.yaml "$work/zone.yaml" "$reg" "$provider_digest" "$work/cosign.pub" "$allow_listed" "$policy" <<'PY'
 import sys, yaml
-source, target, reg, digest, key, allowed = sys.argv[1:]
+source, target, reg, digest, key, allowed, policy = sys.argv[1:]
 zone = yaml.safe_load(open(source))
-zone["admission"] = {"install": True}
+zone["admission"] = {"install": True, "policy": {"managedBy": policy}}
 zone["gatekeeper"] = {"replicas": 2}
 zone["admissionProvider"] = {
     "replicas": 1,
@@ -128,7 +133,26 @@ zone["admissionProvider"] = {
 }
 yaml.safe_dump(zone, open(target, "w"), sort_keys=False)
 PY
+  [ "$policy" = helm ] || argocd_standin &
   KUBE_CONTEXT="kind-$cluster" ZONE_VALUES="$work/zone.yaml" ADMISSION_ADOPT=1 scripts/install-zone/install.sh install gatekeeper
+  wait
+}
+# Argo CD's part with POLICY=argocd: the policy objects, applied from outside the release.
+argocd_standin() {
+  until kubectl get crd constrainttemplates.templates.gatekeeper.sh >/dev/null 2>&1; do sleep 2; done
+  kubectl apply -f deployment/admission/templates/ -f deployment/admission/exemptions.yaml >/dev/null
+  for c in $admission_constraints; do
+    until kubectl wait --for=condition=established --timeout=5s "crd/${c%%/*}.constraints.gatekeeper.sh" >/dev/null 2>&1; do sleep 2; done
+  done
+  sed -e "s|ghcr.io/eclipse-xfsc/facis-zero-trust-demonstrator|$reg/ztd|" -e "s|^    allowedDigests: \[\]$|    allowedDigests: [\"$allow_listed\"]|" \
+    deployment/admission/constraints/allowed-repositories.yaml | kubectl apply -f - >/dev/null
+  for c in image-digest naming verified-images; do kubectl apply -f "deployment/admission/constraints/$c.yaml" >/dev/null; done
+}
+# With POLICY=argocd no policy object may carry a Helm owner.
+policy_owners() {
+  kubectl get constrainttemplates -o json | jq -r '.items[] | .metadata.annotations["meta.helm.sh/release-name"] // empty'
+  for c in $admission_constraints; do kubectl get "$c" -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-name}'; done
+  kubectl -n gatekeeper-system get config config -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-name}'
 }
 # The objects that must survive a change of layout unchanged: the Deployments (same UID - adopted in
 # place, not recreated), the provider's TLS Secret (same CA) and the constraints.
@@ -168,6 +192,10 @@ case "$layout" in
       if [ "$(identity)" = "$before" ]; then pass "rollback: the same Deployments, provider CA and constraints"; else fail "rollback: objects replaced: $(diff <(echo "$before") <(identity) || true)"; fi
     fi ;;
 esac
+if [ "$policy" = argocd ]; then
+  owners=$(policy_owners)
+  if [ -z "$owners" ]; then pass "policy objects owned by no Helm release (Argo CD's)"; else fail "policy objects owned by Helm release(s): $owners"; fi
+fi
 # The webhook-scope post-renderer, for the provider upgrades below in the umbrella layout.
 admission_helm_home "$work/helm-data"
 unscoped=$(kubectl get validatingwebhookconfiguration gatekeeper-validating-webhook-configuration -o json | jq -r '
