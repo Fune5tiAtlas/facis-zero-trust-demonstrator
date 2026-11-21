@@ -51,3 +51,7 @@ podAnnotations: {}
 resources:
   requests: {cpu: 50m, memory: 64Mi}
   limits: {memory: 256Mi}
+# The TSA compiles the policy on every evaluation; it gets its own, larger share.
+tsaResources:
+  requests: {cpu: 250m, memory: 128Mi}
+  limits: {memory: 512Mi}

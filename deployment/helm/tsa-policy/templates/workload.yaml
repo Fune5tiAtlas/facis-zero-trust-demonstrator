@@ -96,7 +96,7 @@ spec:
             - {name: work, mountPath: /work}
             - {name: tmp, mountPath: /tmp}
           resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+            {{- toYaml .Values.tsaResources | nindent 12 }}
           securityContext:
             {{- include "tsa.securityContext" . | nindent 12 }}
         - name: bundle
@@ -107,8 +107,10 @@ spec:
           readinessProbe:
             httpGet: {path: /readyz, port: http}
             periodSeconds: 2
+            timeoutSeconds: 5
           livenessProbe:
             httpGet: {path: /healthz, port: http}
+            timeoutSeconds: 5
           volumeMounts:
             - {name: config, mountPath: /etc/tsa-bundle, readOnly: true}
             - {name: desired, mountPath: /etc/tsa-desired, readOnly: true}
