@@ -11,7 +11,7 @@ documents its values in its own README.
 | Token store | `deployment/helm/token-store` | new; the authorization database's schema as a migration hook, and the service with its probes and identity, its endpoints to follow | [token-store/README.md](token-store/README.md) |
 | Application service | `deployment/helm/application-service` | in use (OSC shared namespace) | [application-service/README.md](application-service/README.md) |
 | Lifecycle fixture (test data, never released) | `features/fixtures/charts/lifecycle-fixture` | in use by the acceptance scenarios | [README](../../features/fixtures/charts/lifecycle-fixture/README.md) |
-| ORCE | — | planned; until then ORCE is installed from `deployment/orce-minimal/` | — |
+| ORCE | `deployment/helm/orce` | new; ORCE on IONOS behind the public ingress, deployed by `deploy-ionos.yml` | [orce/README.md](orce/README.md) |
 | Umbrella chart for a zone | `deployment/helm/ztd` | in use on kind; design in [docs/umbrella-chart.md](../../docs/umbrella-chart.md) | [ztd/README.md](ztd/README.md) |
 | Zone policy | `deployment/helm/zone-policy` | in use on kind | the workloads' registration with SPIRE, mesh-wide STRICT mTLS, the identity-band checks |
 | Upstream SPIRE and Istio charts (values only) | `deployment/helm/values` | in use on kind | [values/README.md](values/README.md) |
