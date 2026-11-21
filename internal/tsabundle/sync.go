@@ -41,7 +41,16 @@ type Syncer struct {
 	last    []byte      // the last verified and activated bundle, its reference and revision
 	ref     string
 	rev     atomic.Value // string
+	misses  int          // consecutive probes without an answer
 }
+
+// ActivationWindow bounds the wait for an imported bundle to answer with its revision: the TSA
+// recompiles the policy on every evaluation, which a loaded node makes slow.
+var ActivationWindow = 30 * time.Second
+
+// lostAfter is how many consecutive unanswered probes count as a TSA that lost its policy. A single
+// slow or failed evaluation is not: restoring on it would make the pod flap under load.
+const lostAfter = 3
 
 // Active is the revision evaluations are served under, "" while none is (startup, a swap, a TSA
 // that lost its policy).
@@ -56,15 +65,16 @@ func (s *Syncer) Active() string {
 func (s *Syncer) revision() string { v, _ := s.rev.Load().(string); return v }
 
 // Probe evaluates an empty input: the policy denies it, naming the revision it evaluated with. This
-// reads the revision the TSA actually uses, so a TSA restart (which empties it) is noticed.
-func (s *Syncer) Probe(ctx context.Context) string {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+// reads the revision the TSA actually uses, so a TSA restart (which empties it) is noticed. ok is
+// false when the TSA gave no decision at all.
+func (s *Syncer) Probe(ctx context.Context) (revision string, ok bool) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	d, err := Evaluate(ctx, s.HTTP, s.TSA+s.Policy.EvaluationPath(), []byte("{}"))
 	if err != nil {
-		return ""
+		return "", false
 	}
-	return d.BundleRevision
+	return d.BundleRevision, true
 }
 
 // load imports a verified bundle and waits until an evaluation reports its revision.
@@ -82,8 +92,8 @@ func (s *Syncer) load(ctx context.Context, outer []byte, revision string) error 
 	}
 	// The TSA swaps the policy under a lock and drops its compiled query asynchronously.
 	got := ""
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-		if got = s.Probe(ctx); got == revision {
+	for deadline := time.Now().Add(ActivationWindow); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+		if got, _ = s.Probe(ctx); got == revision {
 			return nil
 		}
 	}
@@ -105,9 +115,17 @@ func (s *Syncer) restore(ctx context.Context) {
 
 // Reconcile makes the declared reference and revision the active pair.
 func (s *Syncer) Reconcile(ctx context.Context, d Desired) error {
-	// The TSA must still evaluate the last verified bundle (it empties on restart).
-	if s.Probe(ctx) != s.revision() || s.last == nil {
+	// The TSA must still evaluate the last verified bundle: a different revision is restored at once,
+	// no answer only after lostAfter polls in a row (a restarted TSA is empty and keeps failing).
+	got, ok := s.Probe(ctx)
+	if ok {
+		s.misses = 0
+	} else {
+		s.misses++
+	}
+	if s.last == nil || (ok && got != s.revision()) || s.misses >= lostAfter {
 		s.serving.Store(false)
+		s.misses = 0
 		s.restore(ctx)
 	}
 	if s.serving.Load() && d.Bundle == s.ref && d.Revision == s.revision() {

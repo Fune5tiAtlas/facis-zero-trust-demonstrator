@@ -148,6 +148,7 @@ type fakeTSA struct {
 	mu       sync.Mutex
 	revision string
 	imports  int
+	fail     int // evaluations still to fail, as a slow or overloaded TSA does
 }
 
 var literalRevision = regexp.MustCompile(`"bundle_revision": "([^"]+)"`)
@@ -167,6 +168,11 @@ func (f *fakeTSA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.revision = string(m[1])
 		}
 	case coords.EvaluationPath():
+		if f.fail > 0 {
+			f.fail--
+			http.Error(w, "eval_cancel_error", http.StatusInternalServerError)
+			return
+		}
 		if f.revision == "" {
 			http.Error(w, "policy not found", http.StatusInternalServerError)
 			return
@@ -203,6 +209,7 @@ func lying(t *testing.T, k *ecdsa.PrivateKey, revision, claims string) []byte {
 }
 
 func TestSyncerActivatesVerifiedBundlesOnlyAndRollsBack(t *testing.T) {
+	ActivationWindow = time.Second
 	trusted, other := newKey(t), newKey(t)
 	store := map[string][]byte{"v1": bundle(t, trusted, "v1"), "v1-resigned": bundle(t, trusted, "v1"), "v2": bundle(t, trusted, "v2"),
 		"forged": bundle(t, other, "v3"), "lying": lying(t, trusted, "v3", "v2")}
@@ -251,8 +258,21 @@ func TestSyncerActivatesVerifiedBundlesOnlyAndRollsBack(t *testing.T) {
 	if tsa.imports != imports {
 		t.Fatal("an active pair was imported again")
 	}
-	tsa.revision = ""                               // the TSA restarted empty
-	step(Desired{"forged", "v3"}, true, "v1", "v1") // restored from the cache even while the declaration is refused
+	tsa.fail = 1 // one unanswered probe: no restore, no import, still served
+	step(Desired{"v1", "v1"}, false, "v1", "v1")
+	if tsa.imports != imports {
+		t.Fatal("a single failed probe re-imported the bundle")
+	}
+	step(Desired{"v1", "v1"}, false, "v1", "v1") // answered again: the count starts over
+	// The TSA restarted empty: restored from the cache after lostAfter polls, even while the
+	// declaration is refused.
+	tsa.revision = ""
+	for i := 1; i < lostAfter; i++ {
+		if err := s.Reconcile(ctx, Desired{"forged", "v3"}); err == nil || tsa.revision != "" {
+			t.Fatalf("poll %d: restored early", i)
+		}
+	}
+	step(Desired{"forged", "v3"}, true, "v1", "v1")
 	if strings.Contains(string(JWKS(&trusted.PublicKey)), "\"d\"") {
 		t.Fatal("JWKS carries private material")
 	}
