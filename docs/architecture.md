@@ -187,7 +187,8 @@ cluster-administration openings and the telemetry export out of a zone, are list
 [Declared openings](#declared-openings-of-the-network-baseline) and
 [Observability placement](#observability-placement-zt-55-zt-26), and none of them is a row here.
 
-This matrix is not the ZT-26 bypass list, which is a separate reviewed artefact; the rows here that
+This matrix is not the ZT-26 bypass list, which is a separate artefact
+([Zero Trust Connector routing](#zero-trust-connector-routing-zt-26)); the rows here that
 carry a declared bypass are entries in that list, not the list itself. Cluster administration is
 a declared class with no row here. Three of its entries have sources that are not data-plane
 workloads — the API server, the host-networked SPIRE agents, the management-plane namespaces — and
@@ -487,6 +488,100 @@ allow matrix ([Out of scope](#allow-matrix-data-plane-management-plane)); each h
 
 Metrics are pushed from the zones, never pulled into them: the central Prometheus scrapes no target in
 a zone.
+
+### Zero Trust Connector routing (ZT-26)
+
+ZT-26 (SRS 3.1.2) routes the ingress and egress of inter-service communication through the Zero
+Trust Connector, and lets the protocols and endpoints not related to inter-connector communication
+use their own controlled ingress and egress. This section names the component that forwards
+application traffic in each direction, the path it takes with the identities, namespaces and ports
+that admit it, and the reviewed list of what bypasses it.
+
+**The forwarding components.** The Connector is a set of components, and only two of them forward
+application traffic across the zone boundary; both are releases of the `connector-gateway` chart
+(`deployment/helm/connector-gateway`), one role each:
+
+- **egress, the zone gateway** (`ztd-connector-gateway`): an Envoy in the data-plane namespace that
+  admits named in-zone callers over mesh mutual TLS and forwards their requests to the peer zone's
+  entry over TLS it originates itself, verifying the entry's certificate against the peer's CA and
+  its subject alternative name. It is the one pod of the namespace with a network lane out of the
+  cluster: to the peer entry's address and port, nothing else.
+- **ingress, the zone entry** (`ztd-edge`): an Envoy behind the zone's `LoadBalancer` that
+  terminates TLS from outside and forwards every request to one upstream in the zone, the
+  Participant backend, which reaches the protected resource only through the guard.
+
+The other Connector components do not forward: the Connector service (`ztd-connector`) serves the
+OAuth endpoints (registration, challenge, token, JWKS); the guard (`ztd-guard`) is the policy
+enforcement point in front of the protected resource, which forwards an allowed request to the
+resource inside the zone; the policy evaluator and the token store answer the guard. A mesh pair
+admits a caller to a port; it routes nothing.
+
+**The path, both directions.** Zone A holds the egress role and zone B the ingress role: the
+protected resource runs in zone B, and zone A runs no application that zone B calls, so zone A has
+no entry and zone B no egress route. Each row is one hop; every in-zone hop is mesh mutual TLS
+under the destination's AuthorizationPolicy, every hop is admitted by a NetworkPolicy lane.
+
+| Hop | Source (identity) | Destination, port | Mesh rule (principal admitted) | Network lane |
+|---|---|---|---|---|
+| zone A caller → zone gateway | `spiffe://zone-a.trust.invalid/ns/ztd-data/sa/backend` | `ztd-connector-gateway.ztd-data`, 8080 (HTTP) | `ztd-connector-gateway-callers` (that principal, port 8080) | `ztd-connector-gateway` ingress from the caller's pods (`app.kubernetes.io/name: backend`); `allow-intra-plane` |
+| zone gateway → zone B entry | `ztd-connector-gateway` (TLS client; verifies the entry's CA and its address) | the zone B entry's address, 443 | none: outside the mesh | `ztd-connector-gateway` egress to that address only (`ztd.facis.io/connector-route: egress:zone-b`) |
+| outside → zone B entry | any client the entry's `sourceRanges` admit (TLS, server-authenticated) | `ztd-edge.ztd-m3-b`, 443 → 8443 | `ztd-edge-public` (port 8443; mutual TLS off on that port only, `ztd-edge-tls`) | `ztd-edge` ingress from `sourceRanges` on 8443 |
+| entry → Participant backend | `spiffe://zone-b.trust.invalid/ns/ztd-m3-b/sa/ztd-edge` | `ztd-participant.ztd-m3-b`, 8080 | `ztd-participant-identities` (that principal) | `ztd-edge` egress, `ztd-participant` ingress from the entry's pods |
+| Participant backend → guard | `.../ns/ztd-m3-b/sa/ztd-participant` | `ztd-guard.ztd-m3-b`, 8080, `POST /demo` | `ztd-guard-caller` | `ztd-participant` egress, `ztd-guard-guard-path` ingress |
+| guard → protected resource | `.../ns/ztd-m3-b/sa/ztd-guard` | `ztd-protected-resource.ztd-m3-b`, 8080, `POST /demo` | `ztd-protected-resource-caller` | `ztd-guard-guard-path` egress, `ztd-protected-resource-guard-path` ingress (the guard only) |
+
+The guard's own calls (the policy evaluator's `POST /decision`, the token store's substitution and
+replay check, the Connector's JWKS) and the Participant backend's token calls to the Connector stay
+inside zone B and are listed with the guard chart (`deployment/helm/guard`).
+
+**The direct paths, refused.** A data-plane workload of zone A that calls the peer entry itself,
+around the gateway, is dropped by the network layer: the namespace's default deny has no egress out
+of the cluster except the gateway's lane. A workload with the caller's labels and another identity is
+refused by the gateway's proxy. In zone B the only Service reachable from outside is the entry (with
+the declared TRAIN DNS listener, below), the protected resource admits the guard alone at both
+layers, and a workload of the data-plane namespace reaches none of the M3 services. The proof is
+`scripts/verify-connector-routing/verify.sh` (its README); `kind.sh` beside it rehearses both roles on
+kind, with a peer entry outside the cluster.
+
+**The address in the gateway's lane.** The peer entry is outside the cluster and holds no identity
+in this mesh, so its lane names its address, as the telemetry export's does (ZT-25 governs the
+policies between workloads of the mesh); the address is a zone fact given to the release at install,
+never committed. The transport between the zones is TLS over public transit, authenticated by the
+entry's certificate under a demonstration CA: it is neither the attested channel (ZT-31, ZT-35) nor
+the CUG interconnect, declared in [Specifications](specifications.md).
+
+**L7 owner of the Connector paths** (extending [the paths outside the matrix](#l7-owner-of-the-paths-outside-the-matrix)):
+
+| Path | L7 owner | Why |
+|---|---|---|
+| caller → zone gateway | `sidecar` | mesh traffic under STRICT mTLS; the gateway's sidecar decides on the caller's identity (`ztd-connector-gateway-callers`); the gateway's Envoy routes every path to the peer and decides nothing |
+| zone gateway → peer entry | `none` | TLS out of the cluster; no proxy of this zone decides on it, Cilium holds it at L3/L4 |
+| outside → zone entry | `none` | mutual TLS is off on the entry's port; its sidecar admits the port, and the entry's Envoy routes every path to its upstream |
+| entry → Participant backend, backend → guard, guard → resource | `sidecar` | the destination's sidecar decides (the rules above); the guard's `ext_authz` decision is the policy decision of the protected call (IF-05), not a second mesh decision |
+
+The gateway's rules carry `ztd.facis.io/l7-owner` as the allow-matrix rules do.
+
+**The bypass list (ZT-26).** Every path that enters or leaves a zone without the Connector, with
+its reason and the policies that control it. A path not listed here does not exist: the default
+deny drops it. Checked against the live zones on 21 Nov 2026 (the NetworkPolicies and Cilium
+policies of every namespace and every Service of type `LoadBalancer` or `NodePort`).
+
+| Class | Path | Reason | Controlled by |
+|---|---|---|---|
+| Name resolution | plane workloads → the cluster resolver (`kube-dns`), 53 (8053 on the zones) | every path above is reached by name; DNS is not mTLS traffic, the mesh cannot govern it | `allow-dns-egress` (umbrella), `ztd-dns` (`ztd-m3-b`, `ztd-partner`, `ztd-train`); the resolver's own upstream is the provider's (`kube-system`, Gardener's policies) |
+| Name resolution | outside → the TRAIN zone manager's authoritative DNS (`ztd-train/train-zone-manager-dns`, a `LoadBalancer` on 53) | publishes the trust framework's DNS zone (TRAIN, ZT-35); not application traffic | `train-zone-manager-dns-ingress` (NetworkPolicy and CiliumNetworkPolicy, zone B only) |
+| Observability export | data-plane workloads → the zone's collector, 4317/4318 | ZT-27, ZT-52 ([allow matrix](#allow-matrix-data-plane-management-plane)) | `allow-workloads-to-otel-collector-*`, `allow-workloads-to-otel-collector` |
+| Observability export | the zone gateway and the node collectors → the demonstrator cluster's entry | the export out of the zone ([Observability placement](#observability-placement-zt-55-zt-26)) | `allow-telemetry-export-egress`; not yet installed on the zones (no collector runs there) |
+| Cluster administration | the API server → the control planes' webhooks; the SPIRE agents → the SPIRE server; the meshed pods → istiod's xDS; the management plane → the API server; the zone gateway's scrapes | [Declared openings](#declared-openings-of-the-network-baseline) | `controlPlaneWebhooks`, `identityServer`, `meshControlPlane`, `kubeApi`, `observabilityScrape`; on zone B also `ztd-m3-b-to-istiod` and `ztd-partner-to-istiod` (the non-plane meshed namespaces' xDS) |
+| Cluster administration | operators and the pipeline → the API server; Argo CD → its Git remote and the API server | administration of the cluster and of the admission policy objects (Argo CD) | the provider's API endpoint; `argocd` namespace: `argocd-default-deny`, `default-deny-egress`, `allow-git-egress`, `allow-kube-api-egress`, `allow-dns-egress` |
+| Other: secrets | the M3 Connector service and token store → OpenBao (`ztd-mgmt`), 8200 | the token store's and the Connector's keys and credentials (ZT-11); in-zone, not inter-zone, so not a Connector bypass, listed because it reaches the management plane from outside the allow matrix | `ztd-m3-b-to-openbao` (NetworkPolicy and AuthorizationPolicy, zone B) |
+| Other: node level | the kubelet's image pulls; the provider's `kube-system` agents (VPN to the seed, metrics) | node and provider operation, outside every plane namespace | the provider's policies (`gardener.cloud--*`) |
+
+| Other: diagnostics, **open** | the `source-ip-check` pods of `ztd-network-check` (both zones, unmeshed) → anywhere | the zones' source-address check of the network baseline; not application traffic | `diagnostic-traffic`: ingress from their own pods on 8080, **egress unrestricted**. Not a declared bypass: a path out of the zone around the Connector that this list does not accept; removing the namespace, or limiting its egress, is left to the owner of the network baseline |
+
+One namespace of zone B is named so it is not mistaken for uncovered: `ztd-partner`, a partner's
+integration space under default deny, with its own `ztd-dns` and xDS lanes, `ztd-partner-to-train-apis`
+toward TRAIN, and no `LoadBalancer` or `NodePort` (its quota allows none).
 
 ### Staleness matrix
 
