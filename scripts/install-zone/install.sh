@@ -238,7 +238,7 @@ merged_values() {
   if [ "$2" = admission ]; then
     python3 - "$ZONE_VALUES" "$REPO/deployment/admission/gatekeeper-values.yaml" "${ADMISSION_STAGE:-4}" "$4" \
       "$GATEKEEPER_IMAGE" "$GATEKEEPER_CRDS_IMAGE" <<'PY'
-import sys, yaml
+import os, sys, yaml
 zone_file, gatekeeper_file, stage, out, image, crds = sys.argv[1:]
 stage = int(stage)
 def merge(base, over):
@@ -260,6 +260,10 @@ gatekeeper = merge(yaml.safe_load(open(gatekeeper_file)) or {}, {
 values = merge({"gatekeeper": gatekeeper}, yaml.safe_load(open(zone_file)) or {})
 # Where Argo CD owns the policy (admission.policy.managedBy: argocd), the release renders none of it.
 helm_policy = ((values.get("admission") or {}).get("policy") or {}).get("managedBy", "helm") == "helm"
+# ADMISSION_POOL (stage 4 only): the pool namespaces to render this time, a subset of the zone's.
+pool = os.environ.get("ADMISSION_POOL")
+if pool is not None and stage >= 4:
+    values.setdefault("admissionPool", {})["namespaces"] = pool.split()
 merge(values, {
     "openbao": {"enabled": False},
     "gatekeeper": {"enabled": True},
@@ -478,42 +482,84 @@ policy_managed_by() {
   python3 -c 'import sys, yaml; z = yaml.safe_load(open(sys.argv[1])) or {}; print(((z.get("admission") or {}).get("policy") or {}).get("managedBy", "helm"))' "$ZONE_VALUES"
 }
 
+# admission_installed_stage: the stage release gatekeeper of this chart already holds (its deployed
+# switches), 0 when there is none. No deploy renders less than this: a manifest without a component
+# the release holds would make Helm delete it.
+admission_installed_stage() {
+  [ "$(admission_layout)" = umbrella ] || { echo 0; return; }
+  helm get values gatekeeper -n "$admission_ns" -o json | jq -r '
+    if .admissionPool.enabled then 4 elif .admissionPolicy.constraints then 3
+    elif .admissionProvider.enabled then 2 elif .gatekeeper.enabled then 1 else 0 end'
+}
+
+# admission_pool_desired: the zone's pool namespaces (admissionPool.namespaces, or the chart's).
+admission_pool_desired() {
+  python3 - "$ZONE_VALUES" "$REPO/deployment/helm/admission-pool/values.yaml" <<'PY'
+import sys, yaml
+zone, chart = (yaml.safe_load(open(p)) or {} for p in sys.argv[1:])
+print(" ".join((zone.get("admissionPool") or {}).get("namespaces") or chart.get("namespaces") or []))
+PY
+}
+
+# admission_policy_handoff: with admission.policy.managedBy argocd, release gatekeeper may hold no
+# policy object that Helm would delete: each one it holds must carry helm.sh/resource-policy: keep
+# (admission.policy.keep, the first step of the handoff in docs/umbrella-chart.md).
+admission_policy_handoff() {
+  [ "$(admission_layout)" = umbrella ] || return 0
+  helm get manifest gatekeeper -n "$admission_ns" | python3 -c '
+import sys, yaml
+bad = [f"{d[\"kind\"]}/{d[\"metadata\"][\"name\"]}" for d in yaml.safe_load_all(sys.stdin) if d
+       and (d["kind"] == "ConstraintTemplate" or d["apiVersion"].startswith(("constraints.gatekeeper.sh/", "config.gatekeeper.sh/")))
+       and (d["metadata"].get("annotations") or {}).get("helm.sh/resource-policy") != "keep"]
+if bad:
+    sys.exit("release gatekeeper holds policy objects that Helm would delete on the switch to Argo CD: "
+             + ", ".join(bad) + "; first install with admission.policy.keep: true and managedBy helm "
+             "(docs/umbrella-chart.md, handing the policy to Argo CD)")
+' || die "admission.policy.managedBy argocd refused; nothing was changed"
+}
+
 # install_admission <i> <namespace>: the admission release, in stages (header), then the checks of
-# scripts/admission/install.sh: webhooks scoped, response cache off, constraints enforced. Where Argo
-# CD owns the policy (admission.policy.managedBy: argocd) the release never renders it, so an
-# adoption never takes ownership of it: stage 3 deploys nothing, and the installer waits for Argo
-# CD's constraint CRDs and constraints instead of applying them (ADMISSION_POLICY_TIMEOUT seconds per
-# wait, default 300).
+# scripts/admission/install.sh: webhooks scoped, response cache off, constraints enforced.
+# - No deploy renders fewer components than the release holds (admission_installed_stage): on an
+#   upgrade the stages below it are not deployed again, whatever a readiness check says.
+# - Changed policy goes out with the pool namespaces that exist already; the installer waits until
+#   every constraint's current generation is enforced by every Ready webhook replica, and only then
+#   adds new pool namespaces.
+# - Where Argo CD owns the policy (admission.policy.managedBy: argocd) the release never renders it,
+#   so an adoption never takes ownership of it: stage 3 deploys nothing, and the installer waits for
+#   Argo CD's constraint CRDs and constraints instead (ADMISSION_POLICY_TIMEOUT seconds per wait,
+#   default 300). Switching a release that renders the policy to argocd needs the handoff first.
 install_admission() {
-  local i=$1 ns=$2 stage adopt=false old managed wait_s msg
+  local i=$1 ns=$2 stage adopt=false old managed wait_s installed desired existing n
   old=$(admission_standalone_releases)
   [ -z "$old" ] || adopt=true
   managed=$(policy_managed_by)
   wait_s=${ADMISSION_POLICY_TIMEOUT:-300}
+  [ "$managed" != argocd ] || admission_policy_handoff
+  installed=$(admission_installed_stage)
   admission_setup
-  for stage in 1 2 3 4; do
-    if [ "$stage" -lt 4 ] && admission_stage_ready $((stage + 1)); then continue; fi
+  for stage in 1 2 3; do
+    { [ "$stage" -lt "$installed" ] || admission_stage_ready $((stage + 1)); } && continue
     if [ "$stage" -eq 3 ] && [ "$managed" = argocd ]; then
       say "step $i/${#STEPS[@]}: gatekeeper, stage 3/4: the constraints are Argo CD's; waiting for them to be enforced ..."
     else
-      ADMISSION_STAGE=$stage merged_values gatekeeper admission "" "$work/gatekeeper.values.yaml"
-      say "step $i/${#STEPS[@]}: gatekeeper, stage $stage/4${old:+ (adopting the objects of ${old//$'\n'/ })} ..."
-      LIFECYCLE_POST_RENDERER=ztd-webhook-scope LIFECYCLE_TAKE_OWNERSHIP=$adopt \
-        deploy "$i" gatekeeper "$ns" "$(chart_path umbrella)" "$work/gatekeeper.values.yaml" ""
+      admission_deploy "$i" "$ns" "$stage" "$adopt" "$old"
     fi
-    [ "$stage" -eq 4 ] && break
-    local deadline=$(( $(date +%s) + wait_s ))
-    until admission_stage_ready $((stage + 1)); do
-      if [ "$(date +%s)" -ge "$deadline" ]; then
-        msg="what stage $((stage + 1)) needs is not in place after ${wait_s}s"
-        if [ "$managed" = argocd ] && [ "$stage" -ge 2 ]; then
-          msg="Argo CD has not provided the admission policy after ${wait_s}s: $([ "$stage" -eq 2 ] && echo "the constraint CRDs (from its constraint templates) are not Established" || echo "the constraints are not enforced by every Ready webhook replica"); check its Applications admission-templates, admission-constraints and admission-exemptions"
-        fi
-        die "admission stage $stage: $msg"
-      fi
-      sleep 5
-    done
+    admission_wait "$((stage + 1))" "$wait_s" "$stage" "$managed"
   done
+  # Stage 4: the policy with the pool namespaces that exist, enforced, then the new ones.
+  desired=$(admission_pool_desired)
+  existing=
+  for n in $desired; do kubectl get namespace "$n" >/dev/null 2>&1 && existing="$existing $n"; done
+  existing=${existing# }
+  if [ -n "$existing" ] || [ "$installed" -ge 4 ]; then
+    ADMISSION_POOL=${existing:-$desired} admission_deploy "$i" "$ns" 4 "$adopt" "$old"
+  fi
+  admission_wait 4 "$wait_s" 4 "$managed"
+  if [ "$existing" != "$desired" ]; then
+    say "step $i/${#STEPS[@]}: gatekeeper: every constraint enforced; adding the pool namespaces ${desired} ..."
+    ADMISSION_POOL=$desired admission_deploy "$i" "$ns" 4 "$adopt" "$old"
+  fi
   local unscoped ttl
   unscoped=$(admission_unscoped)
   [ -z "$unscoped" ] || die "webhooks not scoped to facis.ztd/admission-proof=true: $unscoped"
@@ -527,6 +573,31 @@ install_admission() {
     say "adopted: the records of releases admission and admission-pool dropped, their objects kept"
   fi
   say "admission: webhooks scoped to facis.ztd/admission-proof=true; $ttl; every constraint enforced"
+}
+
+# admission_deploy <i> <namespace> <stage> <adopt> <old releases>: one deploy of the admission
+# release with the switches of <stage> (ADMISSION_POOL in the environment narrows the pool).
+admission_deploy() {
+  ADMISSION_STAGE=$3 merged_values gatekeeper admission "" "$work/gatekeeper.values.yaml"
+  say "step $1/${#STEPS[@]}: gatekeeper, stage $3/4${ADMISSION_POOL:+ (pool: $ADMISSION_POOL)}${5:+ (adopting the objects of ${5//$'\n'/ })} ..."
+  LIFECYCLE_POST_RENDERER=ztd-webhook-scope LIFECYCLE_TAKE_OWNERSHIP=$4 \
+    deploy "$1" gatekeeper "$2" "$(chart_path umbrella)" "$work/gatekeeper.values.yaml" ""
+}
+
+# admission_wait <stage> <seconds> <after stage> <managed by>: until admission_stage_ready <stage>,
+# or stop with what is missing.
+admission_wait() {
+  local deadline=$(( $(date +%s) + $2 )) msg
+  until admission_stage_ready "$1"; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      msg="what stage $1 needs is not in place after ${2}s"
+      if [ "$4" = argocd ] && [ "$3" -ge 2 ]; then
+        msg="Argo CD has not provided the admission policy after ${2}s: $([ "$1" -eq 3 ] && echo "the constraint CRDs (from its constraint templates) are not Established" || echo "the constraints are not enforced by every Ready webhook replica"); check its Applications admission-templates, admission-constraints and admission-exemptions"
+      fi
+      die "admission stage $3: $msg"
+    fi
+    sleep 5
+  done
 }
 
 install() {
