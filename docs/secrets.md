@@ -185,8 +185,14 @@ token that may (`sys/auth/kubernetes`, `auth/kubernetes/config`, `auth/kubernete
 `sys/policies/acl/<name>`): the bodies are the ConfigMap `ztd-openbao-bootstrap-kubernetes-auth`
 the release renders (`config.json`, `policy-<name>.json`, `role-<name>.json`), and the hash the
 failed Job names goes into the Secret's `kubernetes-auth` key. On the participant zones the root
-token is revoked by design and no reviewed procedure issues such a token for this purpose yet; that
-is an administrator action, not something the release improvises.
+token is revoked by design; the reviewed path is the M3 recovery procedure's
+`openbao_recover.py run --approved-zone-b-recovery --configure-kubernetes-auth` (branch
+`local/m3-openbao-recovery`, commit `c9a0d336`): a temporary administrator as for the token reissue,
+`auth/kubernetes/` with the in-cluster host, exactly two roles bound to the workload namespace, its
+two ServiceAccounts, audience `openbao` and the existing reviewed policies, real logins with
+short-lived ServiceAccount tokens (wrong audience and the other account refused), and the
+administrator revoked and refused. Zone B ran it on 21 November 2026
+([evidence](evidences/m3-t6-openbao-kubernetes-auth/zone-b-live-step.md)).
 
 **The workload side** (`openbao.auth` in the `connector` and `token-store` charts). `method: token`
 (the default) keeps the token file. `method: kubernetes` with `role` mounts a projected

@@ -1,55 +1,41 @@
 # Zone B: Kubernetes-auth migration, live step
 
-Date: 21 November 2026. Outcome: **stopped after the read-only preflight; nothing on zone B was
-changed.** The scoped 168-hour tokens still serve the connector and the token store (issued
-21 November, about 17:26 UTC; hard ceiling about 28 November, 17:26 UTC), and the guarded path
-works (below). Rollback state: none needed, the zone runs the token-file mode it ran before.
+Date: 21 to 22 November 2026, approved by the project lead ("Approve (Recommended)": extend the
+reviewed recovery procedure with a "configure Kubernetes auth" action, add the auth-delegator
+binding, then switch both deployments with rollback to token mode).
 
-## Preflight (read-only)
+**Outcome.** The server side is done and verified. The switch of the two deployments **did not
+happen**: it needs images built from this branch and signed with the interim Cosign key, which only
+the release workflow holds, and running that workflow needs a push, which this task may not do. Both
+deployments still run token mode on the scoped tokens (hard ceiling about 28 November, 17:26 UTC),
+and the guarded path works.
 
-| Check | Result |
-|---|---|
-| Cluster identity (`kube-system` uid) | `a39ae8ea-ac02-4aec-9c13-cda127b17e2d`, the recorded zone B |
-| `ztd-m3-b` uid | `ef71dd81-5629-4f9e-9b10-6adeb3e8298a` |
-| Guarded path `https://160.44.12.245` (`verify_public_route.py`, TLS verified against the demo CA, two reset runs) | PASS, `zone-b-preflight-route/execution.json` |
-| Workloads | `ztd-connector` (Helm `connector-0.1.0`) and `ztd-token-store` (Helm `token-store-0.3.0`), ServiceAccounts `ztd-connector` and `ztd-token-store`, `automountServiceAccountToken: false`, both ready |
-| OpenBao | Helm release `ztd-openbao` (`ztd-openbao-0.2.0`, OpenBao 2.5.4), StatefulSet ServiceAccount `ztd-openbao`, API token mounted (upstream default) |
-| Server → API server lane | present: `CiliumNetworkPolicy allow-kube-api-egress` (management plane, `kube-apiserver` entity, 443) |
-| `system:auth-delegator` binding for `ztd-mgmt/ztd-openbao` | **absent** (only `kube-system` accounts hold it) |
-| Kubernetes auth method in OpenBao | not readable: the only token the zone holds (`ztd-verify`) may not read `sys/auth`; by design no root token exists |
+## Steps
 
-## Why the step stopped
+| # | Step | Result | Record |
+|---|---|---|---|
+| 0 | Read-only preflight (21 Nov): cluster `kube-system` uid `a39ae8ea-…`, `ztd-m3-b` uid `ef71dd81-…`, releases `ztd-connector` (connector-0.1.0) and `ztd-token-store` (token-store-0.3.0), OpenBao 2.5.4, API lane `allow-kube-api-egress` present, no auth-delegator binding | as expected | `zone-b-preflight-route/` |
+| 1 | Guarded path before | PASS | `live/route-1-before/execution.json` |
+| 2 | `ClusterRoleBinding ztd-m3-openbao-auth-delegator` (`system:auth-delegator` to `ztd-mgmt/ztd-openbao`); `can-i create tokenreviews` as that account: yes | applied | `live/auth-delegator.yaml` |
+| 3 | Plan regenerated as for the 21 Nov reissue: `work/status-2026-11-21/openbao-recovery-plan-t6`, ConfigMap resourceVersion 21244340 → 27769872 only, uid and content hash unchanged, enable-patch hash re-recorded; fresh private dir `work/private/m3-zone-b-openbao-20261121-t6` | done | (private) |
+| 4 | `openbao_recover.py run --approved-zone-b-recovery --configure-kubernetes-auth` (recovery branch commit `c9a0d336`, self-test PASS): temporary listener setting, restart and unseal, temporary administrator, `auth/kubernetes/` enabled and configured (`https://kubernetes.default.svc`, server's own CA and token), roles `ztd-m3-connector` (`ztd-connector`) and `ztd-m3-token-store` (`ztd-token-store`), namespace `ztd-m3-b`, audience `openbao`, existing policies, ttl 1 h; real logins with minted ServiceAccount tokens give exactly `default` + the role's policy, wrong audience and the other account refused; administrator revoked and refused; ConfigMap restored, restart and unseal, logins verified again | PASS | `live/recovery/recovery.json` |
+| 5 | Workloads after (still token mode): both ready; guarded path | PASS | `live/route-2-after-auth-config/execution.json` |
+| 6 | Switch token store, then connector, to `openbao.auth.method=kubernetes` | **not done**: no admissible image (above) | |
 
-Enabling an auth method and writing roles needs an OpenBao token allowed on `sys/auth/kubernetes`,
-`auth/kubernetes/config` and `auth/kubernetes/role/*`. Zone B's root token is revoked by design.
-The only approved way to a temporary administrator is the recorded recovery procedure
-(`scripts/m3-closeout/openbao_recover.py` on `wt-m3-recovery`); that procedure is reviewed for one
-thing, issuing the two scoped tokens (full or `--tokens-only`), and has no step that configures an
-auth method. Using its temporary root for anything else would be an unreviewed path, so it was not
-used. Two further gaps sit outside OpenBao: the running images predate the Kubernetes-auth client
-(an upgrade needs images built from this branch that pass the namespace's admission policy), and
-the auth-delegator binding is cluster-scoped.
+## To finish (needs the release workflow)
 
-## Admin action needed (for the project lead to approve and review)
+1. Publish signed connector and token-store images from this branch (release workflow, interim
+   Cosign key; the `ztd-m3-b` admission policy checks that key and the repository).
+2. Token store: `helm upgrade ztd-token-store <this branch>/deployment/helm/token-store -n ztd-m3-b
+   --reset-then-reuse-values --set image.digest=<new> --set openbao.auth.method=kubernetes
+   --set openbao.auth.role=ztd-m3-token-store --set 'runtime.credentialKeys={fixture.pem,store-client-secret}'`;
+   retry a rollout refused with `ADM-PROVIDER-DOWN`; check `/readyz` and the guarded path.
+3. Connector: the same with `openbao.auth.role=ztd-m3-connector` (its chart drops the token key from
+   its mount in this mode).
+4. Rollback for either: `--set openbao.auth.method=token` (or `helm rollback`); the token Secrets
+   stay until the new mode has run past several token lifetimes, then the scoped tokens are revoked
+   by accessor.
 
-1. **Kubernetes**: bind `system:auth-delegator` to `ztd-mgmt/ztd-openbao` (a `ClusterRoleBinding`,
-   what the chart renders with `openbao.server.authDelegator.enabled`). The API lane exists.
-2. **OpenBao** (with a reviewed extension of the recovery procedure, or another administrator token):
-   - `sys/auth/kubernetes` with `type=kubernetes`;
-   - `auth/kubernetes/config`: `kubernetes_host=https://kubernetes.default.svc`;
-   - `auth/kubernetes/role/ztd-m3-connector`: `bound_service_account_names=ztd-connector`,
-     `bound_service_account_namespaces=ztd-m3-b`, `audience=openbao`,
-     `token_policies=ztd-m3-connector`, `token_ttl=1h`, `token_max_ttl=1h`;
-   - `auth/kubernetes/role/ztd-m3-token-store`: the same with `ztd-token-store` and
-     `token_policies=ztd-m3-token-store`.
-   The policies `ztd-m3-connector` and `ztd-m3-token-store` exist and stay as reviewed (equal to the
-   scoped tokens' policies). Then revoke the temporary administrator as the procedure does.
-3. **Images**: connector and token-store images from this branch, admitted by the `ztd-m3-b`
-   admission policy.
-4. **Switch, one service at a time** (`helm upgrade --reset-then-reuse-values` with this branch's chart, the new digest and
-   `openbao.auth.method=kubernetes`, `openbao.auth.role=ztd-m3-connector` / `ztd-m3-token-store`);
-   retry a rollout refused with `ADM-PROVIDER-DOWN`; check `/readyz` and the guarded path
-   (`verify_public_route.py`) after each.
-5. **Rollback**: `openbao.auth.method=token` on the same release (`helm upgrade --reset-then-reuse-values` or
-   `helm rollback`); the token Secrets stay in place until the new mode has run past several
-   token lifetimes, and then are revoked by accessor.
+Rollback of what was done (not needed; the workloads ignore it while in token mode): the recovery
+procedure with a temporary administrator to disable `auth/kubernetes/`, and
+`kubectl delete clusterrolebinding ztd-m3-openbao-auth-delegator`.
