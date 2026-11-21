@@ -260,6 +260,11 @@ func TestSyncerActivatesVerifiedBundlesOnlyAndRollsBack(t *testing.T) {
 	if tsa.imports < imports+2 {
 		t.Fatalf("lying candidate: %d imports, want the candidate (possibly repeated) and the restore", tsa.imports-imports)
 	}
+	imports = tsa.imports
+	step(Desired{"lying", "v3"}, true, "v2", "v2") // declared still: not imported again, v2 keeps serving
+	if tsa.imports != imports {
+		t.Fatal("a declaration that failed activation was imported again at once")
+	}
 	if !bytes.Equal(s.last, store["v2"]) {
 		t.Fatal("the cached bundle is not the last verified one")
 	}

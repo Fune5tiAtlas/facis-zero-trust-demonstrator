@@ -43,6 +43,12 @@ type Syncer struct {
 	rev     atomic.Value // string
 	misses  int          // consecutive probes without an answer
 
+	// failed is the last declaration that was imported and did not answer with its revision; it is
+	// not imported again before RetryFailedAfter, since every attempt stops evaluations for up to
+	// ActivationWindow.
+	failed   Desired
+	failedAt time.Time
+
 	// InFlight counts evaluations being forwarded to the TSA; the gate keeps it.
 	InFlight atomic.Int64
 }
@@ -104,6 +110,9 @@ func (s *Syncer) load(ctx context.Context, outer []byte, revision string) error 
 	}
 	return fmt.Errorf("imported bundle evaluates as revision %q, not %q", got, revision)
 }
+
+// RetryFailedAfter is how long a declaration that failed activation is left alone.
+var RetryFailedAfter = 5 * time.Minute
 
 // reimportAfter is how long the previous revision may keep answering before load imports again.
 var reimportAfter = 5 * time.Second
@@ -168,9 +177,13 @@ func (s *Syncer) Reconcile(ctx context.Context, d Desired) error {
 	if err := Open(outer, Expect{Key: s.Key, Coordinates: s.Policy, Revision: d.Revision}); err != nil {
 		return refuse(err)
 	}
+	if d == s.failed && time.Since(s.failedAt) < RetryFailedAfter {
+		return refuse(fmt.Errorf("failed activation at %s; not retried before %s", s.failedAt.UTC().Format(time.RFC3339), s.failedAt.Add(RetryFailedAfter).UTC().Format(time.RFC3339)))
+	}
 	previous := s.Active()
 	s.serving.Store(false)
 	if err := s.load(ctx, outer, d.Revision); err != nil {
+		s.failed, s.failedAt = d, time.Now()
 		s.restore(ctx)
 		return refuse(err)
 	}

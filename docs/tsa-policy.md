@@ -128,7 +128,8 @@ about a minute), and the sidecar, polling every `bundle.pollSeconds`:
    verified bundle, forwards evaluations again and logs `bundle activated` with the reference, the
    revision and the previous revision. If no evaluation reports that revision within 30 s — a
    correctly signed bundle whose Rego does not answer with its own revision — it imports the cached
-   previous bundle again (`previous bundle restored`) before refusing.
+   previous bundle again (`previous bundle restored`) before refusing. That declaration is not
+   imported again for 5 minutes, since each attempt stops evaluations for the swap.
 
 Before importing, the sidecar waits for the evaluations it already forwarded to finish, and it
 imports again whenever the previous revision is still answering after 5 s. Both answer a race in the
