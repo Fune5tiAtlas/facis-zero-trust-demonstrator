@@ -43,7 +43,14 @@
             }
           }
         },
-        "namespaceLabels": { "type": "object", "additionalProperties": { "type": "string" }, "description": "labels the cluster's provider asks of the namespaces it should leave alone, set on every namespace the umbrella creates; never the plane or the mesh label" }
+        "namespaceLabels": { "type": "object", "additionalProperties": { "type": "string" }, "description": "labels the cluster's provider asks of the namespaces it should leave alone, set on every namespace the umbrella creates; never the plane, the mesh or the admission label" }
+      }
+    },
+    "admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enforceDataPlane": { "type": "boolean", "description": "label the data-plane namespace (planes.data.namespace only) facis.ztd/admission-proof=true, putting it under the Gatekeeper image policy; default false" }
       }
     },
     "mesh": {

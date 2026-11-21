@@ -1,6 +1,7 @@
 // Command admission-provider is the Gatekeeper external-data provider that verifies container
 // images before admission: a cosign signature by a trusted key and the two required attestations,
-// by digest, from an allowed repository (internal/cosignverify).
+// by digest, from an allowed repository (internal/cosignverify). An image whose reference equals an
+// entry of the trust policy's allowedDigests (third-party platform images) is admitted without them.
 //
 // It serves ProviderRequests over HTTPS (TLS 1.3, client certificate required and verified against
 // Gatekeeper's CA) and its metrics and health endpoints over plain HTTP on a separate port.
@@ -28,7 +29,7 @@ func main() {
 		tlsCert     = flag.String("tls-cert", "/etc/admission-provider/tls/tls.crt", "server certificate (PEM)")
 		tlsKey      = flag.String("tls-key", "/etc/admission-provider/tls/tls.key", "server key (PEM)")
 		clientCA    = flag.String("client-ca", "/etc/admission-provider/client-ca/ca.crt", "CA that client certificates must chain to (Gatekeeper's)")
-		policy      = flag.String("trust-policy", "/etc/admission-provider/trust/policy.json", `trust policy: {"repositories": [...], "publicKeys": "<PEM>"}`)
+		policy      = flag.String("trust-policy", "/etc/admission-provider/trust/policy.json", `trust policy: {"repositories": [...], "publicKeys": "<PEM>", "allowedDigests": [...]}`)
 		timeout     = flag.Duration("request-timeout", time.Second, "deadline for answering one ProviderRequest")
 		concurrency = flag.Int("concurrency", 8, "registry verifications in flight at once")
 		reload      = flag.Duration("reload-interval", 10*time.Second, "how often TLS and trust files are re-read")

@@ -6,11 +6,17 @@
 #
 #   ADMIN_KUBECONFIG=... TESTER_KUBECONFIG=... FIXTURES=<case ref list> EVIDENCE=<dir> \
 #   BIN=... PROVIDER_IMAGE=... TRUST_REPOSITORY=... TRUST_KEY=... [OUTSIDE_NAMESPACES="ns ..."] \
-#   [CLUSTER_KIND=target|non-target] scripts/admission/fault-injection.sh
+#   [CLUSTER_KIND=target|non-target] [DATA_NAMESPACE=ztd-data] [MGMT_NAMESPACE=ztd-mgmt] \
+#   scripts/admission/fault-injection.sh
 #
 # OUTSIDE_NAMESPACES are the namespaces outside admission control that must stay schedulable while
 # admission is down (default: the IONOS proof's ztd-orce, kube-system, ztd-bdd-tdr-001). CLUSTER_KIND
 # is recorded with the evidence (default non-target, as on IONOS).
+#
+# Data plane: when DATA_NAMESPACE carries facis.ztd/admission-proof=true (the umbrella's
+# admission.enforceDataPlane), the provider-down and Gatekeeper-down steps also expect a pod there to
+# be denied, and pods in MGMT_NAMESPACE and kube-system to stay admitted. Read from the namespace, so
+# there is nothing to set; without the label (or without the namespace) the steps are unchanged.
 #
 # Steps: ZT-13 mechanism (non-Linux and index refused), provider down, Gatekeeper down, trusted key
 # removed while the provider cache is warm, break-glass (webhook removed, then restored with
@@ -80,6 +86,16 @@ outside_admitted() { # step
   done
 }
 signed="$(fixture app)"
+data_ns=${DATA_NAMESPACE:-ztd-data}
+mgmt_ns=${MGMT_NAMESPACE:-ztd-mgmt}
+data_enforced=$(admin get namespace "$data_ns" -o jsonpath='{.metadata.labels.facis\.ztd/admission-proof}' 2>/dev/null || true)
+# With the data plane enforced, an outage denies there (fail closed) and nowhere outside the label.
+data_plane() { # step code
+  [ "$data_enforced" = true ] || return 0
+  expect_denied "$1: $data_ns pod (data plane enforced)" "$2" admin ztd-fi-data "$signed" "$data_ns"
+  expect_admitted "$1: $mgmt_ns pod" admin ztd-other "$(fixture unsigned)" "$mgmt_ns"
+  expect_admitted "$1: kube-system pod" admin ztd-other "$(fixture unsigned)" kube-system
+}
 provider=deploy/ztd-admission-provider
 gatekeeper=deploy/gatekeeper-controller-manager
 
@@ -88,9 +104,16 @@ gatekeeper=deploy/gatekeeper-controller-manager
 provider_replicas=$(admin -n gatekeeper-system get "$provider" -o jsonpath='{.spec.replicas}')
 gatekeeper_replicas=$(admin -n gatekeeper-system get "$gatekeeper" -o jsonpath='{.spec.replicas}')
 [ -n "$provider_replicas" ] && [ -n "$gatekeeper_replicas" ] || { echo "admission path not installed" >&2; exit 1; }
+# The installed digest allow-list (the provider's trust policy and the ztd-allowed-repositories
+# constraint must hold the same one), passed to every reinstall so a restore never drops it; the
+# installed list wins over any ALLOWED_DIGESTS in the environment.
+allowed_provider=$(admin -n gatekeeper-system get configmap ztd-admission-provider-trust -o jsonpath='{.data.policy\.json}' | jq -r '.allowedDigests // [] | sort | join(" ")')
+allowed_constraint=$(admin get k8sztdallowedrepositories ztd-allowed-repositories -o json | jq -r '.spec.parameters.allowedDigests // [] | sort | join(" ")')
+[ "$allowed_provider" = "$allowed_constraint" ] ||
+  { echo "allowedDigests differ: provider [$allowed_provider], constraint [$allowed_constraint]; reinstall first" >&2; exit 1; }
 other="$(mktemp)"
-# install.sh with the recorded replica counts, so a restore never changes them.
-reinstall() { KUBECONFIG="$ADMIN_KUBECONFIG" GATEKEEPER_REPLICAS="$gatekeeper_replicas" PROVIDER_REPLICAS="$provider_replicas" scripts/admission/install.sh; }
+# install.sh with the recorded replica counts and allow-list, so a restore never changes them.
+reinstall() { KUBECONFIG="$ADMIN_KUBECONFIG" GATEKEEPER_REPLICAS="$gatekeeper_replicas" PROVIDER_REPLICAS="$provider_replicas" ALLOWED_DIGESTS="$allowed_provider" scripts/admission/install.sh; }
 restore() {
   local status=$?
   set +e
@@ -142,6 +165,7 @@ set_trust() { # key-file replicas
 }
 
 note "== $(now) baseline"
+if [ "$data_enforced" = true ]; then note "data plane $data_ns enforced (facis.ztd/admission-proof=true)"; else note "data plane $data_ns not enforced"; fi
 admin get pods -A -o wide > "$EVIDENCE/pods-before.txt"
 admin get validatingwebhookconfiguration gatekeeper-validating-webhook-configuration -o yaml > "$EVIDENCE/webhook.yaml"
 eventually_admitted "signed image" ztd-fi-signed "$signed"
@@ -156,6 +180,7 @@ admin -n gatekeeper-system scale "$provider" --replicas=0 >/dev/null
 admin -n gatekeeper-system wait --for=delete pod -l app.kubernetes.io/name=ztd-admission-provider --timeout=180s >/dev/null 2>&1 || true
 expect_denied "signed image, provider down" ADM-PROVIDER-DOWN tester ztd-fi-signed "$signed" "$ns"
 outside_admitted "provider down"
+data_plane "provider down" ADM-PROVIDER-DOWN
 admin -n gatekeeper-system scale "$provider" --replicas="$provider_replicas" >/dev/null
 admin -n gatekeeper-system rollout status "$provider" --timeout=300s >/dev/null
 eventually_admitted "signed image, provider back" ztd-fi-signed "$signed"
@@ -165,6 +190,7 @@ admin -n gatekeeper-system scale "$gatekeeper" --replicas=0 >/dev/null
 admin -n gatekeeper-system wait --for=delete pod -l control-plane=controller-manager --timeout=180s >/dev/null 2>&1 || true
 expect_denied "signed image, Gatekeeper down" "failed calling webhook" tester ztd-fi-signed "$signed" "$ns"
 outside_admitted "Gatekeeper down"
+data_plane "Gatekeeper down" "failed calling webhook"
 admin -n gatekeeper-system scale "$gatekeeper" --replicas="$gatekeeper_replicas" >/dev/null
 admin -n gatekeeper-system rollout status "$gatekeeper" --timeout=300s >/dev/null
 eventually_admitted "signed image, Gatekeeper back" ztd-fi-signed "$signed"

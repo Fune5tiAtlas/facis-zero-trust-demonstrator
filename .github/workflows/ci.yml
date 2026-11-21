@@ -138,6 +138,9 @@ jobs:
       - name: Test the enforcement check
         run: scripts/admission/enforced_test.sh
 
+      - name: Test the data-plane preflight
+        run: scripts/admission/preflight-data-plane_test.sh
+
   # The trust-framework DNS inspector against local NSD servers that each break one thing it must
   # catch (a wrong DS digest, an unsigned server, a diverging NS set, a resolver without the URI),
   # and through a signed parent zone and a validating Unbound for the delegation path. The servers
@@ -299,6 +302,44 @@ jobs:
             echo "render deployment/helm/ztd with $zone"
             helm lint deployment/helm/ztd -f "$zone"
             helm template deployment/helm/ztd -f "$zone" >/dev/null
+          done
+
+      # The data-plane admission opt-in: off, no namespace carries the admission label; on, the
+      # data-plane namespace and nothing else does - not the management plane, an extra data-plane
+      # namespace, or gatekeeper-system, istio-system, spire-system or kube-system (listed here as
+      # extra plane namespaces so the render would show them if they were labelled). The label set
+      # through planes.namespaceLabels is refused.
+      - name: Render the data-plane admission opt-in
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user pyyaml
+          extra='planes.extra=[{"name":"spire-system","plane":"management","mesh":false},{"name":"istio-system","plane":"management","mesh":false},{"name":"gatekeeper-system","plane":"management","mesh":false},{"name":"kube-system","plane":"management","mesh":false},{"name":"ztd-data-2","plane":"data"}]'
+          for enforce in false true; do
+            helm lint deployment/helm/ztd -f deployment/helm/ztd/ci/values.yaml --set-json "$extra" --set admission.enforceDataPlane=$enforce
+            helm template deployment/helm/ztd -f deployment/helm/ztd/ci/values.yaml --set-json "$extra" --set admission.enforceDataPlane=$enforce |
+              python3 -c '
+          import sys, yaml
+          want = ["ztd-data"] if sys.argv[1] == "true" else []
+          ns = [d for d in yaml.safe_load_all(sys.stdin) if d and d.get("kind") == "Namespace"]
+          names = sorted(d["metadata"]["name"] for d in ns)
+          for n in ["ztd-mgmt", "ztd-data", "ztd-data-2", "spire-system", "istio-system", "gatekeeper-system", "kube-system"]:
+              assert n in names, f"namespace {n} not rendered: {names}"
+          got = sorted(d["metadata"]["name"] for d in ns if (d["metadata"].get("labels") or {}).get("facis.ztd/admission-proof") == "true")
+          assert got == want, f"enforceDataPlane={sys.argv[1]}: admission label on {got}, want {want}"
+          print(f"enforceDataPlane={sys.argv[1]}: admission label on {got}")
+          ' "$enforce"
+          done
+          if helm template deployment/helm/ztd -f deployment/helm/ztd/ci/values.yaml --set-string 'planes.namespaceLabels.facis\.ztd/admission-proof=true' >/dev/null 2>&1; then
+            echo "planes.namespaceLabels accepted the admission label" >&2; exit 1
+          fi
+          # With the opt-in on, a data-plane namespace that is a system namespace, the management
+          # namespace or an extra plane namespace is refused before anything renders.
+          for data in kube-system gatekeeper-system istio-system spire-system ztd-mgmt ztd-data-2; do
+            if helm template deployment/helm/ztd -f deployment/helm/ztd/ci/values.yaml --set-json "$extra" \
+                --set admission.enforceDataPlane=true --set planes.data.namespace=$data >/dev/null 2>"$RUNNER_TEMP/err"; then
+              echo "enforceDataPlane rendered with planes.data.namespace=$data" >&2; exit 1
+            fi
+            grep -q 'admission.enforceDataPlane: planes.data.namespace' "$RUNNER_TEMP/err" ||
+              { echo "planes.data.namespace=$data refused for another reason:" >&2; cat "$RUNNER_TEMP/err" >&2; exit 1; }
           done
 
       # What the release relies on, against charts the test writes: a set that passes is packaged

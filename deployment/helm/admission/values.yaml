@@ -24,6 +24,11 @@ requestTimeout: 1s
 trust:
   repositories: []
   publicKeys: ""
+  # Third-party platform images admitted by exact reference, without signature, attestation or
+  # platform checks: "host/repository@sha256:<64 hex>", no tag (e.g. the injected Istio proxy). An
+  # image matches only when its reference is identical; another digest of the same repository is not
+  # admitted. The provider refuses a policy with a malformed entry. Empty by default.
+  allowedDigests: []
 
 # Validity of the generated provider CA and server certificate. Generated once and kept on upgrade;
 # delete the Secret to rotate (the Provider's caBundle is updated in the same release).
