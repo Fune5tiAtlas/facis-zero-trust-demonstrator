@@ -23,6 +23,11 @@ Internal to a zone, and not a numbered interface: the token store's API,
 and DPoP replay detection for the connector and the guard. The database behind it, its schema and
 how the schema is applied are described in [Token store](token-store.md).
 
+Also not a numbered interface: the verification service's presentation API,
+[verification.v1.openapi.yaml](contracts/verification.v1.openapi.yaml) — what a token store's
+presentation hook calls to obtain an IF-03 outcome for a challenge
+([rules](#presentation-hook-how-an-outcome-is-obtained)).
+
 Three agreements are conventions rather than interfaces, and are documented where they live:
 
 | Convention | Where |
@@ -187,6 +192,43 @@ issuance consumes it. The outcome is an object, never a boolean.
   consumer never maps to an entitlement (it reaches no grant, since only a `verified` outcome
   does). The policy lives in `internal/presentation`; the fixtures under
   `features/fixtures/oid4vp/` pin it.
+
+### Presentation hook: how an outcome is obtained
+
+A verification service signs an outcome because a holder presented a credential for one connector
+challenge. A token store route configured with the presentation hook does this by itself, at every
+acquisition and every renewal, through the
+[presentation API](contracts/verification.v1.openapi.yaml) of the verification service
+([Token store](token-store.md#presentation-hook)); a route configured with the fixture signer
+presents nothing and is for tests and the demo. The binding from the challenge to the outcome
+is fixed, and every hop keeps it:
+
+| Grant request | Verification request | Holder's key binding | IF-03 outcome |
+|---|---|---|---|
+| the challenge value | `challenge`, returned as `nonce` | `nonce` | `challenge` |
+| the audience | `audience`, returned as `client_id` | `aud` | `audience` |
+| the client the challenge was issued to | `client_id` | — | `client_id` |
+
+- **One request, one presentation, one outcome.** A request is answered once; a second
+  presentation for it is refused (`CRED-REQUEST-UNKNOWN`). Every outcome has a new `outcome_id`
+  and is valid 60 to 120 s, so it serves one grant and no renewal.
+- **Every presentation that is judged is answered with an outcome.** `verified`, `failed` and
+  `revoked` are all signed; the consumer refuses the last two (`CRED-OUTCOME-NOT-VERIFIED`). A
+  `vp_token` that is not a credential is judged: `failed`, `CRED-INVALID`. No outcome exists when
+  nothing was judged: a malformed request or response form (`CRED-REQUEST-INVALID`), a request
+  that is unknown, expired or already answered (`CRED-REQUEST-UNKNOWN`), or a service that could
+  not sign or is not ready.
+- **The holder.** One OID4VP request in, one `dc+sd-jwt` presentation out, with a key-binding JWT
+  signed by the key the credential's `cnf` names. A holder presents only for a query naming its
+  credential's type. Which wallet stands behind it is not part of this contract.
+- **No outcome is no token.** An unreachable, refusing or silent service, an answer that is not
+  bound to the challenge and a holder that presents nothing leave the caller without an outcome;
+  the token store issues nothing and records it under a code of its own audit, outside this
+  registry ([Token store](token-store.md#presentation-hook)).
+- **Neither side is authenticated by this API.** That the caller reaches the real service, over a
+  protected transport, is the deployment's to ensure. A misdirected caller discloses the
+  credential it presents; it gets no token, because only an outcome signed by a trusted issuer is
+  consumed.
 
 ## IF-04 — observability and evidence
 

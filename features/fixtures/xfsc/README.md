@@ -47,7 +47,7 @@ keep the same `expect` as the acceptance check. What the swap still needs, per o
 | Operation | Needed from the live service |
 |---|---|
 | `issue` | Issuer endpoint and version; the credential format and how it is secured |
-| `present` | Wallet endpoint and the presentation request it accepts |
+| `present` | A wallet that answers an OID4VP request, behind the token store's holder interface ([presentation hook](../../../docs/token-store.md#presentation-hook)); a stand-in holder presents today |
 | `verify` | Verification endpoint and signing key (`kid`) for IF-03 outcomes |
 | `status` | Status list URL and its update behaviour |
 

@@ -171,12 +171,66 @@ func Verify(p Presentation, trusted if03.Issuers, acceptedVCT map[string]bool, w
 		return Verified{}, ErrIssuerSignature
 	}
 
-	// 2. The registered claims of an SD-JWT VC.
-	v := Verified{Issuer: iss, Kid: kid}
+	// 2 and 3. The registered claims of an SD-JWT VC and its disclosures.
+	v, err := envelope(payload, p.Disclosures, func(vct string) bool { return acceptedVCT[vct] }, now, skew)
+	if err != nil {
+		return Verified{}, err
+	}
+	v.Issuer, v.Kid = iss, kid
+
+	// 4. Key binding over this exact presentation, by the holder key, for this nonce and audience.
+	if p.KeyBinding == "" {
+		return Verified{}, fmt.Errorf("%w: missing", ErrKeyBinding)
+	}
+	holder, err := v.Holder.PublicKey()
+	if err != nil {
+		return Verified{}, fmt.Errorf("%w: cnf", ErrMalformed)
+	}
+	_, kbPayload, err := jose.Verify(p.KeyBinding, jose.HeaderPolicy{Typ: TypKeyBinding}, func(jose.Header) (*ecdsa.PublicKey, error) {
+		return holder, nil
+	})
+	if err != nil {
+		return Verified{}, fmt.Errorf("%w: signature", ErrKeyBinding)
+	}
+	kb, err := jose.ParseObject(kbPayload)
+	if err != nil {
+		return Verified{}, fmt.Errorf("%w: payload", ErrKeyBinding)
+	}
+	for name := range kb {
+		if !keyBindingMembers[name] {
+			return Verified{}, fmt.Errorf("%w: member not allowed", ErrKeyBinding)
+		}
+	}
+	nonce, _, nonceOK := jose.String(kb, "nonce")
+	aud, _, audOK := jose.String(kb, "aud")
+	hash, _, hashOK := jose.String(kb, "sd_hash")
+	iat, iatOK := numericDate(kb["iat"])
+	if !nonceOK || !audOK || !hashOK || !iatOK {
+		return Verified{}, fmt.Errorf("%w: members", ErrKeyBinding)
+	}
+	if nonce != want.Nonce || aud != want.Audience {
+		return Verified{}, fmt.Errorf("%w: nonce or audience", ErrKeyBinding)
+	}
+	if iat.After(now.Add(skew)) || iat.Before(now.Add(-maxAge)) {
+		return Verified{}, fmt.Errorf("%w: iat", ErrKeyBinding)
+	}
+	if hash != SDHash(p) {
+		return Verified{}, fmt.Errorf("%w: sd_hash", ErrKeyBinding)
+	}
+	return v, nil
+}
+
+// envelope reads the registered claims of an SD-JWT VC payload and resolves its disclosures: the
+// part of a credential that can be judged without any key. accepted says whether the type is one
+// the caller takes.
+func envelope(payload map[string]json.RawMessage, disclosures []string, accepted func(vct string) bool, now time.Time, skew time.Duration) (Verified, error) {
+	var v Verified
+	var ok bool
+	var err error
 	if v.VCT, _, ok = jose.String(payload, "vct"); !ok || v.VCT == "" {
 		return Verified{}, fmt.Errorf("%w: vct", ErrMalformed)
 	}
-	if !acceptedVCT[v.VCT] {
+	if !accepted(v.VCT) {
 		return Verified{}, ErrVCT
 	}
 	if alg, present, ok := jose.String(payload, "_sd_alg"); present && (!ok || alg != "sha-256") {
@@ -220,49 +274,9 @@ func Verify(p Presentation, trusted if03.Issuers, acceptedVCT map[string]bool, w
 		}
 	}
 
-	// 3. Disclosures: resolve every _sd digest, refuse anything unreferenced or reserved.
-	if v.Claims, err = disclose(payload, p.Disclosures); err != nil {
+	// Disclosures: resolve every _sd digest, refuse anything unreferenced or reserved.
+	if v.Claims, err = disclose(payload, disclosures); err != nil {
 		return Verified{}, err
-	}
-
-	// 4. Key binding over this exact presentation, by the holder key, for this nonce and audience.
-	if p.KeyBinding == "" {
-		return Verified{}, fmt.Errorf("%w: missing", ErrKeyBinding)
-	}
-	holder, err := v.Holder.PublicKey()
-	if err != nil {
-		return Verified{}, fmt.Errorf("%w: cnf", ErrMalformed)
-	}
-	_, kbPayload, err := jose.Verify(p.KeyBinding, jose.HeaderPolicy{Typ: TypKeyBinding}, func(jose.Header) (*ecdsa.PublicKey, error) {
-		return holder, nil
-	})
-	if err != nil {
-		return Verified{}, fmt.Errorf("%w: signature", ErrKeyBinding)
-	}
-	kb, err := jose.ParseObject(kbPayload)
-	if err != nil {
-		return Verified{}, fmt.Errorf("%w: payload", ErrKeyBinding)
-	}
-	for name := range kb {
-		if !keyBindingMembers[name] {
-			return Verified{}, fmt.Errorf("%w: member not allowed", ErrKeyBinding)
-		}
-	}
-	nonce, _, nonceOK := jose.String(kb, "nonce")
-	aud, _, audOK := jose.String(kb, "aud")
-	hash, _, hashOK := jose.String(kb, "sd_hash")
-	iat, iatOK := numericDate(kb["iat"])
-	if !nonceOK || !audOK || !hashOK || !iatOK {
-		return Verified{}, fmt.Errorf("%w: members", ErrKeyBinding)
-	}
-	if nonce != want.Nonce || aud != want.Audience {
-		return Verified{}, fmt.Errorf("%w: nonce or audience", ErrKeyBinding)
-	}
-	if iat.After(now.Add(skew)) || iat.Before(now.Add(-maxAge)) {
-		return Verified{}, fmt.Errorf("%w: iat", ErrKeyBinding)
-	}
-	if hash != SDHash(p) {
-		return Verified{}, fmt.Errorf("%w: sd_hash", ErrKeyBinding)
 	}
 	return v, nil
 }
