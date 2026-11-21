@@ -24,6 +24,7 @@ and is declared as such in [Specification changes](specifications.md#readings-an
 | `.github/workflows/measurement-determinism.yml` | pull request and push to `main` touching the check, manual | Measures one fixture on a hosted runner, in a container, and on a deliberately divergent checkout, and requires the normalised measurement to be the same on all three |
 | `.github/workflows/token-store.yml` | pull requests touching the token store, its image, its chart or the pinned images; pushes to `main`; manual | Runs the schema migrations, the store's queries and the service's readiness checks against a PostgreSQL from the pinned image, then the chart's lifecycle (install, upgrade, uninstall) and the service's readiness against PostgreSQL and OpenBao on kind; the records are the run's artefact and the verdict goes to the job summary |
 | `.github/workflows/policy-hook.yml` | pull requests touching the policy-hook probe, its script, the pinned Envoy image or the policy fixtures; manual | Runs the guard policy-hook proofs (`scripts/verify-policy-hook/verify.sh`) against Envoy from the pinned image, uploads the records as an artefact and writes the verdict and the latency numbers to the job summary |
+| `.github/workflows/admission-evidence.yml` | manual only | Runs the admission evidence pack on one cluster from the protected `admission-evidence` environment and keeps the pack as an artefact, linked to this run and to the fixture run it used (see [Admission evidence](#admission-evidence)) |
 
 ## The service pipeline
 
@@ -310,6 +311,24 @@ manifest grants it nothing, so it holds only what every authenticated identity i
 checks its effective rights (`kubectl auth can-i --list --as=system:serviceaccount:ztd-ci:ztd-ci-observer`),
 builds the kubeconfig from the token in `ztd-ci/ztd-ci-observer-token` and hands it to a maintainer
 for the secret. The token does not expire; deleting that Secret revokes it.
+
+## Admission evidence
+
+`admission-evidence.yml` runs `scripts/admission/evidence-pack.sh` on one cluster (`zone-a`, `zone-b` or
+`ionos`) with the fixture list of a named "Admission fixtures" run, and uploads the pack as the
+artefact `admission-evidence-<target>`. The pack's index records this run and the fixture run, so the
+evidence names the pipeline runs that produced it. The fault cases take the provider and Gatekeeper
+down and remove the webhook for a short time before restoring them, so the job is started by hand, one
+cluster at a time (a concurrency group per cluster), from the protected environment
+`admission-evidence`, which should require a reviewer. It needs, in that environment:
+
+| Name | Kind | Content |
+|---|---|---|
+| `ADMISSION_ZONE_A_ADMIN_KUBECONFIG`, `ADMISSION_ZONE_B_ADMIN_KUBECONFIG`, `ADMISSION_IONOS_ADMIN_KUBECONFIG` | secret | an administrator kubeconfig for the cluster (the fault cases scale Gatekeeper and the provider) |
+| `ADMISSION_PROVIDER_IMAGE` | variable | the provider image the cluster runs, `repository@sha256:<digest>` |
+| `ADMISSION_TRUST_REPOSITORY` | variable | the repository prefix the provider trusts, the same one the fixtures were published under |
+
+Until they are set, the job stops with a notice and records nothing.
 
 ## Image scan exceptions
 

@@ -63,6 +63,8 @@ fi
   echo "|---|---|"
   echo "| Run | \`$run\` |"
   echo "| Commit | \`$(git rev-parse HEAD)\` |"
+  [ -z "${EVIDENCE_RUN_URL:-}" ] || echo "| Pipeline run | $EVIDENCE_RUN_URL |"
+  [ -z "${FIXTURES_RUN_URL:-}" ] || echo "| Fixture run | $FIXTURES_RUN_URL |"
   echo "| Cluster (\`kube-system\` UID) | \`$cluster_uid\` |"
   echo "| Cluster kind | $kind |"
   echo "| Provider image | \`$PROVIDER_IMAGE\` |"
