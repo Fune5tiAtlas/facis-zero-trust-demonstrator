@@ -87,7 +87,14 @@ type vcVerifier struct {
 	now  func() time.Time
 
 	mu    sync.Mutex
-	cache map[[32]byte]verifiedList
+	cache map[cacheKey]verifiedList
+}
+
+// cacheKey is a VC's bytes and the DID it was verified under: the same bytes are not trusted for
+// another DID.
+type cacheKey struct {
+	sum [32]byte
+	did string
 }
 
 type verifiedList struct {
@@ -103,7 +110,7 @@ func (v *vcVerifier) trustList(ctx context.Context, did, vcURI string) (any, err
 		return nil, fmt.Errorf("trust-list VC: %w", err)
 	}
 	now := v.now()
-	key := sha256.Sum256(raw)
+	key := cacheKey{sha256.Sum256(raw), did}
 	v.mu.Lock()
 	if c, ok := v.cache[key]; ok && now.Before(c.until) {
 		v.mu.Unlock()
@@ -117,6 +124,9 @@ func (v *vcVerifier) trustList(ctx context.Context, did, vcURI string) (any, err
 	}
 	if err := checkContexts(vc["@context"]); err != nil {
 		return nil, err
+	}
+	if nestedContext(vc, true) {
+		return nil, errors.New("trust-list VC: @context below the root")
 	}
 	if iss, _ := vc["issuer"].(string); iss == "" || iss != did || !strings.HasPrefix(iss, "did:web:") {
 		return nil, errors.New("trust-list VC: issuer is not the DID the TCR resolved")
@@ -147,7 +157,7 @@ func (v *vcVerifier) trustList(ctx context.Context, did, vcURI string) (any, err
 	}
 	v.mu.Lock()
 	if v.cache == nil || len(v.cache) > 64 {
-		v.cache = map[[32]byte]verifiedList{} // ponytail: dropped wholesale; a handful of frameworks
+		v.cache = map[cacheKey]verifiedList{} // ponytail: dropped wholesale; a handful of frameworks
 	}
 	v.cache[key] = verifiedList{list: list, until: minTime(now.Add(vcCacheTTL), until)}
 	v.mu.Unlock()
@@ -174,6 +184,30 @@ func checkContexts(c any) error {
 		}
 	}
 	return nil
+}
+
+// nestedContext says whether an @context appears anywhere but at the root. An embedded context
+// can re-map a term after signing (say "hash" to @index, the signed value kept under its full
+// IRI), so that the value read is not the value signed; only the pinned root context is allowed.
+func nestedContext(v any, root bool) bool {
+	switch v := v.(type) {
+	case map[string]any:
+		for k, child := range v {
+			if k == "@context" && !root {
+				return true
+			}
+			if k != "@context" && nestedContext(child, false) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if nestedContext(child, false) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // vcWindow checks the VC's window at now and returns its end.

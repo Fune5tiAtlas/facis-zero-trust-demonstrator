@@ -302,3 +302,36 @@ func TestAVCSignedByOurTSPAVerifies(t *testing.T) {
 		t.Error("a changed subject term still verified")
 	}
 }
+
+// A nested @context can re-map a term after signing: the signed hash stays under its full IRI
+// while "hash" becomes an @index the proof never sees, and is replaced. Only the root context is
+// allowed.
+func TestANestedContextCannotSubstituteTheHash(t *testing.T) {
+	s := newTrainSite(t)
+	forged, _ := json.Marshal(map[string]any{"TrustServiceStatusList": map[string]any{"TrustServiceProviderList": map[string]any{
+		"TrustServiceProvider": []any{entry("did:web:attacker.test", "active")}}}})
+	s.publish(time.Now().Add(-time.Hour), time.Now().Add(time.Hour), func(vc map[string]any) {
+		cs := vc["credentialSubject"].(map[string]any)
+		cs["https://tspa.facis.cloud/ns/trustlist#hash"] = cs["hash"]
+		cs["@context"] = map[string]any{"hash": "@index"}
+		cs["hash"] = multihashSHA256(forged)
+	})
+	s.list = forged
+	ok, err := s.lister()(context.Background(), "did:web:attacker.test")
+	if ok || err == nil {
+		t.Fatalf("a nested context substituted the list: %v %v", ok, err)
+	}
+	t.Logf("refused: %v", err)
+}
+
+// A verified VC is cached for the DID it was verified under only.
+func TestACachedVCIsNotAcceptedForAnotherDID(t *testing.T) {
+	s := newTrainSite(t)
+	v := &vcVerifier{http: s.srv.Client(), now: time.Now}
+	if _, err := v.trustList(context.Background(), s.did, s.srv.URL+"/vc"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.trustList(context.Background(), "did:web:other.test", s.srv.URL+"/vc"); err == nil {
+		t.Error("bytes verified under one DID were accepted for another")
+	}
+}
