@@ -33,7 +33,13 @@ release ztd renders with it.
 {{- if hasSuffix "/allowed-repositories.yaml" $path }}
 {{- $c := $.Files.Get $path | fromYaml }}
 {{- $_ := set $c.spec.parameters "repositories" $trust.repositories }}
-{{- $_ := set $c.spec.parameters "allowedDigests" ($trust.allowedDigests | default list) }}
+{{- /* Only when set, as the provider's policy: a cluster whose constraint template predates the
+allow-list (no allowedDigests in its schema) then takes the constraint it already has. */}}
+{{- if $trust.allowedDigests }}
+{{- $_ := set $c.spec.parameters "allowedDigests" $trust.allowedDigests }}
+{{- else }}
+{{- $_ := unset $c.spec.parameters "allowedDigests" }}
+{{- end }}
 {{ toYaml $c }}
 {{- else }}
 {{ $.Files.Get $path }}
