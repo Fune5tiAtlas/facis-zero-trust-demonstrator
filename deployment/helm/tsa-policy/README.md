@@ -20,7 +20,7 @@ is active every evaluation fails and the pod is not ready.
 | `bundle.plainHTTPRegistries` | registries reached over http (a local test registry only) |
 | `bundle.pollSeconds` | how often the sidecar compares the TSA with the declaration |
 | `trustRoot` | the PEM key every bundle and bundle artefact must be signed with; default the interim signing key |
-| `policy` | the policy's TSA coordinates; the guard's is `policies/facis/guard/1.0` |
+| `policy` | the policy's TSA coordinates; the guard's is `policies/facis/guard/1.0`. The version names only the path served to the adapters: each bundle is stored under its revision and the sidecar forwards to the active one |
 | `trustDomain`, `callers` | the IF-05 adapters allowed to evaluate (`{namespace, name}`; `name` is the service account and the pods' `app.kubernetes.io/name`) |
 | `networkPolicy.istiod`, `networkPolicy.egress` | mesh-control egress and the egress to the bundle registry; without registry egress no bundle is fetched and every evaluation fails closed |
 
