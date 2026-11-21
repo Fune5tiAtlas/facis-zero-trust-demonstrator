@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -51,14 +52,21 @@ func TestTSAAdapterPassesValidDecisionsAndFailsClosed(t *testing.T) {
 		delay  time.Duration
 		status int
 	}{
-		"allow":             {allow, 0, http.StatusOK},
-		"deny":              {deny, 0, http.StatusOK},
-		"no rule":           {`{"decision":{"allow":true,"bundle_revision":"v1","obligations":["substitute_upstream_token"]}}`, 0, http.StatusServiceUnavailable},
-		"no revision":       {`{"decision":{"allow":false,"reason_code":"POL-RULE-DENY","rule_id":"r","deny_body":{"error":"x"}}}`, 0, http.StatusServiceUnavailable},
-		"outside contract":  {`{"decision":{"allow":true,"rule_id":"r","bundle_revision":"v1","extra":1}}`, 0, http.StatusServiceUnavailable},
-		"no decision":       {`{"request_ok":true}`, 0, http.StatusServiceUnavailable},
-		"error result":      {`{"id":"x","kind":0,"message":"policy not found"}`, 0, http.StatusServiceUnavailable},
-		"slower than bound": {allow, 400 * time.Millisecond, http.StatusServiceUnavailable},
+		"allow":                {allow, 0, http.StatusOK},
+		"deny":                 {deny, 0, http.StatusOK},
+		"no rule":              {`{"decision":{"allow":true,"bundle_revision":"v1","obligations":["substitute_upstream_token"]}}`, 0, http.StatusServiceUnavailable},
+		"no revision":          {`{"decision":{"allow":false,"reason_code":"POL-RULE-DENY","rule_id":"r","deny_body":{"error":"x"}}}`, 0, http.StatusServiceUnavailable},
+		"outside contract":     {`{"decision":{"allow":true,"rule_id":"r","bundle_revision":"v1","extra":1}}`, 0, http.StatusServiceUnavailable},
+		"no decision":          {`{"request_ok":true}`, 0, http.StatusServiceUnavailable},
+		"null reason":          {`{"decision":{"allow":true,"rule_id":"r","bundle_revision":"v1","obligations":["substitute_upstream_token"],"reason_code":null}}`, 0, http.StatusServiceUnavailable},
+		"null deny body":       {`{"decision":{"allow":true,"rule_id":"r","bundle_revision":"v1","obligations":["substitute_upstream_token"],"deny_body":null}}`, 0, http.StatusServiceUnavailable},
+		"duplicate obligation": {`{"decision":{"allow":true,"rule_id":"r","bundle_revision":"v1","obligations":["substitute_upstream_token","substitute_upstream_token"]}}`, 0, http.StatusServiceUnavailable},
+		"oversized rule":       {`{"decision":{"allow":true,"rule_id":"` + strings.Repeat("r", 257) + `","bundle_revision":"v1","obligations":["substitute_upstream_token"]}}`, 0, http.StatusServiceUnavailable},
+		"null revision":        {`{"decision":{"allow":true,"rule_id":"r","bundle_revision":null,"obligations":["substitute_upstream_token"]}}`, 0, http.StatusServiceUnavailable},
+		"bad link":             {`{"decision":{"allow":false,"reason_code":"POL-PRESENTATION-REQUIRED","rule_id":"r","bundle_revision":"v1","deny_body":{"error":"x","oid4vp_link":"not a uri"}}}`, 0, http.StatusServiceUnavailable},
+		"presentation":         {`{"decision":{"allow":false,"reason_code":"POL-PRESENTATION-REQUIRED","rule_id":"r","bundle_revision":"v1","deny_body":{"error":"presentation_required","oid4vp_link":"https://zone-a.example/present?challenge=x"}}}`, 0, http.StatusOK},
+		"error result":         {`{"id":"x","kind":0,"message":"policy not found"}`, 0, http.StatusServiceUnavailable},
+		"slower than bound":    {allow, 400 * time.Millisecond, http.StatusServiceUnavailable},
 	} {
 		t.Run(name, func(t *testing.T) {
 			current.Store(&reply{c.answer, c.delay})
@@ -89,5 +97,12 @@ func TestTSAAdapterPassesValidDecisionsAndFailsClosed(t *testing.T) {
 	}
 	if _, err := NewTSA(TSAConfig{EvaluationURL: tsa.URL, TimeoutMS: 1000}, []string{guard}, slog.Default()); err == nil {
 		t.Fatal("a timeout at the guard's bound accepted")
+	}
+}
+
+func TestDecisionSchemaIsTheContract(t *testing.T) {
+	published, err := os.ReadFile("../../docs/contracts/if05-policy-decision.v1.schema.json")
+	if err != nil || !bytes.Equal(published, decisionSchemaJSON) {
+		t.Fatal("services/policyevaluator/if05-policy-decision.v1.schema.json differs from the contract")
 	}
 }

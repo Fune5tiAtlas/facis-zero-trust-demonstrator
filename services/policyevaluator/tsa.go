@@ -3,17 +3,42 @@ package policyevaluator
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
+
+	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/meshcaller"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hook"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/tsabundle"
 )
+
+// decisionSchema is a copy of docs/contracts/if05-policy-decision.v1.schema.json, kept identical by
+// a test: a TSA decision is checked against the contract itself, member presence, null, uniqueness
+// and length included, before it is decoded.
+//
+//go:embed if05-policy-decision.v1.schema.json
+var decisionSchemaJSON []byte
+
+var decisionSchema = sync.OnceValues(func() (*jsonschema.Schema, error) {
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(decisionSchemaJSON))
+	if err != nil {
+		return nil, err
+	}
+	c := jsonschema.NewCompiler()
+	c.UseLoader(jsonschema.SchemeURLLoader{})
+	c.AssertFormat()
+	if err := c.AddResource("if05-policy-decision.v1.schema.json", doc); err != nil {
+		return nil, err
+	}
+	return c.Compile("if05-policy-decision.v1.schema.json")
+})
 
 // TSAConfig selects the XFSC TSA policy service as the decision engine.
 type TSAConfig struct {
@@ -60,6 +85,14 @@ func (t *TSA) Decide(ctx context.Context, in hook.Input) (hook.Decision, error) 
 	raw, err := tsabundle.EvaluateRaw(ctx, t.http, t.url, input)
 	if err != nil {
 		return hook.Decision{}, err
+	}
+	schema, err := decisionSchema()
+	if err != nil {
+		return hook.Decision{}, err
+	}
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+	if err != nil || schema.Validate(doc) != nil {
+		return hook.Decision{}, errors.New("tsa decision does not validate against the IF-05 decision schema")
 	}
 	var d hook.Decision
 	dec := json.NewDecoder(bytes.NewReader(raw))
