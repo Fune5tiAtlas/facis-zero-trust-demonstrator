@@ -30,6 +30,9 @@ spec:
             {{- with .Values.insecurePlainHTTPRegistry }}
             - --insecure-plain-http-registry={{ . }}
             {{- end }}
+            {{- if .Values.registryAuth.secretName }}
+            - --registry-auth=/etc/admission-provider/registry/config.json
+            {{- end }}
           ports:
             - name: https
               containerPort: 8443
@@ -62,6 +65,11 @@ spec:
             - name: trust
               mountPath: /etc/admission-provider/trust
               readOnly: true
+            {{- if .Values.registryAuth.secretName }}
+            - name: registry-auth
+              mountPath: /etc/admission-provider/registry
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tls
           secret:
@@ -81,3 +89,11 @@ spec:
         - name: trust
           configMap:
             name: {{ include "admission.name" . }}-trust
+        {{- with .Values.registryAuth.secretName }}
+        - name: registry-auth
+          secret:
+            secretName: {{ . }}
+            items:
+              - key: .dockerconfigjson
+                path: config.json
+        {{- end }}
