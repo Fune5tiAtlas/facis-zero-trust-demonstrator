@@ -94,6 +94,8 @@ type Options struct {
 	VPKey     *ecdsa.PublicKey // its key
 	ScopeMap  []Scope          // claims to scopes
 	Audiences []string         // resource audiences clients may register
+	// AccessTokenLifespan is the access-token lifetime; zero keeps the connector's default.
+	AccessTokenLifespan time.Duration
 }
 
 // Scope is one entry of the scope map.
@@ -183,6 +185,9 @@ func Start(t *testing.T, dsn, baoAddr, baoToken string, o Options) *Connector {
 		"--vp-trusted-issuers-file", WriteFile(t, "issuers.json", `{"`+o.VPIssuer+`":{"keys":[`+string(jwkJSON)+`]}}`),
 		"--vp-scope-map-file", WriteFile(t, "scopes.json", string(scopeMap)),
 		"--drain-delay", "0s", "--shutdown-timeout", "2s")
+	if o.AccessTokenLifespan > 0 {
+		cmd.Args = append(cmd.Args, "--access-token-lifespan", o.AccessTokenLifespan.String())
+	}
 	out := &buffer{}
 	cmd.Stdout, cmd.Stderr = out, out
 	if err := cmd.Start(); err != nil {
