@@ -433,8 +433,9 @@ outcome that service signs. No person takes part, and no outcome is ever reused:
 has no refresh grant, so each renewal is a new challenge, a new presentation and a new outcome.
 
 This is the client side. The service it calls is specified by the
-[verification contract](contracts/verification.v1.openapi.yaml) and is not part of this repository
-yet; the tests run the hook against an in-test implementation of that contract. The holder that
+[verification contract](contracts/verification.v1.openapi.yaml) and implemented by the
+[verification service](verification-service.md); the hook's own tests run it against an in-test
+implementation of that contract, the end-to-end test against the service. The holder that
 presents is a stand-in, described below.
 
 ```json
