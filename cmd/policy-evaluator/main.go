@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hook"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/policyevaluator"
 )
 
@@ -30,7 +31,7 @@ func run() error {
 	if dec.Decode(&cfg) != nil || dec.Decode(&struct{}{}) != io.EOF {
 		return errors.New("configuration invalid")
 	}
-	policy, err := policyevaluator.New(cfg)
+	policy, err := policyevaluator.New(cfg, hook.NewLogSinkV2(os.Stdout, cfg.EventSource, "policy-"+time.Now().UTC().Format("20060102T150405.000000000Z")))
 	if err != nil {
 		return errors.New("policy configuration invalid")
 	}
