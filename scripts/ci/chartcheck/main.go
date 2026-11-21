@@ -75,6 +75,9 @@ func check(root, chart string) error {
 	if name == "application-service" {
 		return checkGuarded(root)
 	}
+	if name == "tsa-policy" {
+		return checkTSA(root, chart)
+	}
 	if name != "guard" && name != "token-store" && name != "connector" {
 		return nil
 	}
@@ -246,4 +249,69 @@ func checkGuarded(root string) error {
 	}
 	_, err = render(guard, false)
 	return err
+}
+
+// checkTSA holds the TSA chart to its pins and trust root, and proves that declaring another bundle
+// changes only the bundle ConfigMap: the pod template, and so the running pod, stays as it is.
+func checkTSA(root, chart string) error {
+	data, err := os.ReadFile(filepath.Join(chart, "values.yaml"))
+	if err != nil {
+		return err
+	}
+	var values object
+	if yaml.Unmarshal(data, &values) != nil {
+		return errors.New("invalid tsa-policy values")
+	}
+	pins, err := os.ReadFile(filepath.Join(root, "scripts/tools/pins.env"))
+	if err != nil {
+		return err
+	}
+	for image, pin := range map[string]string{"tsa": "TSA_POLICY_IMAGE=", "nats": "NATS_IMAGE="} {
+		digest := ""
+		for _, line := range strings.Split(string(pins), "\n") {
+			if strings.HasPrefix(line, pin) {
+				_, digest, _ = strings.Cut(line, "@")
+			}
+		}
+		repository, _ := at(values, "images", image, "repository").(string)
+		if err := need(digest != "" && at(values, "images", image, "digest") == digest && strings.HasPrefix(repository, "ghcr.io/eclipse-xfsc/"), image+" default must be the mirrored repository at the pinned digest"); err != nil {
+			return err
+		}
+	}
+	key, err := os.ReadFile(filepath.Join(root, "docs/contracts/keys/interim-cosign.pub"))
+	if err != nil {
+		return err
+	}
+	if err := need(strings.TrimSpace(fmt.Sprint(at(values, "trustRoot"))) == strings.TrimSpace(string(key)), "trustRoot default must be the repository signing key"); err != nil {
+		return err
+	}
+	template := func(ref string) (object, object, error) {
+		out, err := exec.Command("helm", "template", "check", chart, "-n", "chart-check", "-f", filepath.Join(chart, "ci/values.yaml"),
+			"--set", "bundle.ref="+ref, "--set", "bundle.revision=r").Output()
+		if err != nil {
+			return nil, nil, errors.New("tsa-policy render failed")
+		}
+		var docs []object
+		dec := yaml.NewDecoder(bytes.NewReader(out))
+		for {
+			var d object
+			if err := dec.Decode(&d); err == io.EOF {
+				break
+			} else if err != nil {
+				return nil, nil, err
+			}
+			docs = append(docs, d)
+		}
+		return at(find(docs, "Deployment", "tsa-policy-engine"), "spec", "template").(object), find(docs, "ConfigMap", "tsa-policy-bundle"), nil
+	}
+	repo := at(values, "bundle", "repository").(string)
+	podA, bundleA, err := template(repo + "@sha256:" + strings.Repeat("a", 64))
+	if err != nil {
+		return err
+	}
+	podB, bundleB, err := template(repo + "@sha256:" + strings.Repeat("b", 64))
+	if err != nil {
+		return err
+	}
+	return need(reflect.DeepEqual(podA, podB) && !reflect.DeepEqual(bundleA, bundleB), "a bundle change must change the bundle ConfigMap and nothing in the pod template")
 }
