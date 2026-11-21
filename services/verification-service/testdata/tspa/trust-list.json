@@ -58,7 +58,7 @@
           "TSPCertificationList" : {
             "TSPCertification" : [ {
               "Type" : "TEEM-sha256",
-              "Value" : "1111111111111111111111111111111111111111111111111111111111111111"
+              "Value" : "2222222222222222222222222222222222222222222222222222222222222222"
             }, {
               "Type" : "image-digest",
               "Value" : "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
