@@ -49,6 +49,19 @@ planes:
   namespaceLabels: {}
 
 # --------------------------------------------------------------------------------------------
+# Admission (ZT-02, ZT-36; deployment/admission). true labels the data-plane namespace
+# (planes.data.namespace) - that one namespace only, never the management plane, an extra plane
+# namespace or a control-plane namespace - with facis.ztd/admission-proof=true, which puts its
+# workloads under the Gatekeeper image policy: digest references, allowed repositories or the digest
+# allow-list, signature and attestations, naming. Gatekeeper and the provider must be installed and
+# the injected Istio proxy digest allow-listed first (scripts/admission/install.sh ALLOWED_DIGESTS);
+# run scripts/admission/preflight-data-plane.sh <namespace> before turning it on. With the label,
+# a Gatekeeper or provider outage denies admission in the data plane (fail closed). Default off.
+# --------------------------------------------------------------------------------------------
+admission:
+  enforceDataPlane: false
+
+# --------------------------------------------------------------------------------------------
 # Mesh mode. ADR-0009 baselines Istio sidecar mode with Cilium as the CNI, superseding the ambient
 # baseline of ADR-0001 (the mesh cannot take SPIRE-issued identities under ambient). Ambient is
 # parked, not abandoned: the value stays accepted and the Cilium host-probe exception below still
