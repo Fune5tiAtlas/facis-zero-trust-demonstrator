@@ -88,3 +88,20 @@ Admission-labelled namespaces require the pinned Envoy image mirrored under
 the version tag is informational. Preserve the `ENVOY_IMAGE` manifest digest from
 `scripts/tools/pins.env` and supply the required signatures/attestations before
 deployment. The public chart gate checks the default digest against that pin.
+
+## Zone, decision events and policy rules
+
+`zone` (`a` or `b`) names the IF-01 v2 sources: the guard writes its decision events as
+`guard-<zone>`, the evaluator as `policy-<zone>`, one JSON line per decision on stdout, joined by
+the guard's correlation id (`x-request-id`; docs/api-docs.md, IF-01 version 2). `policyRevision` is
+the evaluator's bundle revision on every decision. `policyRules.blockedClients` denies the listed
+clients by rule (`m3-client-blocked`); `policyRules.presentation` answers a token carrying one of
+its scopes with `POL-PRESENTATION-REQUIRED` and its `oid4vpLink` (`https` or `openid4vp`, scopes
+disjoint from `config.scope_tenants`). Insufficient scope is its own rule, `m3-scope-required`.
+
+## From the zone file
+
+`scripts/install-zone/install.sh` installs this chart as release `ztd-guard` when the zone file sets
+`guard.install: true`, into `guard.namespace`, with `guard.values` as this chart's values and
+`trustDomain` from `zone.trustDomain`; `install.sh render ztd-guard` renders it the same way, and
+the policy checks (`scripts/ci/render-zones.sh`) render it for every shipped zone file that sets it.

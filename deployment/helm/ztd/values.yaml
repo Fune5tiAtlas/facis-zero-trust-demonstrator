@@ -424,3 +424,13 @@ observabilityBackends:
     prometheus: 10Gi
     jaeger: 10Gi
     logs: 10Gi
+
+# The namespace guard of a participant zone (deployment/helm/guard: Envoy with its ext_authz hook,
+# the policy evaluator, their STRICT mTLS, caller rules and network policy), installed by
+# scripts/install-zone/install.sh as release ztd-guard into guard.namespace when guard.install is
+# true. guard.values are the guard chart's values (deployment/helm/guard/README.md);
+# trustDomain comes from zone.trustDomain. The umbrella renders nothing from this block.
+guard:
+  install: false
+  namespace: ""
+  values: {}

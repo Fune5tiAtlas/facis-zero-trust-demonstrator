@@ -13,7 +13,9 @@
 #                                 render_releases (their names, comma-separated) and render_mode; on a
 #                                 failure sets render_error (one line) and returns 1. A zone without a mesh
 #                                 (ionos.yaml, mesh.mode none) is rendered through the umbrella alone; the
-#                                 installer refuses any other mode before it renders.
+#                                 installer refuses any other mode before it renders. A zone that sets
+#                                 guard.install also renders release ztd-guard (deployment/helm/guard,
+#                                 from its guard.values) into <dir>/mesh/.
 
 default_zones() {
   local z
@@ -43,6 +45,15 @@ print((z.get("mesh") or {}).get("mode") or "sidecar")' "$zone")
       return 1
     fi
     render_files+=("$dir/mesh/zone-policy.yaml" "$dir/mesh/ztd-openbao.yaml"); render_releases="ztd, zone-policy, ztd-openbao"
+    if [ "$(python3 -c 'import sys,yaml
+z = yaml.safe_load(open(sys.argv[1])) or {}
+print((z.get("guard") or {}).get("install") is True)' "$zone")" = True ]; then
+      if ! ZONE_VALUES=$zone RENDER_DIR=$dir/mesh "$root/scripts/install-zone/install.sh" render ztd-guard >"$dir/guard.log" 2>&1; then
+        render_error="ztd-guard does not render: $(grep -v '^$' "$dir/guard.log" | tail -3 | tr '\n' ' ')"
+        return 1
+      fi
+      render_files+=("$dir/mesh/ztd-guard.yaml"); render_releases+=", ztd-guard"
+    fi
   fi
   return 0
 }

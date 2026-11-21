@@ -31,7 +31,11 @@
 # management namespace, which the demonstrator role's step telemetry-client-certs creates; `install`
 # stops before otel-node when that Secret is missing (install the umbrella first, so the namespaces
 # exist, then run telemetry-client-certs from the demonstrator side, then install again).
-#  11 gatekeeper   gatekeeper-system  only when the zone file sets admission.install (either role, after
+#  11 ztd-guard    guard.namespace  only when the zone file sets guard.install (participant role): the
+#                                namespace guard, its policy evaluator and their identity and network
+#                                controls (deployment/helm/guard), from the zone file's guard.values,
+#                                with zone.trustDomain; the namespace is the umbrella's or the slice's
+#  12 gatekeeper   gatekeeper-system  only when the zone file sets admission.install (either role, after
 #                                its last release): the admission release of the umbrella chart -
 #                                Gatekeeper, the image-verification provider, the admission policy and
 #                                the admission pool
@@ -218,6 +222,11 @@ load_steps() {
     demonstrator) STEPS=("${DEMONSTRATOR_STEPS[@]}") ;;
     *) die "the zone file sets zone.role \"$ROLE\"; it is participant or demonstrator" ;;
   esac
+  # The guard, when a participant zone file opts in; "guard" as values file means the zone file's
+  # guard.values (merged_values).
+  if [ "$ROLE" = participant ] && [ "$(zone_fact guard.install)" = true ]; then
+    STEPS+=("ztd-guard|=guard.namespace|guard|guard|trustDomain=zone.trustDomain|")
+  fi
   # The admission release, when the zone file opts in (either role); "admission" as values file means
   # the zone file with Gatekeeper's values and the stage settings (merged_values).
   if [ "$(python3 -c 'import sys, yaml; z = yaml.safe_load(open(sys.argv[1])) or {}; print((z.get("admission") or {}).get("install") is True)' "$ZONE_VALUES" 2>/dev/null)" = True ]; then
@@ -380,6 +389,7 @@ chart_label() {
     umbrella) echo "deployment/helm/ztd" ;;
     zone-policy) echo "deployment/helm/zone-policy" ;;
     ztd-openbao) echo "deployment/helm/ztd-openbao" ;;
+    guard) echo "deployment/helm/guard" ;;
     spire-crds) echo "spire-crds $SPIRE_CRDS_VERSION" ;;
     spire) echo "spire $SPIRE_VERSION" ;;
     istio-base) echo "base $ISTIO_VERSION" ;;
@@ -478,6 +488,7 @@ chart_path() {
     umbrella) echo "$REPO/deployment/helm/ztd" ;;
     zone-policy) echo "$REPO/deployment/helm/zone-policy" ;;
     ztd-openbao) build_openbao_chart ;;
+    guard) echo "$REPO/deployment/helm/guard" ;;
     spire-crds) fetch_spire_chart spire-crds "$SPIRE_CRDS_VERSION" "$SPIRE_CRDS_SHA256" ;;
     spire) fetch_spire_chart spire "$SPIRE_VERSION" "$SPIRE_SHA256" ;;
     istio-base) echo "$(fetch_istio)/base" ;;
@@ -507,6 +518,13 @@ chart_path() {
 # exporter, the entry's listeners per zone, the silent-zone rules per zone, the volumes).
 merged_values() {
   if [ "$2" = zone ]; then cp "$ZONE_VALUES" "$4"; return; fi
+  if [ "$2" = guard ]; then
+    zone_py "$work/$1.guard-values.yaml" <<'PY'
+yaml.safe_dump(fact(zone_doc(), "guard.values") or {}, open(ARGS[0], "w"), sort_keys=False)
+PY
+    merged_values "$1" "$work/$1.guard-values.yaml" "$3" "$4"
+    return
+  fi
   if [ "$2" = admission ]; then
     python3 - "$ZONE_VALUES" "$REPO/deployment/admission/gatekeeper-values.yaml" "${ADMISSION_STAGE:-4}" "$4" \
       "$GATEKEEPER_IMAGE" "$GATEKEEPER_CRDS_IMAGE" <<'PY'

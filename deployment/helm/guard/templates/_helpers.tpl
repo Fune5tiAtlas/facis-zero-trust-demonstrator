@@ -12,6 +12,8 @@
 {{- if or (not .Values.trustDomain) (not .Values.participantServiceAccount) (not .Values.resourceName) (not .Values.policyRevision) -}}{{ fail "guard identity, resource and policy revision are required" }}{{- end -}}
 {{- $participant := printf "spiffe://%s/ns/%s/sa/%s" .Values.trustDomain .Release.Namespace .Values.participantServiceAccount -}}
 {{- if and .Values.config.allowed_callers (or (ne (len .Values.config.allowed_callers) 1) (not (has $participant .Values.config.allowed_callers))) -}}{{ fail "allowed_callers must match this namespace's configured Participant service account" }}{{- end -}}
+{{- if not (has (toString .Values.zone) (list "a" "b")) -}}{{ fail "zone must be a or b (the IF-01 event sources guard-<zone>, policy-<zone>)" }}{{- end -}}
+{{- with .Values.policyRules.presentation -}}{{- if and .scopes (not (regexMatch "^(https|openid4vp)://" (toString .oid4vpLink))) -}}{{ fail "policyRules.presentation needs an https or openid4vp oid4vpLink" }}{{- end -}}{{- end -}}
 {{- $scopes := .Values.config.scope_tenants -}}
 {{- if or (not (get $scopes "report:read")) (not (get $scopes "report:summary")) (eq (get $scopes "report:read") (get $scopes "report:summary")) -}}{{ fail "full-report and summary scope tenants must be distinct" }}{{- end -}}
 {{- end -}}

@@ -4,6 +4,8 @@ images:
   policy: {repository: ghcr.io/eclipse-xfsc/facis-zero-trust-demonstrator/policy-evaluator, digest: ""}
   # Mirror the pinned Envoy v1.36.10 image without changing its manifest digest.
   envoy: {repository: ghcr.io/eclipse-xfsc/facis-zero-trust-demonstrator/envoy, digest: "sha256:3a76238cdf52c7a3e33951f44c02d694108e6481feffe6663bf9319f55ec1394"}
+# The zone letter: the IF-01 v2 decision events carry source guard-<zone> and policy-<zone>.
+zone: b
 trustDomain: zone-b.trust.invalid
 participantServiceAccount: ztd-participant
 resourceName: ztd-protected-resource
@@ -22,6 +24,12 @@ config:
   allowed_callers: []
   scope_tenants: {"report:read": report-read, "report:summary": report-summary}
 policyRevision: m3-v1
+# Rules of the M3 evaluator besides the scope routes: clients denied whatever their token
+# (rule m3-client-blocked), and scopes answered with POL-PRESENTATION-REQUIRED and this OID4VP link
+# (rule m3-presentation-required; https or openid4vp, scopes disjoint from config.scope_tenants).
+policyRules:
+  blockedClients: []
+  presentation: {scopes: [], oid4vpLink: ""}
 # Added to component-specific service and DNS rules; use only explicit dependency/control peers.
 networkPolicy:
   istiod: {enabled: false, namespace: istio-system}

@@ -4,6 +4,18 @@
   "type": "object",
   "required": ["zone", "planes", "mesh", "cni", "networkPolicy", "allowMatrix", "verification"],
   "properties": {
+    "guard": {
+      "type": "object",
+      "description": "The namespace guard release (deployment/helm/guard), installed by the installer when install is true; the umbrella renders nothing from it.",
+      "additionalProperties": false,
+      "properties": {
+        "install": { "type": "boolean" },
+        "namespace": { "type": "string", "pattern": "^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)?$" },
+        "values": { "type": "object" }
+      },
+      "if": { "properties": { "install": { "const": true } } },
+      "then": { "properties": { "namespace": { "minLength": 1 } } }
+    },
     "zone": {
       "type": "object",
       "description": "Recorded per zone from the cluster baseline; no defaults on purpose.",
