@@ -2,16 +2,12 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/verificationtest"
 )
@@ -23,14 +19,6 @@ func entry(id, status string) map[string]any {
 		map[string]any{"ServiceTypeIdentifier": id, "ServiceCurrentStatus": status}}}}
 }
 
-func endpoint(verified bool, window map[string]any) map[string]any {
-	e := map[string]any{"vcUri": "https://tl.test/vc", "trustList": entry(listed, "active"), "vcVerified": verified}
-	for k, v := range window {
-		e[k] = v
-	}
-	return e
-}
-
 func TestListsActiveFindsAnActiveServiceByItsTypeIdentifier(t *testing.T) {
 	doc := map[string]any{"TrustServiceStatusList": map[string]any{"TrustServiceProviderList": map[string]any{
 		"TrustServiceProvider": []any{entry(listed, "active"), entry("did:web:withdrawn.test", "withdrawn")}}}}
@@ -39,65 +27,6 @@ func TestListsActiveFindsAnActiveServiceByItsTypeIdentifier(t *testing.T) {
 	}
 	if listsActive(doc, "did:web:withdrawn.test") || listsActive(doc, "did:web:absent.test") {
 		t.Error("a withdrawn or absent issuer was listed")
-	}
-}
-
-// The TCR answer in the shape of train-trust-validator's OpenAPI (POST /tcr/v1/resolve).
-func TestTCRListsOnlyFromAVerifiedTrustList(t *testing.T) {
-	var verified bool
-	var window map[string]any // validity members of the resolved trust list
-	var status = http.StatusOK
-	var got map[string]any
-	tcr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/tcr/v1/resolve" {
-			http.NotFound(w, r)
-			return
-		}
-		raw, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(raw, &got)
-		w.WriteHeader(status)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"trustSchemePointers": []any{map[string]any{"pointer": "trust.zone-a.test", "dids": []string{"did:web:tl.test"}}},
-			"resolvedResults": []any{map[string]any{"did": "did:web:tl.test", "resolvedDoc": map[string]any{
-				"document": map[string]any{}, "didVerified": true,
-				"endpoints": []any{endpoint(verified, window)},
-			}}},
-		})
-	}))
-	defer tcr.Close()
-	l := tcrList(tcr.Client(), tcr.URL, []string{"trust.zone-a.test"}, time.Now)
-
-	if ok, err := l(context.Background(), listed); ok || err != nil {
-		t.Errorf("an unverified trust list listed the issuer: %v %v", ok, err)
-	}
-	verified = true
-	// The documented TCR's vcVerified ignores the VC's expirationDate: without a validity window, or
-	// with one that has passed or not begun, the list authorises nothing.
-	for name, w := range map[string]map[string]any{
-		"no validity":         nil,
-		"expired":             {"expirationDate": time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)},
-		"expired, VC DM 2.0":  {"validUntil": time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)},
-		"not yet valid":       {"validFrom": time.Now().Add(time.Hour).UTC().Format(time.RFC3339), "validUntil": time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)},
-		"unreadable validity": {"expirationDate": "next year"},
-	} {
-		window = w
-		if ok, err := l(context.Background(), listed); ok || err == nil {
-			t.Errorf("%s: listed %v, err %v", name, ok, err)
-		}
-	}
-	window = map[string]any{"expirationDate": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}
-	if ok, err := l(context.Background(), listed); !ok || err != nil {
-		t.Errorf("a verified trust list within its validity did not list the issuer: %v %v", ok, err)
-	}
-	if got["issuer"] != listed || len(got["trustSchemePointers"].([]any)) != 1 {
-		t.Errorf("request %v", got)
-	}
-	if ok, _ := l(context.Background(), "did:web:other.test"); ok {
-		t.Error("an issuer the list does not name was listed")
-	}
-	status = http.StatusBadGateway
-	if ok, err := l(context.Background(), listed); ok || err == nil {
-		t.Errorf("a failing TCR listed the issuer: %v %v", ok, err)
 	}
 }
 

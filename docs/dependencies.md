@@ -19,11 +19,18 @@ and are the authoritative list. This page records the components chosen and why.
 ### Pending Eclipse IP review
 
 Dependencies Dash cannot clear yet. They are not exceptions: each stays here until Eclipse approves it,
-and is removed then. None is pending: the last two, `golang.org/x/text` v0.42.0
+and is removed then. Earlier ones, `golang.org/x/text` v0.42.0
 ([iplab #32075](https://gitlab.eclipse.org/eclipsefdn/emo-team/iplab/-/work_items/32075)) and
 `github.com/santhosh-tekuri/jsonschema/v6` v6.0.3
 ([iplab #32387](https://gitlab.eclipse.org/eclipsefdn/emo-team/iplab/-/work_items/32387)), were approved
-by 23 October 2026.
+by 23 October 2026. Pending, added 21 November 2026 for the verification service's own check of
+TRAIN trust-list VCs ([Verification service](verification-service.md)); no review requested yet:
+
+| Dependency | Version | Licence | Why |
+|---|---|---|---|
+| `github.com/piprate/json-gold` | v0.9.1 | Apache-2.0 | JSON-LD URDNA2015 canonicalisation for the JsonWebSignature2020 proof of a trust-list VC |
+| `github.com/cayleygraph/quad` | v1.3.0 | Apache-2.0 | N-Quads serialisation, required by json-gold |
+| `github.com/pquerna/cachecontrol` | v0.2.0 | Apache-2.0 | HTTP cache headers of json-gold's default document loader (not used: contexts are embedded), required by json-gold |
 
 ## Licence exceptions
 
@@ -73,6 +80,7 @@ Direct dependencies of the Go module. Transitive dependencies are listed in the 
 | `github.com/envoyproxy/go-control-plane/envoy` | v1.37.0 | Apache-2.0 | the Envoy `ext_authz` and `ext_proc` API types the guard policy hook is served through (`cmd/policy-hook-probe`); only its `envoyhook` package may import them |
 | `github.com/jackc/pgx/v5` | v5.11.0 | MIT | PostgreSQL driver of the token store: the schema migrations today (`services/token-store`), the service's queries as they land |
 | `google.golang.org/grpc` | v1.83.2 | Apache-2.0 | gRPC transport of the policy hook's Envoy services |
+| `github.com/piprate/json-gold` | v0.9.1 | Apache-2.0 | URDNA2015 canonicalisation of TRAIN trust-list VCs in the verification service (pending Eclipse IP review, above) |
 
 The SD-JWT VC, Token Status List and OID4VP handling (`internal/sdjwt`, `internal/statuslist`,
 `internal/oid4vp`) is written on the standard library (`crypto/ecdsa`, `crypto/sha256`,
