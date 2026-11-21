@@ -369,8 +369,9 @@ transit engine to sign. OpenBao serves the same transit API, so this is expected
 *an inference, not yet run against the deployed OpenBao*. The transit key must be of a type cosign
 accepts (`ecdsa-p256` is the safe choice), the token's policy needs only `read` on
 `<mount>/keys/<key>` and `update` on `<mount>/sign/<key>`, and the signing runner must reach
-`SIGNING_VAULT_ADDR`. The signing steps receive the secrets of all three sources; a client password
-left empty falls back to the interim one, and the key check then fails.
+`SIGNING_VAULT_ADDR`. The signing steps receive only the selected source's secrets — the others are
+passed as empty — and a secret left empty stays empty: a client key without a password is used
+without one, never with the interim password.
 
 Activation, per source: commit the source's public key under `docs/contracts/keys/` by pull request
 (`cosign public-key --key hashivault://<key>` prints it for transit), add its secrets to the
@@ -429,7 +430,10 @@ secrets of the `release` environment:
 | `HARBOR_PUSH_USER`, `HARBOR_PUSH_PASSWORD` | the push of the images, their signatures and attestations |
 | `HARBOR_READ_USER`, `HARBOR_READ_PASSWORD` | every check after the push: `cmd/imageverify`, `cosign verify` and `verify-attestation` (a Docker config of their own, `VERIFY_DOCKER_CONFIG`), and the release job, which only reads |
 
-On GHCR both roles are the job token, as before. Activation: create the project and the two robot
+On GHCR both roles are the job token, as before. The credentials are chosen by the registry's kind,
+never by fallback: with `HARBOR_HOST` set, an empty Harbor secret stays empty and
+`scripts/supplychain/registry-login.sh` fails before anything is sent, so the job token never goes to
+Harbor. Activation: create the project and the two robot
 accounts in Harbor (push: push and pull on the project; read: pull only), add the four secrets,
 set the two variables, and add the Harbor path to the admission chart's `trust.repositories`. A
 cluster that pulls from a private project needs the read account as well: an image pull secret for

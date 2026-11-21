@@ -154,10 +154,10 @@ jobs:
       # Before anything is built or pushed: the key must be present and match the committed public key.
       - name: Check the signing key
         env:
-          COSIGN_INTERIM_KEY: ${{ secrets.COSIGN_INTERIM_KEY }}
-          COSIGN_CLIENT_KEY: ${{ secrets.COSIGN_CLIENT_KEY }}
-          COSIGN_PASSWORD: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || secrets.COSIGN_INTERIM_PASSWORD }}
-          VAULT_TOKEN: ${{ secrets.SIGNING_VAULT_TOKEN }}
+          COSIGN_INTERIM_KEY: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_KEY || '' }}
+          COSIGN_CLIENT_KEY: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_KEY || '' }}
+          COSIGN_PASSWORD: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_PASSWORD || (vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || '') }}
+          VAULT_TOKEN: ${{ vars.SIGNING_KEY_SOURCE == 'openbao-transit' && secrets.SIGNING_VAULT_TOKEN || '' }}
         run: scripts/supplychain/check-key.sh
 
       # GHCR by default; the Harbor project HARBOR_HOST/HARBOR_PROJECT once those variables are set.
@@ -171,21 +171,22 @@ jobs:
       # Push credentials: the job token for GHCR, the Harbor robot account allowed to push otherwise.
       - name: Log in to the registry
         env:
+          REGISTRY_KIND: ${{ steps.repo.outputs.kind }}
           REGISTRY_HOST: ${{ steps.repo.outputs.host }}
-          REGISTRY_USER: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_PUSH_USER || github.actor }}
-          REGISTRY_PASSWORD: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_PUSH_PASSWORD || github.token }}
-        run: printf '%s' "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin
+          REGISTRY_USER: ${{ vars.HARBOR_HOST == '' && github.actor || secrets.HARBOR_PUSH_USER }}
+          REGISTRY_PASSWORD: ${{ vars.HARBOR_HOST == '' && github.token || secrets.HARBOR_PUSH_PASSWORD }}
+        run: scripts/supplychain/registry-login.sh
 
       # Read credentials for every check after the push, in a Docker config of their own: verification
       # reads the registry with the read-only robot account (the job token for GHCR), not the pusher's.
       - name: Log in to the registry for verification
         env:
+          REGISTRY_KIND: ${{ steps.repo.outputs.kind }}
           REGISTRY_HOST: ${{ steps.repo.outputs.host }}
-          REGISTRY_USER: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_READ_USER || github.actor }}
-          REGISTRY_PASSWORD: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_READ_PASSWORD || github.token }}
+          REGISTRY_USER: ${{ vars.HARBOR_HOST == '' && github.actor || secrets.HARBOR_READ_USER }}
+          REGISTRY_PASSWORD: ${{ vars.HARBOR_HOST == '' && github.token || secrets.HARBOR_READ_PASSWORD }}
         run: |
-          printf '%s' "$REGISTRY_PASSWORD" |
-            docker --config "$RUNNER_TEMP/verify-docker" login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin
+          scripts/supplychain/registry-login.sh "$RUNNER_TEMP/verify-docker"
           echo "VERIFY_DOCKER_CONFIG=$RUNNER_TEMP/verify-docker" >> "$GITHUB_ENV"
 
       # The release version on a tag, so the images carry the version the charts and the release do;
@@ -204,13 +205,13 @@ jobs:
 
       - name: Sign, attest and verify every image by digest
         env:
-          COSIGN_INTERIM_KEY: ${{ secrets.COSIGN_INTERIM_KEY }}
-          COSIGN_CLIENT_KEY: ${{ secrets.COSIGN_CLIENT_KEY }}
-          COSIGN_PASSWORD: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || secrets.COSIGN_INTERIM_PASSWORD }}
-          VAULT_TOKEN: ${{ secrets.SIGNING_VAULT_TOKEN }}
+          COSIGN_INTERIM_KEY: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_KEY || '' }}
+          COSIGN_CLIENT_KEY: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_KEY || '' }}
+          COSIGN_PASSWORD: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_PASSWORD || (vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || '') }}
+          VAULT_TOKEN: ${{ vars.SIGNING_KEY_SOURCE == 'openbao-transit' && secrets.SIGNING_VAULT_TOKEN || '' }}
           # New packages are private: the provider-code check reads them with the read credentials.
-          IMAGEVERIFY_FLAGS: -registry-username ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_READ_USER || github.actor }}
-          IMAGEVERIFY_PASSWORD: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_READ_PASSWORD || github.token }}
+          IMAGEVERIFY_FLAGS: -registry-username ${{ vars.HARBOR_HOST == '' && github.actor || secrets.HARBOR_READ_USER }}
+          IMAGEVERIFY_PASSWORD: ${{ vars.HARBOR_HOST == '' && github.token || secrets.HARBOR_READ_PASSWORD }}
         run: scripts/supplychain/sign-verify.sh "${{ steps.repo.outputs.path }}" images.txt candidate
 
       - name: Summary
@@ -378,10 +379,10 @@ jobs:
 
       - name: Check the signing key
         env:
-          COSIGN_INTERIM_KEY: ${{ secrets.COSIGN_INTERIM_KEY }}
-          COSIGN_CLIENT_KEY: ${{ secrets.COSIGN_CLIENT_KEY }}
-          COSIGN_PASSWORD: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || secrets.COSIGN_INTERIM_PASSWORD }}
-          VAULT_TOKEN: ${{ secrets.SIGNING_VAULT_TOKEN }}
+          COSIGN_INTERIM_KEY: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_KEY || '' }}
+          COSIGN_CLIENT_KEY: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_KEY || '' }}
+          COSIGN_PASSWORD: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_PASSWORD || (vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || '') }}
+          VAULT_TOKEN: ${{ vars.SIGNING_KEY_SOURCE == 'openbao-transit' && secrets.SIGNING_VAULT_TOKEN || '' }}
         run: scripts/supplychain/check-key.sh
 
       # Every artefact of this run: the gate's row and the charts, the images with their SBOMs and the
@@ -402,10 +403,11 @@ jobs:
       # This job only reads the registry: the read-only robot account for Harbor, the job token for GHCR.
       - name: Log in to the registry with read credentials
         env:
+          REGISTRY_KIND: ${{ steps.repo.outputs.kind }}
           REGISTRY_HOST: ${{ steps.repo.outputs.host }}
-          REGISTRY_USER: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_READ_USER || github.actor }}
-          REGISTRY_PASSWORD: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_READ_PASSWORD || github.token }}
-        run: printf '%s' "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin
+          REGISTRY_USER: ${{ vars.HARBOR_HOST == '' && github.actor || secrets.HARBOR_READ_USER }}
+          REGISTRY_PASSWORD: ${{ vars.HARBOR_HOST == '' && github.token || secrets.HARBOR_READ_PASSWORD }}
+        run: scripts/supplychain/registry-login.sh
 
       # The images were pushed under the release version and signed by digest; the version tag of each
       # must still name the digest that was signed, or the release would list images it did not verify.
@@ -421,10 +423,10 @@ jobs:
 
       - name: Generate and sign the repository SBOM
         env:
-          COSIGN_INTERIM_KEY: ${{ secrets.COSIGN_INTERIM_KEY }}
-          COSIGN_CLIENT_KEY: ${{ secrets.COSIGN_CLIENT_KEY }}
-          COSIGN_PASSWORD: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || secrets.COSIGN_INTERIM_PASSWORD }}
-          VAULT_TOKEN: ${{ secrets.SIGNING_VAULT_TOKEN }}
+          COSIGN_INTERIM_KEY: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_KEY || '' }}
+          COSIGN_CLIENT_KEY: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_KEY || '' }}
+          COSIGN_PASSWORD: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_PASSWORD || (vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || '') }}
+          VAULT_TOKEN: ${{ vars.SIGNING_KEY_SOURCE == 'openbao-transit' && secrets.SIGNING_VAULT_TOKEN || '' }}
         run: |
           mkdir -p "$RUNNER_TEMP/set"
           scripts/supplychain/repo-sbom.sh . "$RUNNER_TEMP/set/sbom.json"
@@ -490,10 +492,10 @@ jobs:
       # The manifest carries the same list as the notes; signed, it can be checked without the page.
       - name: Sign the manifest
         env:
-          COSIGN_INTERIM_KEY: ${{ secrets.COSIGN_INTERIM_KEY }}
-          COSIGN_CLIENT_KEY: ${{ secrets.COSIGN_CLIENT_KEY }}
-          COSIGN_PASSWORD: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || secrets.COSIGN_INTERIM_PASSWORD }}
-          VAULT_TOKEN: ${{ secrets.SIGNING_VAULT_TOKEN }}
+          COSIGN_INTERIM_KEY: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_KEY || '' }}
+          COSIGN_CLIENT_KEY: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_KEY || '' }}
+          COSIGN_PASSWORD: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_PASSWORD || (vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || '') }}
+          VAULT_TOKEN: ${{ vars.SIGNING_KEY_SOURCE == 'openbao-transit' && secrets.SIGNING_VAULT_TOKEN || '' }}
         run: |
           cosign sign-blob --yes --key "$COSIGN_KEY" --tlog-upload=false --new-bundle-format=false \
             --output-signature dist/release/release-manifest.json.sig dist/release/release-manifest.json >/dev/null

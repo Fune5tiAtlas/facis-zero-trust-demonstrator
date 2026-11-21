@@ -98,19 +98,19 @@ jobs:
       - name: Check the signing key
         if: steps.go-mod.outputs.exists == 'true'
         env:
-          COSIGN_INTERIM_KEY: ${{ secrets.COSIGN_INTERIM_KEY }}
-          COSIGN_CLIENT_KEY: ${{ secrets.COSIGN_CLIENT_KEY }}
-          COSIGN_PASSWORD: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || secrets.COSIGN_INTERIM_PASSWORD }}
-          VAULT_TOKEN: ${{ secrets.SIGNING_VAULT_TOKEN }}
+          COSIGN_INTERIM_KEY: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_KEY || '' }}
+          COSIGN_CLIENT_KEY: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_KEY || '' }}
+          COSIGN_PASSWORD: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_PASSWORD || (vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || '') }}
+          VAULT_TOKEN: ${{ vars.SIGNING_KEY_SOURCE == 'openbao-transit' && secrets.SIGNING_VAULT_TOKEN || '' }}
         run: scripts/supplychain/check-key.sh
 
       - name: Attach a signed SBOM to every release that lacks a verifying one
         if: steps.go-mod.outputs.exists == 'true'
         env:
-          COSIGN_INTERIM_KEY: ${{ secrets.COSIGN_INTERIM_KEY }}
-          COSIGN_CLIENT_KEY: ${{ secrets.COSIGN_CLIENT_KEY }}
-          COSIGN_PASSWORD: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || secrets.COSIGN_INTERIM_PASSWORD }}
-          VAULT_TOKEN: ${{ secrets.SIGNING_VAULT_TOKEN }}
+          COSIGN_INTERIM_KEY: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_KEY || '' }}
+          COSIGN_CLIENT_KEY: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_KEY || '' }}
+          COSIGN_PASSWORD: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_PASSWORD || (vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || '') }}
+          VAULT_TOKEN: ${{ vars.SIGNING_KEY_SOURCE == 'openbao-transit' && secrets.SIGNING_VAULT_TOKEN || '' }}
         run: scripts/supplychain/sbom-backfill.sh
 
   # FZTD-57: the SBOM job.

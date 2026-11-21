@@ -70,10 +70,10 @@ jobs:
 
       - name: Check the signing key
         env:
-          COSIGN_INTERIM_KEY: ${{ secrets.COSIGN_INTERIM_KEY }}
-          COSIGN_CLIENT_KEY: ${{ secrets.COSIGN_CLIENT_KEY }}
-          COSIGN_PASSWORD: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || secrets.COSIGN_INTERIM_PASSWORD }}
-          VAULT_TOKEN: ${{ secrets.SIGNING_VAULT_TOKEN }}
+          COSIGN_INTERIM_KEY: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_KEY || '' }}
+          COSIGN_CLIENT_KEY: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_KEY || '' }}
+          COSIGN_PASSWORD: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_PASSWORD || (vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || '') }}
+          VAULT_TOKEN: ${{ vars.SIGNING_KEY_SOURCE == 'openbao-transit' && secrets.SIGNING_VAULT_TOKEN || '' }}
         run: scripts/supplychain/check-key.sh
 
       # GHCR by default; the Harbor project HARBOR_HOST/HARBOR_PROJECT once those variables are set.
@@ -87,19 +87,29 @@ jobs:
       # Push credentials: the job token for GHCR, the Harbor robot account allowed to push otherwise.
       - name: Log in to the registry
         env:
+          REGISTRY_KIND: ${{ steps.repo.outputs.kind }}
           REGISTRY_HOST: ${{ steps.repo.outputs.host }}
-          REGISTRY_USER: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_PUSH_USER || github.actor }}
-          REGISTRY_PASSWORD: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_PUSH_PASSWORD || github.token }}
-        run: printf '%s' "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin
+          REGISTRY_USER: ${{ vars.HARBOR_HOST == '' && github.actor || secrets.HARBOR_PUSH_USER }}
+          REGISTRY_PASSWORD: ${{ vars.HARBOR_HOST == '' && github.token || secrets.HARBOR_PUSH_PASSWORD }}
+        run: scripts/supplychain/registry-login.sh
+
+      # The fixture checks read with the read credentials; for Harbor they must exist before any is sent.
+      - name: Log in to the registry for verification
+        env:
+          REGISTRY_KIND: ${{ steps.repo.outputs.kind }}
+          REGISTRY_HOST: ${{ steps.repo.outputs.host }}
+          REGISTRY_USER: ${{ vars.HARBOR_HOST == '' && github.actor || secrets.HARBOR_READ_USER }}
+          REGISTRY_PASSWORD: ${{ vars.HARBOR_HOST == '' && github.token || secrets.HARBOR_READ_PASSWORD }}
+        run: scripts/supplychain/registry-login.sh "$RUNNER_TEMP/verify-docker"
 
       - name: Publish, sign and check every fixture
         env:
-          COSIGN_INTERIM_KEY: ${{ secrets.COSIGN_INTERIM_KEY }}
-          COSIGN_CLIENT_KEY: ${{ secrets.COSIGN_CLIENT_KEY }}
-          COSIGN_PASSWORD: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || secrets.COSIGN_INTERIM_PASSWORD }}
-          VAULT_TOKEN: ${{ secrets.SIGNING_VAULT_TOKEN }}
-          IMAGEVERIFY_FLAGS: -registry-username ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_READ_USER || github.actor }}
-          IMAGEVERIFY_PASSWORD: ${{ vars.HARBOR_HOST != '' && secrets.HARBOR_READ_PASSWORD || github.token }}
+          COSIGN_INTERIM_KEY: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_KEY || '' }}
+          COSIGN_CLIENT_KEY: ${{ vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_KEY || '' }}
+          COSIGN_PASSWORD: ${{ (vars.SIGNING_KEY_SOURCE || 'interim') == 'interim' && secrets.COSIGN_INTERIM_PASSWORD || (vars.SIGNING_KEY_SOURCE == 'client' && secrets.COSIGN_CLIENT_PASSWORD || '') }}
+          VAULT_TOKEN: ${{ vars.SIGNING_KEY_SOURCE == 'openbao-transit' && secrets.SIGNING_VAULT_TOKEN || '' }}
+          IMAGEVERIFY_FLAGS: -registry-username ${{ vars.HARBOR_HOST == '' && github.actor || secrets.HARBOR_READ_USER }}
+          IMAGEVERIFY_PASSWORD: ${{ vars.HARBOR_HOST == '' && github.token || secrets.HARBOR_READ_PASSWORD }}
         run: scripts/admission/publish-fixtures.sh "${{ steps.repo.outputs.path }}" fixtures.txt
 
       - name: Summary
