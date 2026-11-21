@@ -30,9 +30,40 @@ signature, envelope, disclosures, holder binding, validity, status reference), `
 | Outcome custody | The outcome key is a transit key (`--signing-key`, created non-exportable as `ecdsa-p256` if missing), the key-custody pattern of the token store and the connector (#45). The service pins the version current at start; its `kid` is `<key>-v<version>`. Only the public key ever enters the process. |
 | Consumers' trust | `verification-service trust-set` prints `{"<issuer>": {"keys": [<JWK>]}}`, the format of the connector's `--vp-trusted-issuers-file` and the store's `trusted_issuers`. |
 | Trust in credential issuers | The issuers and their keys come from a file (`--issuer-keys-file`, the same trust-set format); an issuer is trusted only while the trust source lists it. The set is rebuilt every `--trust-refresh` (5 min), asking the trust source again each time. It fails closed: an issuer whose listing cannot be read is dropped, and a keys file that cannot be read or parsed (or is empty) withdraws every issuer and makes the service not ready until a refresh succeeds. |
-| Trust source | **TRAIN:** `--tcr-url` and `--trust-scheme-pointers`. The service calls the TCR's `POST /tcr/v1/resolve` ([TSPA page, §4](tspa-publish-api.md)) and trusts the issuer when a returned trust list has `vcVerified: true` and holds an active service whose `ServiceTypeIdentifier` is the issuer (the TCR's lookup key), and only inside the list's validity window: `vcVerified` covers the VC's signature and the list's hash but the documented TCR never checks the VC's `expirationDate` ([TSPA page, §1](tspa-publish-api.md)), so the service requires `expirationDate` or `validUntil` (and honours `validFrom` or `issuanceDate`) on the resolved trust list in the TCR's answer and refuses the issuer when the window is missing, unreadable, not begun or passed. The documented TCR returns no window, so against it every issuer is refused until the TCR returns the window of the VC it verified (an upstream change, like the fixes in `scripts/verify-tspa-api/tcr-findings/`). **FIXTURE:** `--trust-list-file`, a trust list in the JSON form TSPA serves, read from a file and matched the same way. It checks no signature, no hash and no DNS, the service logs a warning at start, and it exists only where no TCR is reachable. Exactly one of the two is accepted. |
+| Trust source | **TRAIN:** `--tcr-url` and `--trust-scheme-pointers`. The TCR's `POST /tcr/v1/resolve` ([TSPA page, §4](tspa-publish-api.md)) is used only for what it alone does: walking the DNS chain from the pointers to the trust-list issuers' DIDs and their VC locations (`vcUri`). Its `vcVerified` is not relied on, since it never checks the VC's `expirationDate`. The service fetches each VC itself and checks it ([Trust-list VC check](#trust-list-vc-check)); the issuer is trusted when a list so verified holds an active service whose `ServiceTypeIdentifier` is the issuer. **FIXTURE:** `--trust-list-file`, a trust list in the JSON form TSPA serves, read from a file and matched the same way. It checks no signature, no hash and no DNS, the service logs a warning at start, and it exists only where no TCR is reachable. Exactly one of the two is accepted. |
 | Caller identity | Every request must carry exactly one `X-Forwarded-Client-Cert` element whose `URI` is one of `--callers` (`internal/meshcaller`, the guard's authenticator); anything else is 403. A request is answered only by the identity that opened it. |
 | Readiness | `/readyz` on the ops port is 200 while PostgreSQL answers and at least one issuer is trusted. |
+
+## Trust-list VC check
+
+For each VC location the TCR resolves, in this order, failing closed at every step
+(`services/verification-service/trustvc.go`):
+
+1. The VC's `@context` is exactly the three pinned documents (W3C credentials v1, Ed25519 2020,
+   JWS 2020; embedded in `contexts/`, fetched once on 2026-11-21, never loaded from the network) and
+   the trust-list terms our TSPA's template defines. JSON-LD runs in safe mode: no term is silently
+   dropped from what the proof covers.
+2. Its `issuer` is the DID the TCR resolved, a `did:web`.
+3. Its validity window: `expirationDate` or `validUntil` required and not passed, `issuanceDate` or
+   `validFrom` not in the future.
+4. The `JsonWebSignature2020` proof (EdDSA, a detached unencoded JWS over the SHA-256 of the URDNA2015
+   canonical proof options and document) verifies with the Ed25519 key that the issuer's DID document
+   (did:web, fetched over HTTPS) names as the proof's `verificationMethod` and lists under
+   `assertionMethod`.
+5. The trust list at `credentialSubject.trustlistURI` has the multihash `credentialSubject.hash`.
+
+A verified VC is cached by the SHA-256 of its bytes for at most 5 minutes and never past its expiry.
+Canonicalisation uses `github.com/piprate/json-gold` (Apache-2.0, pending Eclipse IP review,
+[Dependencies](dependencies.md)). The check runs against a VC signed by our patched TSPA image
+(`testdata/tspa/`, produced by `scripts/verify-tspa-vc/run.sh`) and against VCs signed in the tests
+to cover each refusal: expired, no validity end, not yet valid, expiry or subject changed after
+signing, bad proof, unpinned or changed context, DID document naming another key, issuer not the
+resolved DID, and the VC, DID document, list or TCR not answering.
+
+The upstream TSPA cannot produce a VC that passes: it never sets `expirationDate` and signs with a
+key published in its own source. Only our image does ([TSPA page, §11](tspa-publish-api.md)).
+**Trust lists published by the upstream TSPA image, on zone B before this change included, were
+signed with that public key and must not be trusted.**
 
 ## Refusals
 
@@ -106,7 +137,7 @@ The database role needs `CREATE` on its schema: the service creates its one tabl
 | What | Command | Real | Fixture |
 |---|---|---|---|
 | Handlers, refusals, single use under concurrency, callers | `go test ./services/verification-service/...` with `TOKEN_STORE_TEST_DATABASE_URL` | PostgreSQL | issuer, holder and status list generated per test (`verificationtest.Provision`); pinned trust list; outcomes signed with a process key |
-| Trust sources | same package | — | TCR answers in the shape of its OpenAPI, from a test server |
+| Trust sources | same package | json-gold, Ed25519, a VC signed by our TSPA image | TCR, DID document, VC and list served by a TLS test server; refusal VCs signed by the tests |
 | End to end | `go test -run TestEndToEnd ./services/token-store/internal/renew/` with the database and `TRANSIT_TEST_*` variables; `VP_E2E_RECORD=<file>` keeps the transcript | the service binary, PostgreSQL, OpenBao transit, the token store's acquisition and renewal worker, the connector binary, a protected resource with `internal/tokenverify` | per-run issuer and holder, pinned trust list, status list from a test server; the mesh: the hook's transport sets the forwarded identity |
 | Chart on kind | `scripts/verify-verification-service/verify.sh` | the image by digest, PostgreSQL and OpenBao in the cluster, readiness, `trust-set`, caller refusals, single use, PostgreSQL loss | no mesh (Istio CRDs inert); the script sets the forwarded identity through the pod proxy |
 
@@ -117,7 +148,8 @@ The recorded run is in [evidences/verified-presentation](evidences/verified-pres
 - A run under a live mesh: the DestinationRule refusing a wrong server certificate and the
   `STRICT` PeerAuthentication refusing plain text are Istio's, rendered and applied here but
   exercised only on a cluster with istiod and SPIRE.
-- A run against a live TCR and a TSPA-published trust list; with the documented TCR it would refuse
-  every issuer (no validity window in its answer).
+- A run against a live TCR and our TSPA on zone B: it needs our TSPA image deployed there, its
+  DID document served at `https://tspa.facis.cloud/.well-known/did.json`, and the trust list
+  re-published with it.
 - Rotation of the outcome key: the service pins the version at start, so a rotation needs a
   restart and the consumers' trust sets must carry the new key first.
