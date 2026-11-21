@@ -93,6 +93,27 @@ only when the mode is ambient and Cilium is enabled; in the sidecar baseline of 
 the kind is rendered, and the template stays so that returning to ambient costs a zone value, not a
 chart change.
 
+## Admission in the data plane is an opt-in label
+
+The Gatekeeper image policy ([deployment/admission](../deployment/admission)) applies only to
+namespaces labelled `facis.ztd/admission-proof=true`. The umbrella sets that label on one namespace,
+the data-plane namespace (`planes.data.namespace`), and only when the zone sets
+`admission.enforceDataPlane: true`; the default is off. The management plane, any `planes.extra`
+namespace (a second data-plane namespace included) and the control-plane namespaces
+(`gatekeeper-system`, `istio-system`, `spire-system`, `kube-system`) never get it, and
+`planes.namespaceLabels`, which applies to every namespace the umbrella creates, may not set it. The
+CI chart job renders both settings and checks exactly that.
+
+Turning it on puts every workload of the data plane under the image policy, the injected Istio
+proxy and `istio-validation` init container included. They run Istio's own `proxyv2` image, which the
+project does not sign; [istiod.yaml](../deployment/helm/values/istiod.yaml) references it by digest
+only, and that exact reference must be on the admission digest allow-list (`ALLOWED_DIGESTS` of
+`scripts/admission/install.sh`, which writes it to the provider's `trust.allowedDigests` and to the
+`ztd-allowed-repositories` constraint). Before turning it on, run
+`scripts/admission/preflight-data-plane.sh <namespace>` (read-only), which names every image there
+that would be denied. With the label on, a Gatekeeper or provider outage denies admission in the data
+plane (fail closed), and `scripts/admission/fault-injection.sh` expects it to.
+
 ## The hook-weight scheme
 
 Helm orders two things. Regular resources — of the chart and of every subchart together — are

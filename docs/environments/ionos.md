@@ -163,7 +163,9 @@ delete `observer.kubeconfig` and `ca.crt` afterwards; the token expires on its o
 
 An early admission proof on this cluster: Gatekeeper and the image-verification provider, with the
 constraints in [deployment/admission](../../deployment/admission), enforcing only in the namespaces
-labelled `facis.ztd/admission-proof=true` (`ztd-adm-001`, `ztd-adm-002`). The images it verifies are
+labelled `facis.ztd/admission-proof=true` (`ztd-adm-001`, `ztd-adm-002`; a zone's data-plane
+namespace only when its umbrella sets `admission.enforceDataPlane`,
+[Umbrella chart](../umbrella-chart.md#admission-in-the-data-plane-is-an-opt-in-label)). The images it verifies are
 signed with the **interim key** ([docs/contracts/keys/interim-cosign.pub](../contracts/keys/interim-cosign.pub)),
 not the client trust chain; this cluster is not a target environment. Everything it records says so.
 
