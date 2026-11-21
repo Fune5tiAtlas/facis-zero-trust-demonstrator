@@ -1,0 +1,96 @@
+{{- $v := .Values }}
+{{- $sel := dict "app.kubernetes.io/name" $v.name }}
+{{- if $v.egress.enabled }}
+{{- $p := $v.egress.peer }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $v.name }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    ztd.facis.io/connector-route: {{ printf "egress:%s" $p.name | quote }}
+    ztd.facis.io/l7-owner: sidecar
+spec:
+  podSelector: {matchLabels: {{ toJson $sel }}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- range $v.egress.callers }}
+        - podSelector: {matchLabels: {{ toJson .podSelector }}}
+        {{- end }}
+      ports: [{protocol: TCP, port: {{ $v.egress.port }}}]
+  # The peer zone's entry is outside the cluster and has no identity in this mesh, so its lane names
+  # its address, the one external destination of the namespace (docs/architecture.md).
+  egress:
+    - to: [{ipBlock: {cidr: {{ printf "%s/32" $p.address | quote }}}}]
+      ports: [{protocol: TCP, port: {{ $p.port }}}]
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ $v.name }}-callers
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    ztd.facis.io/connector-route: {{ printf "egress:%s" $p.name | quote }}
+    ztd.facis.io/l7-owner: sidecar
+spec:
+  selector: {matchLabels: {{ toJson $sel }}}
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              {{- range $v.egress.callers }}
+              - {{ printf "%s/ns/%s/sa/%s" $v.trustDomain $.Release.Namespace .serviceAccount | quote }}
+              {{- end }}
+      to:
+        - operation: {ports: [{{ $v.egress.port | quote }}]}
+{{- else }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $v.name }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    ztd.facis.io/connector-route: ingress
+    ztd.facis.io/l7-owner: none
+spec:
+  podSelector: {matchLabels: {{ toJson $sel }}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- range $v.ingress.sourceRanges }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      ports: [{protocol: TCP, port: {{ $v.ingress.port }}}]
+  egress:
+    - to: [{podSelector: {matchLabels: {app.kubernetes.io/name: {{ $v.ingress.upstream.name }}}}}]
+      ports: [{protocol: TCP, port: {{ $v.ingress.upstream.port }}}]
+---
+# The entry takes TLS from outside the mesh on its port: mutual TLS is off there and only there.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: {{ $v.name }}-tls
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector: {matchLabels: {{ toJson $sel }}}
+  mtls: {mode: STRICT}
+  portLevelMtls:
+    {{ $v.ingress.port }}: {mode: DISABLE}
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ $v.name }}-public
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    ztd.facis.io/connector-route: ingress
+    ztd.facis.io/l7-owner: none
+spec:
+  selector: {matchLabels: {{ toJson $sel }}}
+  action: ALLOW
+  rules:
+    - to:
+        - operation: {ports: [{{ $v.ingress.port | quote }}]}
+{{- end }}

@@ -1,0 +1,38 @@
+# Connector gateway
+
+The Zero Trust Connector's zone gateway: the Envoy that forwards application traffic across the zone
+boundary ([Architecture §6, Zero Trust Connector routing](../../../docs/architecture.md#zero-trust-connector-routing-zt-26)).
+A release has one role.
+
+**Egress** (`egress.enabled`): admits the callers of `egress.callers` (their pods' labels at the network
+layer, their service accounts at the mesh layer) on `egress.port`, plain HTTP over mesh mutual TLS, and
+forwards every request to the peer zone's entry over TLS that the gateway originates and verifies: the CA
+in `egress.peer.caCert`, the subject alternative name `egress.peer.serverName` (default: the address).
+Its NetworkPolicy has one egress lane, to `egress.peer.address`/32 on `egress.peer.port`, the one
+external destination of the namespace; the address is a zone fact given at install, never committed.
+Renders `ztd-connector-gateway-callers` (AuthorizationPolicy) and the NetworkPolicy, both annotated
+`ztd.facis.io/connector-route` and `ztd.facis.io/l7-owner: sidecar`.
+
+**Ingress** (`ingress.enabled`): the zone's entry. TLS terminated with `ingress.tlsSecret` on
+`ingress.port` behind a Service of `ingress.service.type`, every request routed to the Service
+`ingress.upstream.name` of the namespace, whose own rules must admit this release's identity
+(`<trust domain>/ns/<namespace>/sa/<name>`) and pods. Mutual TLS is off on the entry's port only
+(`<name>-tls`); `<name>-public` admits that port.
+
+Both roles log one JSON line per request on stdout (time, method, path, status, upstream, user agent,
+request id; no credential, body or other header). Envoy reads its configuration at start, so the pod
+carries the configuration's digest and a route change rolls it.
+
+The namespace provides the DNS lane and the xDS lane to istiod (a plane namespace's baseline, or
+`ztd-dns`/`ztd-mesh-control` in `ztd-m3-b`); the chart opens neither. The image is the pinned Envoy by
+digest; an admission-labelled namespace needs the admitted mirror and the injected images' overrides in
+`podAnnotations`.
+
+Adopting an entry applied by hand (zone B's `ztd-edge`): `helm upgrade --install ztd-edge . --take-ownership
+--force-conflicts` with `name: ztd-edge` and the ingress values; the Service is updated in place, so it
+keeps its UID, node port and load-balancer address, and the Deployment rolls once. Remove the hand-applied
+rule `ztd-m3-edge-public` afterwards: `ztd-edge-public` replaces it. `scripts/verify-connector-routing/kind.sh`
+rehearses exactly this.
+
+`ci/values.yaml` (egress) and `ci/ingress-values.yaml` carry documentation addresses for rendering only;
+`ci/refused/` holds the values the chart refuses.
