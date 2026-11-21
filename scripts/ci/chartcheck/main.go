@@ -285,9 +285,9 @@ func checkTSA(root, chart string) error {
 	if err := need(strings.TrimSpace(fmt.Sprint(at(values, "trustRoot"))) == strings.TrimSpace(string(key)), "trustRoot default must be the repository signing key"); err != nil {
 		return err
 	}
-	template := func(ref string) (object, object, error) {
+	template := func(ref, revision string) (object, object, error) {
 		out, err := exec.Command("helm", "template", "check", chart, "-n", "chart-check", "-f", filepath.Join(chart, "ci/values.yaml"),
-			"--set", "bundle.ref="+ref, "--set", "bundle.revision=r").Output()
+			"--set", "bundle.ref="+ref, "--set", "bundle.revision="+revision).Output()
 		if err != nil {
 			return nil, nil, errors.New("tsa-policy render failed")
 		}
@@ -302,16 +302,25 @@ func checkTSA(root, chart string) error {
 			}
 			docs = append(docs, d)
 		}
-		return at(find(docs, "Deployment", "tsa-policy-engine"), "spec", "template").(object), find(docs, "ConfigMap", "tsa-policy-bundle"), nil
+		pod, _ := at(find(docs, "Deployment", "tsa-policy-engine"), "spec", "template").(object)
+		return pod, find(docs, "ConfigMap", "tsa-policy-bundle"), nil
 	}
 	repo := at(values, "bundle", "repository").(string)
-	podA, bundleA, err := template(repo + "@sha256:" + strings.Repeat("a", 64))
+	refA, refB := repo+"@sha256:"+strings.Repeat("a", 64), repo+"@sha256:"+strings.Repeat("b", 64)
+	basePod, baseBundle, err := template(refA, "r1")
 	if err != nil {
 		return err
 	}
-	podB, bundleB, err := template(repo + "@sha256:" + strings.Repeat("b", 64))
-	if err != nil {
-		return err
+	// The reference alone, the revision alone, and both: each is a new declaration.
+	for _, change := range [][2]string{{refB, "r1"}, {refA, "r2"}, {refB, "r2"}} {
+		pod, bundle, err := template(change[0], change[1])
+		if err != nil {
+			return err
+		}
+		if err := need(basePod != nil && reflect.DeepEqual(basePod, pod) && !reflect.DeepEqual(baseBundle, bundle),
+			"a bundle change must change the bundle ConfigMap and nothing in the pod template"); err != nil {
+			return err
+		}
 	}
-	return need(reflect.DeepEqual(podA, podB) && !reflect.DeepEqual(bundleA, bundleB), "a bundle change must change the bundle ConfigMap and nothing in the pod template")
+	return nil
 }
