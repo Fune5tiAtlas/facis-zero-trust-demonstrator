@@ -42,6 +42,10 @@ runtime:
   configKey: acquisition.json
   credentialsSecret: ""
   openbaoTokenKey: openbao-token   # not used with openbao.auth.method kubernetes
+  # With openbao.auth.method kubernetes, the keys of credentialsSecret the routes read (holder
+  # credentials, client secrets): only these are mounted, so a static OpenBao token left in the
+  # Secret never reaches the pod. With token, the whole Secret is mounted, as before.
+  credentialKeys: []
   replayCallers: []
 podAnnotations: {}
 nodeSelector: {}

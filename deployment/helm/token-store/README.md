@@ -40,6 +40,7 @@ both dependencies answered.
 | `database.secretKey` | `url` | Key of the connection URL in that Secret |
 | `openbao.address` | `http://ztd-openbao.ztd-mgmt.svc:8200` | The key-value store's base URL, `http(s)://host[:port]` without a path; the chart refuses anything else |
 | `openbao.auth.method` | `token` | `token`: runtime mode reads `runtime.openbaoTokenKey` from the credentials Secret. `kubernetes`: log in with a projected service-account token ([Secrets: Kubernetes auth](../../../docs/secrets.md#kubernetes-auth)) |
+| `runtime.credentialKeys` | `[]` | With `kubernetes`: the only keys of the credentials Secret mounted (the routes' files); the OpenBao token key is refused, so a static token left in the Secret never reaches the pod |
 | `openbao.auth.role` | `""` | The OpenBao role; required with `kubernetes` |
 | `openbao.auth.mount` | `kubernetes` | The auth mount |
 | `openbao.auth.audience` | `openbao` | The projected token's audience, bound by the role |

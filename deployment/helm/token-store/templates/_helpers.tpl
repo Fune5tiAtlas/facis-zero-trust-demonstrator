@@ -69,6 +69,10 @@ app.kubernetes.io/component: server
 {{- fail "runtime requires acquisition ConfigMap and credential Secret key references" -}}
 {{- end -}}
 {{- if not (regexMatch "^[A-Za-z0-9._-]+$" .Values.runtime.openbaoTokenKey) -}}{{ fail "runtime.openbaoTokenKey must be a Secret data key" }}{{- end -}}
+{{- range .Values.runtime.credentialKeys -}}
+{{- if not (regexMatch "^[A-Za-z0-9._-]+$" .) -}}{{ fail "runtime.credentialKeys must be Secret data keys" }}{{- end -}}
+{{- if and (eq $.Values.openbao.auth.method "kubernetes") (eq . $.Values.runtime.openbaoTokenKey) -}}{{ fail "runtime.credentialKeys must not list the OpenBao token key with openbao.auth.method kubernetes" }}{{- end -}}
+{{- end -}}
 {{- if not .Values.identity.spireManagedIdentity -}}{{ fail "runtime requires SPIRE-managed identity" }}{{- end -}}
 {{- if not .Values.networkPolicy.enabled -}}{{ fail "runtime requires networkPolicy.enabled" }}{{- end -}}
 {{- range .Values.runtime.replayCallers -}}

@@ -7,6 +7,7 @@ runtime:
   enabled: true
   existingConfigMap: ztd-token-store-acquisition
   credentialsSecret: ztd-token-store-credentials
+  credentialKeys: [store-client-secret]
 networkPolicy:
   enabled: true
   schemaEgress:
