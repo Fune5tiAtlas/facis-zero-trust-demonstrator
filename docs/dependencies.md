@@ -58,6 +58,16 @@ The demonstrator integrates XFSC components rather than reimplementing them: the
 for policy evaluation, the Organisation Credential Manager for wallets, TRAIN for trust anchoring,
 and ORCE for orchestration. Versions are pinned at deployment and recorded with the release.
 
+| Component | Version | Licence | Consumed as |
+|---|---|---|---|
+| TSA policy service ([eclipse-xfsc/custom-policy-agent](https://github.com/eclipse-xfsc/custom-policy-agent)) | v1.1.4, image `tsa/policy:1.1.4@sha256:0275b144…` (`TSA_POLICY_IMAGE` in `scripts/tools/pins.env`) | Apache-2.0 | deployed service, called through its HTTP API ([TSA policy evaluation](tsa-policy.md)) |
+
+The TSA pod also runs two runtime images, not linked into project code: the NATS server the TSA's
+event client needs (`nats:2.15.3`, Apache-2.0, `NATS_IMAGE`) and a git daemon for its start-up clone
+(`deployment/docker/tsa-git`: Alpine 3.22 with `git-daemon` 2.49.1, GPL-2.0, run unmodified as a
+separate process). The TSA integration adds no Go or npm dependency: bundle verification reuses the
+first-party OCI client and cosign verifier, the rest is the standard library.
+
 ## Go dependencies
 
 Direct dependencies of the Go module. Transitive dependencies are listed in the SBOM.

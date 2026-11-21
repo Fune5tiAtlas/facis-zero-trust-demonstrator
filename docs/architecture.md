@@ -61,7 +61,7 @@ source — not who supplies the service; see the allow matrix below.
 
 | ZT-55 role | Implementing service(s) | Supply boundary | Evidence |
 |---|---|---|---|
-| Policy Engine | TSA policy engine (Trust Services API) | Client-supplied | [External XFSC components](dependencies.md#external-xfsc-components) |
+| Policy Engine | TSA policy engine (Trust Services API) | XFSC component, deployed by the project at a pinned version | [TSA policy evaluation](tsa-policy.md); [External XFSC components](dependencies.md#external-xfsc-components) |
 | TRAIN | TCR (trust-list resolution); TSPA (trust-list publication) | Client-supplied | [External XFSC components](dependencies.md#external-xfsc-components); [TSPA in the ZT-35 flow](tspa-publish-api.md#3-what-tspa-is-in-the-zt-35-flow) |
 | SPIRE control plane | SPIRE server and its controller-manager | Project-built | [Workload identity](environments/osc.md#3-workload-identity) |
 | OCM | OCM W-Stack, used by the backend as the credential verification service | Client-supplied | [External XFSC components](dependencies.md#external-xfsc-components) |
@@ -333,7 +333,7 @@ scenario is written from, and the traceability sheet reports the row as uncovere
 | SVID | 1 h TTL | in-process | ≤ 1 h | mesh | `@ZT-24 @BDD-ZT-024` |
 | Connector issuer JWKS | rotate on demand | guard cache 5 min | ≤ 5 min | connector guard | `@ZT-22 @BDD-ZT-022` |
 | Access token | 300 s lifetime | — | ≤ 300 s after revocation of its basis | guard and token store | `@ZT-22 @BDD-ZT-022` |
-| Policy bundle | poll 60 s | TSA cache | ≤ 60 s | TSA policy engine | `@ZT-20 @BDD-ZT-020` |
+| Policy bundle | declared by pull request; bundle sidecar polls 10 s | TSA in-memory policy | kubelet ConfigMap refresh (about 1 min) + 10 s after the declaration is synced | TSA policy engine and its bundle sidecar ([TSA policy evaluation](tsa-policy.md)) | `@ZT-20 @BDD-ZT-020` |
 | Trust list / measurement | TTL 300 s | TCR/gateway | ≤ 300 s + channel lifetime 15 min ⇒ ≤ ~20 min for an established channel (bounded by channel re-establishment) | aTLS gateway | `@ZT-35 @BDD-ZT-035` |
 | Credential revocation | checked per verification | outcome relied on 120 s | ≤ token lifetime + outcome reliance period; in force ≤ 300 s + 120 s | backend and token store | `@ZT-51 @BDD-ZT-051` |
 
