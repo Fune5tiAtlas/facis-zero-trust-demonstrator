@@ -180,8 +180,8 @@ kubectl -n "$guard_ns" wait pod/client --for=condition=Ready --timeout=120s >/de
 pods() {
   for p in "$tsa_ns app.kubernetes.io/name=tsa-policy-engine" "$guard_ns app.kubernetes.io/name=ztd-policy-evaluator"; do
     read -r ns selector <<<"$p"
-    kubectl -n "$ns" get pod -l "$selector" -o json | jq -c '[.items[] | {uid: .metadata.uid, restarts: ([.status.containerStatuses[]?, .status.initContainerStatuses[]?] | map(.restartCount) | add)}]'
-  done
+    kubectl -n "$ns" get pod -l "$selector" -o json | jq -c '[.items[] | {pod: .metadata.name, uid: .metadata.uid, restarts: ([.status.containerStatuses[]?, .status.initContainerStatuses[]?] | map({(.name): .restartCount}) | add)}]'
+  done | jq -sc add
 }
 before=$(pods)
 input='{"correlation_id":"CID","source":{"spiffe_id":"spiffe://zone-b.trust.invalid/ns/ztd-guard/sa/ztd-participant"},"request":{"method":"POST","path":"/demo","host":"ztd-guard:8080"},"token":{"present":true,"sub":"subject","client_id":"client","jkt":"thumbprint","scope":"report:summary","aud":"https://guard.facis.invalid","proof_valid":true},"tenant":"report-summary"}'
@@ -247,9 +247,9 @@ kubectl -n "$tsa_ns" logs deploy/tsa-policy-engine -c bundle > "$out/bundle-side
 kubectl -n "$tsa_ns" logs deploy/tsa-policy-engine -c tsa > "$out/tsa.log"
 # Every decision answered must appear in the evaluator's log under its correlation id, with the
 # same rule and revision.
-n=$(jq -s 'map(select(.answer.bundle_revision != null)) | length' "$out/decisions.jsonl")
+n=$(jq -s 'map(select((.answer | type) == "object" and .answer.bundle_revision != null)) | length' "$out/decisions.jsonl")
 matched=$(jq -s --slurpfile log <(jq -c 'select(.msg=="policy decision")' "$out/evaluator.log") '
-  map(select(.answer.bundle_revision != null)) | map(. as $d | $log | any(.correlation_id == $d.id and .rule_id == $d.answer.rule_id
+  map(select((.answer | type) == "object" and .answer.bundle_revision != null)) | map(. as $d | $log | any(.correlation_id == $d.id and .rule_id == $d.answer.rule_id
     and .bundle_revision == $d.answer.bundle_revision and .rule_id != null and .bundle_revision != null)) | map(select(.)) | length' "$out/decisions.jsonl")
 if [ "$n" -gt 0 ] && [ "$matched" -eq "$n" ]; then pass "$n decisions logged, each with its rule_id and bundle_revision"; else fail "$n decisions, $matched logged with rule and revision"; fi
 
