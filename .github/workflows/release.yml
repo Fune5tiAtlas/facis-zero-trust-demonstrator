@@ -65,10 +65,14 @@ jobs:
           . scripts/tools/pins.env
           kind create cluster --name ztd-gate --image "$KIND_NODE_IMAGE" --wait 180s
           tar -xzf "$RUNNER_TEMP/bin/gatekeeper-${GATEKEEPER_CHART_VERSION}.tgz" -C "$RUNNER_TEMP" gatekeeper/crds
-          kubectl apply -f "$RUNNER_TEMP/gatekeeper/crds/provider-customresourcedefinition.yaml" -f "$RUNNER_TEMP/bin/cilium-crds/"
+          # Provider for the admission chart; ConstraintTemplate and Config as well for the umbrella's admission release (ci/admission-values.yaml).
+          kubectl apply -f "$RUNNER_TEMP/gatekeeper/crds/provider-customresourcedefinition.yaml" \
+            -f "$RUNNER_TEMP/gatekeeper/crds/constrainttemplate-customresourcedefinition.yaml" \
+            -f "$RUNNER_TEMP/gatekeeper/crds/config-customresourcedefinition.yaml" -f "$RUNNER_TEMP/bin/cilium-crds/"
           kubectl apply --server-side -f "$RUNNER_TEMP/bin/istio-crds/"
           kubectl wait --for condition=established --timeout=60s -f "$RUNNER_TEMP/bin/istio-crds/"
           kubectl wait --for condition=established --timeout=60s crd/providers.externaldata.gatekeeper.sh \
+            crd/constrainttemplates.templates.gatekeeper.sh crd/configs.config.gatekeeper.sh \
             crd/ciliumclusterwidenetworkpolicies.cilium.io crd/ciliumnetworkpolicies.cilium.io
 
       - name: Run the chart gate
