@@ -3,5 +3,5 @@
   "nats": "docker.io/library/nats:2.15.3@sha256:4b83414183aa5fb87cd164962c47eaffd214e84668dc4fa4f1d4c44a3e765ee8",
   "kind_node": "kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0",
   "node_arch": "arm64",
-  "commit": "f706f2e028d6e3f16223bfcc46426f0aaa6cea71"
+  "commit": "94d54727a50dc45facd0d97a85a3e857f08f4533"
 }

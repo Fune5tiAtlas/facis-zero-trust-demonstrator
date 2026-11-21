@@ -45,5 +45,4 @@
 {"id":"proof-44","answer":{"allow":false,"reason_code":"POL-RULE-DENY","rule_id":"m3-scope-withdrawn","bundle_revision":"v2","deny_body":{"error":"access_denied"}}}
 {"id":"proof-45","answer":{"allow":false,"reason_code":"POL-RULE-DENY","rule_id":"m3-scope-withdrawn","bundle_revision":"v2","deny_body":{"error":"access_denied"}}}
 {"id":"proof-46","answer":{"allow":false,"reason_code":"POL-RULE-DENY","rule_id":"m3-scope-withdrawn","bundle_revision":"v2","deny_body":{"error":"access_denied"}}}
-{"id":"proof-47","answer":{"allow":false,"reason_code":"POL-RULE-DENY","rule_id":"m3-scope-withdrawn","bundle_revision":"v2","deny_body":{"error":"access_denied"}}}
-{"id":"proof-48","answer":{"allow":true,"rule_id":"m3-report-summary","bundle_revision":"v1","obligations":["substitute_upstream_token"]}}
+{"id":"proof-47","answer":{"allow":true,"rule_id":"m3-report-summary","bundle_revision":"v1","obligations":["substitute_upstream_token"]}}
