@@ -329,3 +329,41 @@ func TestOnlyTheDeclaredCallerIsServed(t *testing.T) {
 		t.Errorf("two forwarded certificates answered %d", resp.StatusCode)
 	}
 }
+
+// A request whose row is locked past its expiry is not judged when the lock is released: expiry is
+// checked again with the clock read after the request was consumed.
+func TestARequestThatExpiresWhileWaitingForItsRowIsNotJudged(t *testing.T) {
+	h := newHarness(t)
+	ch := challenge()
+	body, _ := json.Marshal(map[string]any{"challenge": ch, "client_id": client, "audience": audience,
+		"expires_at": time.Now().Add(2 * time.Second).UTC().Format(time.RFC3339Nano)})
+	code, req := h.post(storeID, "/v1/requests", "application/json", string(body))
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, req)
+	}
+	id := req["request_id"].(string)
+	vp, _ := sdjwtfixture.Present(context.Background(), h.kit.Credential(t, "r", "e", verificationtest.CredentialOptions{}), h.kit.HolderKey, ch, audience, time.Now())
+
+	tx, err := h.db.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(context.Background(), `SELECT 1 FROM verification_request WHERE request_id = $1 FOR UPDATE`, id); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		code int
+		out  map[string]any
+	}
+	done := make(chan result, 1)
+	go func() { c, o := h.answer(storeID, id, vp); done <- result{c, o} }()
+	time.Sleep(3 * time.Second) // past expires_at, the answer waiting on the row
+	_ = tx.Rollback(context.Background())
+	r := <-done
+	if r.code != http.StatusNotFound || r.out["reason_code"] != codeRequestUnknown {
+		t.Fatalf("answered %d %v after the request expired", r.code, r.out)
+	}
+	if _, reason, detail := h.row(id); reason != codeRequestUnknown || detail != "expired" {
+		t.Errorf("recorded %s/%s", reason, detail)
+	}
+}

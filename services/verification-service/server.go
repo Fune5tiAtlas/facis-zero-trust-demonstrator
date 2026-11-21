@@ -156,6 +156,12 @@ func (s *server) respond(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, http.StatusNotFound, codeRequestUnknown, why, "")
 		return
 	}
+	// The update may have waited on the row past the request's expiry: read the clock again and
+	// judge with that time, never with the one taken before the wait.
+	if now = s.now(); !req.expires.After(now) {
+		s.refuse(w, r, http.StatusNotFound, codeRequestUnknown, "expired", id)
+		return
+	}
 	if formErr != nil {
 		s.refuse(w, r, http.StatusBadRequest, codeRequestInvalid, "malformed-form", id)
 		return
