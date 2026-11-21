@@ -50,7 +50,8 @@ anything else.
   (`admission.install`, recorded but off in every zone file) and the migration is proven on kind; the
   zones still run the standalone releases until the migration runbook
   ([Admission in the umbrella](umbrella-chart.md#migration-runbook-live-zone-standalone-to-umbrella))
-  is run on them.
+  is run on them. On zone A and zone B the policy objects stay with the Argo CD there
+  (`admission.policy.managedBy: argocd`); the umbrella takes Gatekeeper, the provider and the pool.
 - The secrets baseline (OpenBao) on the zones: OpenBao moves out of the umbrella chart into a release of
   its own, installed after the zone's identity components, so it has its workload identity before it
   starts; until then it stays off on the zones.

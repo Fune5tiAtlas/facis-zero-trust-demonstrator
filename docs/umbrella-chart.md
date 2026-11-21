@@ -165,6 +165,21 @@ response cache off, every constraint enforced. Every render, dry run and deploy 
 release goes through the `ztd-webhook-scope` post-renderer, and only of that release: release `ztd`
 has no webhook, and the post-renderer fails unless it scopes exactly two.
 
+**Who owns the policy: `admission.policy.managedBy`.** The policy objects (constraint templates,
+constraints, exemptions) have one owner per cluster. `helm` (the default; kind and IONOS): the
+admission release renders them, as above. `argocd` (zone A and zone B): the Argo CD on the cluster
+keeps them from Git - Applications `admission-templates`, `admission-constraints` and
+`admission-exemptions`, created by the app-of-apps Application `ztd-admission`, which itself manages
+only those three Applications and their AppProject, nothing of Gatekeeper or the provider. The
+admission release then installs Gatekeeper, the provider and the pool only, renders no policy object
+(the chart refuses one), and so never takes ownership of one, in an install or an adoption. Stage 3
+deploys nothing: after stage 2 the installer waits for the constraint CRDs that Gatekeeper generates
+from Argo CD's templates, then for Argo CD's constraints to be enforced by every Ready webhook
+replica, and only then deploys stage 4 (the pool). If Argo CD has not provided them within
+`ADMISSION_POLICY_TIMEOUT` seconds (default 300) per wait, the installer stops and names the
+Applications to check. Changing a cluster from `helm` to `argocd` would make the next upgrade delete
+the policy objects the release rendered before; hand them to Argo CD first.
+
 **Standalone path.** `scripts/admission/install.sh` stays supported and unchanged for a zone that has
 not opted in; it refuses a zone in the umbrella layout except as the rollback below. The fault,
 evidence and end-to-end scripts detect the layout (`admission_layout` in
@@ -174,15 +189,13 @@ evidence and end-to-end scripts detect the layout (`admission_layout` in
 ### Migration runbook (live zone, standalone to umbrella)
 
 Not run on a live cluster yet. Proven on kind: `LAYOUT=migrate` and `LAYOUT=rollback` of
-`scripts/admission/kind-e2e.sh`.
+`scripts/admission/kind-e2e.sh`, and `POLICY=argocd` for the Argo CD split (a stand-in applies
+the policy from outside the release; the run checks no policy object gets a Helm owner).
 
-1. **Preflight.** Nothing else may manage the admission objects. On zone A and zone B an Argo CD on
-   the cluster does: its Applications `admission-templates`, `admission-constraints`,
-   `admission-exemptions` and `ztd-admission` (automated sync with prune and self-heal, seen
-   2026-11-21) own the constraint templates, constraints and exemptions. Release `gatekeeper` and a
-   self-healing Argo CD would overwrite each other, and an Argo CD prune would delete what the release
-   owns; those Applications are retired, without cascade so the objects stay, before step 4 - a
-   decision for whoever runs that Argo CD. Then: `helm list -n gatekeeper-system` shows `gatekeeper` (chart `gatekeeper-3.23.1`),
+1. **Preflight.** On zone A and zone B the policy stays with Argo CD: the zone files set
+   `admission.policy.managedBy: argocd`, and its Applications must be Synced and Healthy
+   (`kubectl -n argocd get applications`); nothing of them changes. On IONOS (`helm`) the release
+   adopts the policy objects that `install.sh` applied. Then: `helm list -n gatekeeper-system` shows `gatekeeper` (chart `gatekeeper-3.23.1`),
    `admission` and `admission-pool`. Compare the zone file's admission settings with the live ones:
    `helm get values admission -n gatekeeper-system` against `admissionProvider` (image digest,
    repositories, key, allowed digests, replicas) and `helm get values gatekeeper` replicas against
@@ -195,13 +208,14 @@ Not run on a live cluster yet. Proven on kind: `LAYOUT=migrate` and `LAYOUT=roll
    `helm upgrade gatekeeper deployment/helm/ztd -n gatekeeper-system -f <RENDER_DIR>/gatekeeper.values.yaml
    --post-renderer ztd-webhook-scope --take-ownership --dry-run=server`, then
    `kubectl diff --server-side --force-conflicts -f <the MANIFEST part of that output>`. Expected:
-   Gatekeeper, the provider (its TLS Secret is looked up, not regenerated) and the exemptions
-   unchanged; `app.kubernetes.io/instance` of the seven pool objects `admission-pool` →
-   `gatekeeper`; Helm's ownership annotations on the adopted objects. The 2026-11-21 dry run on all
-   three clusters showed exactly that, plus the constraint template `k8sztdallowedrepositories`
-   gaining `allowedDigests` - the digest allow-list, which the clusters do not run yet. Any other
-   change is a difference between the zone file and the live values, to settle first. A dry run
-   persists nothing (the release revision stays).
+   Gatekeeper and the provider (its TLS Secret is looked up, not regenerated) unchanged;
+   `app.kubernetes.io/instance` of the seven pool objects `admission-pool` → `gatekeeper`; Helm's
+   ownership annotations on the adopted objects. On zone A and zone B the manifest holds no policy
+   object, so Argo CD's are untouched. The 2026-11-21 dry runs showed exactly that on zone A and
+   zone B; on IONOS also the policy objects adopted unchanged except the constraint template
+   `k8sztdallowedrepositories` gaining `allowedDigests` - the digest allow-list, which IONOS does
+   not run yet. Any other change is a difference between the zone file and the live values, to
+   settle first. A dry run persists nothing (the release revision stays).
 4. **Adopt.** `ZONE_VALUES=<zone file> KUBE_CONTEXT=<context> ADMISSION_ADOPT=1
    scripts/install-zone/install.sh install gatekeeper` (or `install` for the whole zone). Release
    `gatekeeper` is upgraded to this chart with `--take-ownership` and without rollback on failure
@@ -215,7 +229,8 @@ Not run on a live cluster yet. Proven on kind: `LAYOUT=migrate` and `LAYOUT=roll
 6. **Rollback** to the standalone layout, if needed: `FROM_UMBRELLA=1 scripts/admission/install.sh`
    with the usual inputs. It drops release `gatekeeper`'s records - every object stays and keeps
    serving - and installs `gatekeeper`, `admission` and `admission-pool` again with
-   `--take-ownership`; then set `admission.install: false` in the zone file again.
+   `--take-ownership`; then set `admission.install: false` in the zone file again. `install.sh`
+   applies the policy with kubectl, as it always has; on zone A and zone B Argo CD keeps owning it.
 
 ## The hook-weight scheme
 

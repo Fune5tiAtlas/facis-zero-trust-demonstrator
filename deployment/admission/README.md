@@ -68,7 +68,9 @@ this policy, Gatekeeper, the provider and the admission pool as one release, `ga
 umbrella chart in `gatekeeper-system`, in four stages, with the same values and post-renderer as
 below; the umbrella reads the policy here through `deployment/helm/ztd/files/admission` (links, one
 copy). See [Admission in the umbrella](../../docs/umbrella-chart.md#admission-in-the-umbrella), with
-the migration and rollback runbook. **Standalone** (every zone until it migrates):
+the migration and rollback runbook. Where an Argo CD keeps this policy from Git (zone A, zone B:
+`admission.policy.managedBy: argocd`), the umbrella installs Gatekeeper, the provider and the pool
+only. **Standalone** (every zone until it migrates):
 [install.sh](../../scripts/admission/install.sh), which is what the commands below do.
 
 Order: Gatekeeper, the provider ([deployment/helm/admission](../helm/admission)), the templates, the

@@ -19,7 +19,9 @@ on failure), each waiting on the previous:
 The umbrella creates every namespace the later releases install into; the lifecycle step never
 creates one. The installer creates two: the umbrella's release namespace, `ztd-system`, which holds
 the release record and its verification job, and, for release 8, `gatekeeper-system`, Gatekeeper's
-own. Release 8, its stages, and the adoption of an admission stack that `scripts/admission/install.sh`
+own. Release 8 renders the admission policy (constraint templates, constraints, exemptions) only where
+the zone file leaves `admission.policy.managedBy` at `helm` (kind, IONOS); on zone A and zone B
+(`argocd`) Argo CD keeps the policy, and the installer waits for it instead of applying it. Release 8, its stages, and the adoption of an admission stack that `scripts/admission/install.sh`
 installed (`ADMISSION_ADOPT=1`) are described in
 [docs/umbrella-chart.md](../../docs/umbrella-chart.md#admission-in-the-umbrella). The umbrella's
 dependencies come from `deployment/helm/ztd/charts`: run `helm dependency build deployment/helm/ztd`
@@ -50,6 +52,7 @@ scripts/install-zone/install.sh install
 | `STEP_TIMEOUT` | `10m` | the timeout of each release |
 | `RENDER_DIR` | unset | with `render`, write each release's manifest there, and the values it was rendered with (`<release>.values.yaml`) |
 | `INSTALL_ZONE_CACHE` | `~/.cache/ztd-install-zone` | where the pinned charts are kept |
+| `ADMISSION_POLICY_TIMEOUT` | `300` | with `admission.policy.managedBy: argocd`, how long each wait for Argo CD's policy (constraint CRDs, then enforced constraints) lasts before the installer stops |
 | `ADMISSION_ADOPT` | unset | `1` lets release `gatekeeper` adopt the objects of `scripts/admission/install.sh`; without it the installer refuses, before anything, a zone that still has them |
 
 - **`install`** first renders all the releases (or the ones named) with their zone facts, so a
