@@ -157,9 +157,14 @@ admission release four times, each through `scripts/lifecycle.sh` (server-side d
 | 3 | the four constraints | every constraint enforced by every Ready webhook replica (`scripts/admission/enforced.sh`) |
 | 4 | the admission pool (the labelled `ztd-adm-*` namespaces and the tester identity) | - |
 
-A stage whose successor's condition already holds is skipped, so an upgrade - and the migration,
-where everything is in place - is a single deploy of stage 4. Enforcement therefore exists before
-any labelled namespace does. After the last stage the installer runs the checks of
+No deploy renders less than the release already holds (its deployed switches): on an upgrade the
+stages below it are not deployed again, whatever a readiness check says at that moment, so a
+readiness blip can never make Helm delete an installed component; a stage above it is skipped only
+when its successor's condition already holds (the migration, where everything is in place). Stage 4
+goes out in two steps: first with the pool namespaces that already exist, so a changed policy is
+applied without touching the pool; then, once every constraint's current generation is enforced by
+every Ready webhook replica, with any new pool namespace. Enforcement therefore exists before any
+labelled namespace does, on a first install and on an upgrade. After the last stage the installer runs the checks of
 `scripts/admission/install.sh`: both webhooks scoped to `facis.ztd/admission-proof=true`, the
 response cache off, every constraint enforced. Every render, dry run and deploy of the admission
 release goes through the `ztd-webhook-scope` post-renderer, and only of that release: release `ztd`
@@ -177,8 +182,16 @@ deploys nothing: after stage 2 the installer waits for the constraint CRDs that 
 from Argo CD's templates, then for Argo CD's constraints to be enforced by every Ready webhook
 replica, and only then deploys stage 4 (the pool). If Argo CD has not provided them within
 `ADMISSION_POLICY_TIMEOUT` seconds (default 300) per wait, the installer stops and names the
-Applications to check. Changing a cluster from `helm` to `argocd` would make the next upgrade delete
-the policy objects the release rendered before; hand them to Argo CD first.
+Applications to check.
+
+**Handing the policy from Helm to Argo CD.** Switching a cluster whose release renders the policy
+from `helm` to `argocd` would make Helm delete the policy objects it holds, so the installer refuses
+that switch, before any deploy, while the release holds a policy object without
+`helm.sh/resource-policy: keep`. The handoff: (1) set `admission.policy.keep: true` (managedBy still
+`helm`) and run `install gatekeeper`, which marks every policy object keep; (2) point Argo CD's
+Applications at the same objects; (3) set `managedBy: argocd` and run `install gatekeeper` again:
+the release stops rendering the policy and Helm leaves every object in place (proven by kind-e2e,
+umbrella layout, POLICY=helm).
 
 **Standalone path.** `scripts/admission/install.sh` stays supported and unchanged for a zone that has
 not opted in; it refuses a zone in the umbrella layout except as the rollback below. The fault,
@@ -227,9 +240,10 @@ the policy from outside the release; the run checks no policy object gets a Helm
    keep their UIDs and the Secret `ztd-admission-provider-tls` its CA; then the evidence pack
    (`scripts/admission/evidence-pack.sh <zone>`, no provider inputs needed in this layout).
 6. **Rollback** to the standalone layout, if needed: `FROM_UMBRELLA=1 scripts/admission/install.sh`
-   with the usual inputs. It drops release `gatekeeper`'s records - every object stays and keeps
-   serving - and installs `gatekeeper`, `admission` and `admission-pool` again with
-   `--take-ownership`; then set `admission.install: false` in the zone file again. `install.sh`
+   with the usual inputs. It checks them, drops release `gatekeeper`'s records while that release is
+   still the umbrella's - every object stays and keeps serving - and installs `gatekeeper`,
+   `admission` and `admission-pool` again with `--take-ownership`. It is resumable: an interrupted
+   rollback is re-run with the same command; then set `admission.install: false` in the zone file again. `install.sh`
    applies the policy with kubectl, as it always has; on zone A and zone B Argo CD keeps owning it.
 
 ## The hook-weight scheme
