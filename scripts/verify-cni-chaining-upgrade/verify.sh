@@ -3,7 +3,7 @@
 # chaining order is checked again after every Cilium upgrade). On a disposable kind cluster of its own,
 # created with scripts/dev/kind-cilium-up.sh at the zones' Cilium version (Cilium chained with
 # cni.exclusive=false), the proof installs the zone with scripts/install-zone/install.sh and the CI zone
-# file, applies three stand-ins from scripts/verify-mesh-identity/fixtures/stand-ins.yaml (pdp-adapter
+# file, applies three stand-ins from scripts/verify-mesh-identity/fixtures/stand-ins.yaml (ztd-policy-evaluator
 # and data-plain in the data plane, tsa-policy-engine in the management plane), and checks, before and
 # after `helm upgrade cilium --reset-then-reuse-values` to the repository's pinned Cilium version (the
 # release's own settings, cni.exclusive=false among them, over the new chart's defaults; plain
@@ -11,9 +11,9 @@
 #   - every node's CNI configuration lists the Istio plugin after Cilium, read through the Istio CNI node
 #     agent of each node (scripts/verify-mesh-identity/lib/cni-chain.sh, shared with the mesh proof);
 #   - Cilium runs with cni-exclusive=false;
-#   - the allow-matrix lane pdp-adapter -> tsa-policy-engine answers 200 through both proxies;
+#   - the allow-matrix lane ztd-policy-evaluator -> tsa-policy-engine answers 200 through both proxies;
 #   - the default deny holds: data-plain, a data-plane pod without a lane, is refused;
-# and, after the upgrade only, that a pod created after it (pdp-adapter, deleted and created again) is
+# and, after the upgrade only, that a pod created after it (ztd-policy-evaluator, deleted and created again) is
 # meshed: its proxy holds a certificate with its own SPIFFE ID issued by the SPIRE CA, and its lane
 # answers 200. The upgrade waits for the Cilium rollout and then for the Istio CNI agent to be ready on
 # every node, each bounded by a timeout that fails the run; the record gives the time between the two.
@@ -148,11 +148,11 @@ http() {
     *) echo "error($rc)";;
   esac
 }
-# stand_ins <out>: the ServiceAccounts, Pods and Services of pdp-adapter, data-plain and tsa-policy-engine
+# stand_ins <out>: the ServiceAccounts, Pods and Services of ztd-policy-evaluator, data-plain and tsa-policy-engine
 # from the mesh proof's fixture, with the plane namespaces filled in
 stand_ins() {
   sed -e "s/__DATA__/$DATA/g" -e "s/__MGMT__/$MGMT/g" "$FIXTURE" | python3 -c 'import sys,yaml
-want = {"pdp-adapter", "data-plain", "tsa-policy-engine"}
+want = {"ztd-policy-evaluator", "data-plain", "tsa-policy-engine"}
 yaml.safe_dump_all([d for d in yaml.safe_load_all(sys.stdin) if d and d["metadata"]["name"] in want], sys.stdout, sort_keys=False)' >"$1"
 }
 # wait_until <seconds> <command...>: status 0 once the command succeeds, 1 when the time runs out
@@ -194,8 +194,8 @@ chain_checks() {
 # lane_checks <phase>: the allow-matrix lane answers 200 through the proxies, and the default deny holds
 lane_checks() {
   local r
-  r=$(http "$DATA" pdp-adapter "http://tsa-policy-engine.$MGMT.svc:8080/hostname")
-  [ "${r%% *}" = 200 ]; check $? "$1: pdp-adapter → tsa-policy-engine (allow-matrix lane pdp-adapter-to-tsa) is served through both proxies" "→ $r"
+  r=$(http "$DATA" ztd-policy-evaluator "http://tsa-policy-engine.$MGMT.svc:8080/hostname")
+  [ "${r%% *}" = 200 ]; check $? "$1: ztd-policy-evaluator → tsa-policy-engine (allow-matrix lane pdp-adapter-to-tsa) is served through both proxies" "→ $r"
   r=$(http "$DATA" data-plain "http://tsa-policy-engine.$MGMT.svc:8080/hostname")
   case $r in denied*) true;; *) false;; esac
   check $? "$1: data-plain → tsa-policy-engine (a data-plane pod without a lane) is refused: the default deny holds" "→ $r"
@@ -221,9 +221,9 @@ check $rc "the zone is installed with scripts/install-zone/install.sh" "$(tail -
 [ $rc -ne 0 ] && code "$(tail -30 "$work/install.log")"
 stand_ins "$work/stand-ins.yaml"
 k apply -f "$work/stand-ins.yaml" >/dev/null 2>"$work/stand-ins.err"
-k -n "$DATA" wait --for=condition=Ready pod/pdp-adapter pod/data-plain --timeout=300s >/dev/null 2>&1 \
+k -n "$DATA" wait --for=condition=Ready pod/ztd-policy-evaluator pod/data-plain --timeout=300s >/dev/null 2>&1 \
   && k -n "$MGMT" wait --for=condition=Ready pod/tsa-policy-engine --timeout=300s >/dev/null 2>&1
-check $? "the stand-ins pdp-adapter, data-plain ($DATA) and tsa-policy-engine ($MGMT) of scripts/verify-mesh-identity/fixtures/stand-ins.yaml are Ready" "$(head -1 "$work/stand-ins.err")"
+check $? "the stand-ins ztd-policy-evaluator, data-plain ($DATA) and tsa-policy-engine ($MGMT) of scripts/verify-mesh-identity/fixtures/stand-ins.yaml are Ready" "$(head -1 "$work/stand-ins.err")"
 code "$(k get nodes -o wide | sed 's/  */ /g')"
 
 # --------------------------------------------------------------------------------------------
@@ -274,15 +274,15 @@ section "4. After the upgrade (Cilium $TO)"
 chain_checks "after"
 lane_checks "after"
 say '' '### A pod created after the upgrade' ''
-k -n "$DATA" delete pod pdp-adapter --wait=true >/dev/null 2>&1
+k -n "$DATA" delete pod ztd-policy-evaluator --wait=true >/dev/null 2>&1
 python3 -c 'import sys,yaml
-yaml.safe_dump_all([d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d["kind"] == "Pod" and d["metadata"]["name"] == "pdp-adapter"], sys.stdout)' "$work/stand-ins.yaml" >"$work/pdp-adapter.yaml"
-k apply -f "$work/pdp-adapter.yaml" >/dev/null 2>&1
-k -n "$DATA" wait --for=condition=Ready pod/pdp-adapter --timeout=300s >/dev/null 2>&1
-check $? "pdp-adapter, deleted and created again after the upgrade, is Ready with its proxy" "uid $(k -n "$DATA" get pod pdp-adapter -o jsonpath='{.metadata.uid}' 2>/dev/null), node $(k -n "$DATA" get pod pdp-adapter -o jsonpath='{.spec.nodeName}' 2>/dev/null), created $(k -n "$DATA" get pod pdp-adapter -o jsonpath='{.metadata.creationTimestamp}' 2>/dev/null)"
+yaml.safe_dump_all([d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d["kind"] == "Pod" and d["metadata"]["name"] == "ztd-policy-evaluator"], sys.stdout)' "$work/stand-ins.yaml" >"$work/ztd-policy-evaluator.yaml"
+k apply -f "$work/ztd-policy-evaluator.yaml" >/dev/null 2>&1
+k -n "$DATA" wait --for=condition=Ready pod/ztd-policy-evaluator --timeout=300s >/dev/null 2>&1
+check $? "ztd-policy-evaluator, deleted and created again after the upgrade, is Ready with its proxy" "uid $(k -n "$DATA" get pod ztd-policy-evaluator -o jsonpath='{.metadata.uid}' 2>/dev/null), node $(k -n "$DATA" get pod ztd-policy-evaluator -o jsonpath='{.spec.nodeName}' 2>/dev/null), created $(k -n "$DATA" get pod ztd-policy-evaluator -o jsonpath='{.metadata.creationTimestamp}' 2>/dev/null)"
 k -n "$SPIRE_NS" exec spire-server-0 -c spire-server -- /opt/spire/bin/spire-server bundle show >"$work/spire-bundle.pem" 2>/dev/null
 for _ in $(seq 12); do
-  istioctl --context "$CONTEXT" proxy-config secret pdp-adapter -n "$DATA" -o json >"$work/secret.json" 2>/dev/null
+  istioctl --context "$CONTEXT" proxy-config secret ztd-policy-evaluator -n "$DATA" -o json >"$work/secret.json" 2>/dev/null
   jq -r '.dynamicActiveSecrets[]? | select(.name == "default") | .secret.tlsCertificate.certificateChain.inlineBytes // empty' "$work/secret.json" 2>/dev/null \
     | base64 -d 2>/dev/null | openssl x509 -out "$work/leaf.pem" 2>/dev/null && [ -s "$work/leaf.pem" ] && break
   sleep 5
@@ -290,11 +290,11 @@ done
 uri=$(openssl x509 -noout -ext subjectAltName -in "$work/leaf.pem" 2>/dev/null | grep -o 'URI:spiffe://[^,]*' | head -1 | sed 's/^URI://')
 issuer=$(openssl x509 -noout -issuer -nameopt RFC2253 -in "$work/leaf.pem" 2>/dev/null)
 ca_subject=$(openssl x509 -noout -subject -nameopt RFC2253 -in "$work/spire-bundle.pem" 2>/dev/null)
-[ "$uri" = "spiffe://$TD/ns/$DATA/sa/pdp-adapter" ] && [ -n "$issuer" ] && [ "${issuer#issuer=}" = "${ca_subject#subject=}" ] \
+[ "$uri" = "spiffe://$TD/ns/$DATA/sa/ztd-policy-evaluator" ] && [ -n "$issuer" ] && [ "${issuer#issuer=}" = "${ca_subject#subject=}" ] \
   && openssl verify -CAfile "$work/spire-bundle.pem" "$work/leaf.pem" >/dev/null 2>&1
 check $? "its proxy presents its own SPIFFE ID, issued by the SPIRE CA and chaining to the bundle read from the SPIRE server" "URI ${uri:-none}; ${issuer:-no certificate read}; SPIRE CA ${ca_subject:-unread}"
-r=$(http "$DATA" pdp-adapter "http://tsa-policy-engine.$MGMT.svc:8080/hostname")
-[ "${r%% *}" = 200 ]; check $? "the new pod's lane pdp-adapter → tsa-policy-engine is served through both proxies" "→ $r"
+r=$(http "$DATA" ztd-policy-evaluator "http://tsa-policy-engine.$MGMT.svc:8080/hostname")
+[ "${r%% *}" = 200 ]; check $? "the new pod's lane ztd-policy-evaluator → tsa-policy-engine is served through both proxies" "→ $r"
 if [ -n "$frozen" ]; then docker exec "$frozen" pkill -CONT -x install-cni >/dev/null 2>&1; frozen=""; fi
 
 # --------------------------------------------------------------------------------------------

@@ -114,7 +114,7 @@ checks:
 # zone whose rendered rules are not exactly one per row and pair (pairs_coupling). A release that
 # needs pairs between its own pods declares them in its own chart (ztd-openbao), not here.
 #   - name: pdp-adapter-to-tsa                          # the rule is allow-<name>
-#     from: { plane: data, serviceAccount: pdp-adapter }  # or namespace: <ns>; or wholePlane: true
+#     from: { plane: data, serviceAccount: ztd-policy-evaluator }  # or namespace: <ns>; or wholePlane: true
 #     to:
 #       plane: management                               # or namespace: <ns>
 #       podSelector: { app.kubernetes.io/name: tsa-policy-engine }

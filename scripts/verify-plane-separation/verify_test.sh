@@ -35,14 +35,14 @@ ok() { echo "ok   $1"; }
 ko() { echo "FAIL $1"; [ $# -gt 1 ] && printf '     %s\n' "${@:2}"; failed=$((failed+1)); }
 
 # ---- 3.1 the cross-check ---------------------------------------------------------------------
-# A document whose allow matrix lacks atls-gateway-to-tcr and says DENY for backend-to-verification-service.
+# A document whose allow matrix lacks connector-to-openbao and says DENY for token-store-to-verification-service.
 python3 - "$REPO/docs/architecture.md" "$T/doc.md" <<'PY'
 import sys
 out = []
 for line in open(sys.argv[1]):
-    if line.startswith("| aTLS gateway → TCR resolve"):
+    if line.startswith("| connector → OpenBao"):
         continue
-    if line.startswith("| backend → verification service"):
+    if line.startswith("| token store → verification service"):
         line = line.replace("| ALLOW (named pair) |", "| **DENY** |", 1)
     out.append(line)
 open(sys.argv[2], "w").writelines(out)
@@ -58,8 +58,8 @@ else
 fi
 plan_rows "$REPO/deployment/helm/ztd/values.yaml" "$REPO/deployment/helm/ztd/ci/values.yaml" "$T/umbrella.yaml" >"$T/rows.json"
 out=$(plan_crosscheck "$T/rows.json" "$T/doc-rows.tsv" "$HERE/fixtures"); rc=$?
-if [ "$rc" -ne 0 ] && grep -q 'row atls-gateway-to-tcr: allowMatrix row of the umbrella absent from section 6' <<<"$out" \
-  && grep -q 'row backend-to-verification-service: section 6 says DENY' <<<"$out"; then
+if [ "$rc" -ne 0 ] && grep -q 'row connector-to-openbao: allowMatrix row of the umbrella absent from section 6' <<<"$out" \
+  && grep -q 'row token-store-to-verification-service: section 6 says DENY' <<<"$out"; then
   ok "3.1 the cross-check fails naming the missing row and the flipped verdict"
 else ko "3.1 the cross-check fails naming the missing row and the flipped verdict" "$out"; fi
 # A row added to the umbrella without a fixture has no probe.
@@ -80,7 +80,7 @@ if [ -s "$T/umbrella.yaml" ]; then
   [ "$rc" -eq 0 ] && ok "4.1 every fixture's labels and service account equal its allowMatrix row" || ko "4.1 every fixture's labels and service account equal its allowMatrix row" "$out"
   jq '(.[] | select(.name == "pdp-adapter-to-tsa") | .fromServiceAccount) = "someone-else"' "$T/rows.json" >"$T/rows-sa.json"
   out=$(plan_fixtures "$HERE/fixtures" "$T/rows-sa.json"); rc=$?
-  [ "$rc" -ne 0 ] && grep -q "row pdp-adapter-to-tsa: the caller's service account pdp-adapter is not the row's someone-else" <<<"$out" \
+  [ "$rc" -ne 0 ] && grep -q "row pdp-adapter-to-tsa: the caller's service account ztd-policy-evaluator is not the row's someone-else" <<<"$out" \
     && ok "4.1 a fixture whose service account is not its row's is named" || ko "4.1 a fixture whose service account is not its row's is named" "$out"
 fi
 grep -L 'app.kubernetes.io/part-of: verify-plane-separation' "$HERE"/fixtures/*.yaml "$HERE"/fixtures/rows/*.yaml >"$T/unmarked"

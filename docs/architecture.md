@@ -144,11 +144,11 @@ cluster mode of the harness and executes this matrix from every data-plane names
 
 | From data-plane workload → (row) | ZT-55 role | Allowed? | Enforcement (NetworkPolicy; mesh AuthorizationPolicy) | Principal admitted | Test |
 |---|---|---|---|---|---|
-| PDP adapter → TSA policy engine (`pdp-adapter-to-tsa`) | Policy Engine | ALLOW (mTLS, named pair) | NetworkPolicy: ALLOW, L3/L4 only, the pod pair (`allow-pdp-adapter-to-tsa-egress`, `allow-pdp-adapter-to-tsa-ingress`); mesh: ALLOW, L7 owner (mesh proxy: sidecar or waypoint, per `mesh.mode`), mTLS, `allow-pdp-adapter-to-tsa` | `<trust domain>/ns/ztd-data/sa/pdp-adapter` | `@ZT-55 @BDD-ZT-055` |
+| PDP adapter → TSA policy engine (`pdp-adapter-to-tsa`) | Policy Engine | ALLOW (mTLS, named pair) | NetworkPolicy: ALLOW, L3/L4 only, the pod pair (`allow-pdp-adapter-to-tsa-egress`, `allow-pdp-adapter-to-tsa-ingress`); mesh: ALLOW, L7 owner (mesh proxy: sidecar or waypoint, per `mesh.mode`), mTLS, `allow-pdp-adapter-to-tsa` | `<trust domain>/ns/ztd-data/sa/ztd-policy-evaluator` (the guard chart's policy evaluator) | `@ZT-55 @BDD-ZT-055` |
 | aTLS gateway → TCR resolve (`atls-gateway-to-tcr`) | TRAIN (resolution) | ALLOW (named pair) | NetworkPolicy: ALLOW, L3/L4 only, the pod pair (`allow-atls-gateway-to-tcr-egress`, `allow-atls-gateway-to-tcr-ingress`); mesh: ALLOW, L7 owner (mesh proxy: sidecar or waypoint, per `mesh.mode`), mTLS, `allow-atls-gateway-to-tcr` | `<trust domain>/ns/ztd-data/sa/atls-gateway` | `@ZT-55 @BDD-ZT-055` |
 | aTLS gateway → cmcd (`atls-gateway-to-cmcd`) | Attestation (CMC) | ALLOW (named pair) | NetworkPolicy: ALLOW, L3/L4 only, the pod pair (`allow-atls-gateway-to-cmcd-egress`, `allow-atls-gateway-to-cmcd-ingress`); mesh: ALLOW, L7 owner (mesh proxy: sidecar or waypoint, per `mesh.mode`), mTLS, `allow-atls-gateway-to-cmcd` | `<trust domain>/ns/ztd-data/sa/atls-gateway` | `@ZT-55 @BDD-ZT-055` |
 | workloads → OTel collector (export only; `workloads-to-otel-collector`) | Observability stack | ALLOW (declared bypass, ZT-26) | NetworkPolicy: ALLOW, L3/L4 only, the pair (`allow-workloads-to-otel-collector-egress`, `allow-workloads-to-otel-collector-ingress`) from every data-plane pod, egress rule limiting the source to the collector's export ports 4317 and 4318 (ZT-26); mesh: ALLOW, L7 owner (mesh proxy: sidecar or waypoint, per `mesh.mode`), mTLS, `allow-workloads-to-otel-collector`, ports 4317 and 4318 | every identity of the namespace `ztd-data` (source namespace) | `@ZT-55 @BDD-ZT-055` |
-| backend → verification service (`backend-to-verification-service`) | OCM | ALLOW (named pair) | NetworkPolicy: ALLOW, L3/L4 only, the pod pair (`allow-backend-to-verification-service-egress`, `allow-backend-to-verification-service-ingress`); mesh: ALLOW, L7 owner (mesh proxy: sidecar or waypoint, per `mesh.mode`), mTLS, `allow-backend-to-verification-service` | `<trust domain>/ns/ztd-data/sa/backend` | `@ZT-55 @BDD-ZT-055` |
+| token store → verification service (`token-store-to-verification-service`) | OCM | ALLOW (named pair) | NetworkPolicy: ALLOW, L3/L4 only, the pod pair (`allow-token-store-to-verification-service-egress`, `allow-token-store-to-verification-service-ingress`), port 8080; mesh: ALLOW, L7 owner (mesh proxy: sidecar or waypoint, per `mesh.mode`), mTLS, `allow-token-store-to-verification-service`, port 8080 | `<trust domain>/ns/ztd-data/sa/ztd-token-store` | `@ZT-55 @BDD-ZT-055` |
 | connector → OpenBao (`connector-to-openbao`) | Secret store | ALLOW (named pair) | NetworkPolicy: ALLOW, L3/L4 only, the pod pair (`allow-connector-to-openbao-egress`, `allow-connector-to-openbao-ingress`), port 8200; mesh: ALLOW, L7 owner (mesh proxy: sidecar or waypoint, per `mesh.mode`), mTLS, `allow-connector-to-openbao`, port 8200 | `<trust domain>/ns/ztd-data/sa/ztd-connector` | `@ZT-55 @BDD-ZT-055` |
 | token store → OpenBao (`token-store-to-openbao`) | Secret store | ALLOW (named pair) | NetworkPolicy: ALLOW, L3/L4 only, the pod pair (`allow-token-store-to-openbao-egress`, `allow-token-store-to-openbao-ingress`), port 8200; mesh: ALLOW, L7 owner (mesh proxy: sidecar or waypoint, per `mesh.mode`), mTLS, `allow-token-store-to-openbao`, port 8200 | `<trust domain>/ns/ztd-data/sa/ztd-token-store` | `@ZT-55 @BDD-ZT-055` |
 | any data-plane workload → TSPA (trust-list publication) | TRAIN (publication) | **DENY** | NetworkPolicy: DENY; mesh: DENY | none | `@ZT-55 @BDD-ZT-055` |
@@ -176,8 +176,8 @@ cluster as the source workload, where both are policies between namespaces. The 
 mechanism follows network topology rather than who supplies a service: a destination in another
 cluster is reached through an egress rule, and one outside the estate through a different control
 again. Placement is recorded for the SPIRE control plane, the observability stack and attestation
-only, so four rows are provisional: PDP adapter → TSA policy engine, aTLS gateway → TCR resolve, backend →
-verification service, and the denied row any data-plane workload → TSPA. The denied row is
+only, so four rows are provisional: PDP adapter → TSA policy engine, aTLS gateway → TCR resolve, token
+store → verification service, and the denied row any data-plane workload → TSPA. The denied row is
 included because a denial across a cluster boundary rests on a different mechanism than one within
 a cluster. Once their destinations are placed, these rows will also name their egress rule.
 
@@ -269,13 +269,14 @@ plays in the matrix.
   the path lets a workload hand its telemetry to the collector and opens no route back into the
   stack, to the data it holds or to its configuration. None of this depends on which component takes
   the L7 decision on the path, so a change of mesh mode leaves the justification standing.
-- **backend → verification service — OCM.** ZT-40 (SRS 3.1.5) bases access on credentials from
+- **token store → verification service — OCM.** ZT-40 (SRS 3.1.5) bases access on credentials from
   the OCM W-Stack, and ZT-51 (SRS 3.3) requires revocation status to be checked at every credential
   verification, failing closed when it cannot be. A verdict held from an earlier verification
   cannot stand in for a new one: it records the credential's status when that verification ran,
   so a credential revoked since would still pass. Each new verification therefore reaches the
   service, and the [staleness matrix](#staleness-matrix) bounds how long one verification's outcome
-  is relied on. The backend initiates; the verification service answers and never calls into the
+  is relied on. The token store's presentation hook initiates, for the participant backend; the
+  verification service answers and never calls into the
   data plane over this path. The surface is credential verification — a presentation out and its
   verification result, revocation status included, back — not the issuance or revocation of
   credentials.
@@ -403,17 +404,20 @@ service that has not landed is not guessed: its change adds the row when it land
 | Interface | In-zone caller → callee it implies | Declared by |
 |---|---|---|
 | [IF-01](api-docs.md#if-01-security-state-feed) security-state feed | components → collector (their events are IF-04 log lines); feed bridge → UI | no pair of its own: the events travel the IF-04 path (below); the UI is outside the zone's mesh, so the bridge → UI leg is no in-zone pair |
-| [IF-02](api-docs.md#interface-registry) connector authorization surface | a participant or the viewer → the connector; the connector → the token store | the first crosses the zone boundary (no in-zone pair); connector → token store: not yet declared, added by the service's change |
-| [IF-03](api-docs.md#if-03-signed-verification-outcome) signed verification outcome | the participant backend → the verification service | `backend-to-verification-service` |
+| [IF-02](api-docs.md#interface-registry) connector authorization surface | the Participant and the token store → the connector (registration, challenge, token); the guard and the protected resource → the connector's key set | the connector chart's `ztd-connector-callers` (`callers.oauth`, and `callers.keySet` for `GET /.well-known/jwks.json` only); a caller of another zone crosses the zone boundary through its entry (no in-zone pair) |
+| [IF-03](api-docs.md#if-03-signed-verification-outcome) signed verification outcome | the token store's presentation hook → the verification service | `token-store-to-verification-service` |
 | [IF-04](api-docs.md#if-04-observability-and-evidence) observability and evidence | every data-plane workload → the OTel collector, export only | `workloads-to-otel-collector` |
-| [IF-05](api-docs.md#header-propagation-guard-to-gateway) policy decision | the guard's policy adapter → the policy engine; the guard → the zone's gateway (an allowed request) | `pdp-adapter-to-tsa`; guard → gateway: not yet declared, added by the service's change |
+| [IF-05](api-docs.md#header-propagation-guard-to-gateway) policy decision | the guard's policy evaluator (the PDP adapter) → the policy engine; the guard → the protected resource (an allowed request) | `pdp-adapter-to-tsa` (and the tsa-policy chart's `tsa-policy-engine-caller`); the guard chart's `ztd-protected-resource-caller` |
 | [IF-06](api-docs.md#interface-registry) governed configuration change | the UI → the governed pipeline (a pull request) | no in-zone pair: the change reaches the zone through the pipeline, never as a call into its mesh |
-| [IF-07](api-docs.md#if-07-attested-channel-control) attested channel control | the aTLS gateway → cmcd (attestation evidence); the aTLS gateway → TCR (trust-list resolve) | `atls-gateway-to-cmcd`; `atls-gateway-to-tcr` |
+| [IF-07](api-docs.md#if-07-attested-channel-control) attested channel control | the aTLS gateway → cmcd (attestation evidence); the aTLS gateway → TCR (trust-list resolve) | `atls-gateway-to-cmcd`; `atls-gateway-to-tcr`: reserved lanes, the label and account a gateway chart takes on (v0, not frozen; no chart runs the gateway yet) |
 | [IF-08](api-docs.md#if-08-deployment-lifecycle-command) deployment lifecycle command | the scenario driver or an operator → ORCE | no in-zone pair: the caller is outside the zone's mesh, and ORCE's calls go to the Kubernetes API, which is not meshed |
 
-Every declared pair appears once above, apart from the two that serve no interface: the secret
+Every declared pair appears once above, apart from those that serve no interface: the secret
 store's own `allow-ztd-openbao-bootstrap-to-server` and `allow-ztd-verify-openbao-to-server` (the
-release's jobs to its server, `docs/secrets.md`), which are internal to that release.
+release's jobs to its server, `docs/secrets.md`), which are internal to that release; the guard →
+token store (`ztd-token-store-callers`, the store's own API); the store's and the connector's
+database (`ztd-token-store-database`); and the OpenBao lanes `connector-to-openbao` and
+`token-store-to-openbao`.
 
 ### Declared openings of the network baseline
 

@@ -25,21 +25,21 @@ and leaves the caller's current context as found. Never run by CI.
    `deployment/helm/ztd/ci/values.yaml`, whose `cni.cilium.version` records the repository's pin
    (1.20.2), not `FROM`: this proof does not compare the recorded version with the running Cilium
    (the mesh identity proof does), and three stand-ins of
-   `scripts/verify-mesh-identity/fixtures/stand-ins.yaml` are applied: `pdp-adapter` and `data-plain` in
+   `scripts/verify-mesh-identity/fixtures/stand-ins.yaml` are applied: `ztd-policy-evaluator` and `data-plain` in
    the data plane, `tsa-policy-engine` in the management plane.
 2. **Before the upgrade.** On every node, the CNI configuration read through the node's Istio CNI agent
    lists the Istio plugin after Cilium (`scripts/verify-mesh-identity/lib/cni-chain.sh`, the reading the
    mesh proof uses); a node no agent reads fails. Cilium runs with `cni-exclusive=false`. The
-   allow-matrix lane `pdp-adapter` → `tsa-policy-engine` answers 200 through both proxies, and
+   allow-matrix lane `ztd-policy-evaluator` → `tsa-policy-engine` answers 200 through both proxies, and
    `data-plain`, a data-plane pod without a lane, is refused.
 3. **The upgrade.** `helm upgrade cilium cilium --repo https://helm.cilium.io/ --version $TO_CILIUM_VERSION --reset-then-reuse-values` (the chart by its repository URL, not through a local Helm repository named `cilium`; the release's own settings, `cni.exclusive=false` among them, over the new chart's defaults; plain `--reuse-values` also keeps the old chart's defaults, and the 1.20 chart does not render with them), then
    a wait for the rollout of `ds/cilium` with every pod on the new image and ready, then a wait for the
    Istio CNI agent to be ready on every node. Each wait is bounded by `TIMEOUT` and fails the run when it
    runs out. The record gives the time from the upgrade to the Cilium rollout and from the rollout to the
    Istio agent's readiness, so a long gap is visible.
-4. **After the upgrade.** The same checks, and a pod created after the upgrade: `pdp-adapter` is deleted
+4. **After the upgrade.** The same checks, and a pod created after the upgrade: `ztd-policy-evaluator` is deleted
    and created again, and its proxy must present a certificate carrying its own SPIFFE ID
-   (`spiffe://<trust domain>/ns/ztd-data/sa/pdp-adapter`), issued by the SPIRE CA and chaining to the
+   (`spiffe://<trust domain>/ns/ztd-data/sa/ztd-policy-evaluator`), issued by the SPIRE CA and chaining to the
    bundle read from the SPIRE server, and its lane must answer 200. A configuration file the Istio agent
    has repaired proves nothing about the pods created while it was not; the new pod shows that
    redirection into the proxy works after the upgrade.

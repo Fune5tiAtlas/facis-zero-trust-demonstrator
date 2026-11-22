@@ -273,11 +273,15 @@ networkPolicy:
 # the participant backend obtains its authorization from the connector (docs/keycloak.md).
 # --------------------------------------------------------------------------------------------
 allowMatrix:
+  # The PDP adapter is the guard chart's policy evaluator (deployment/helm/guard), the IF-05 caller.
   - name: pdp-adapter-to-tsa
-    from: { plane: data, podSelector: { app.kubernetes.io/name: pdp-adapter }, serviceAccount: pdp-adapter }
+    from: { plane: data, podSelector: { app.kubernetes.io/name: ztd-policy-evaluator }, serviceAccount: ztd-policy-evaluator }
     to: { plane: management, podSelector: { app.kubernetes.io/name: tsa-policy-engine }, serviceAccount: tsa-policy-engine }
     enforcedBy: mesh
     l7Owner: sidecar
+  # The aTLS gateway's lanes (IF-07, v0, not frozen): no chart runs the gateway yet, so the label and
+  # account below are the contract its chart takes on; until then no pod holds them and both lanes
+  # stay unused. They hold the ZT-55 design's Attestation and TRAIN (resolution) roles.
   - name: atls-gateway-to-cmcd
     from: { plane: data, podSelector: { app.kubernetes.io/name: atls-gateway }, serviceAccount: atls-gateway }
     to: { plane: management, podSelector: { app.kubernetes.io/name: cmcd }, serviceAccount: cmcd }
@@ -299,9 +303,16 @@ allowMatrix:
         - { port: 4318, protocol: TCP }
     enforcedBy: mesh  # export only, egress-restricted by the mesh (ZT-26)
     l7Owner: sidecar
-  - name: backend-to-verification-service
-    from: { plane: data, podSelector: { app.kubernetes.io/name: backend }, serviceAccount: backend }
-    to: { plane: management, podSelector: { app.kubernetes.io/name: verification-service }, serviceAccount: verification-service }
+  # The verification service's caller is the token store's presentation hook (IF-03), on its API
+  # port.
+  - name: token-store-to-verification-service
+    from: { plane: data, podSelector: { app.kubernetes.io/name: ztd-token-store, app.kubernetes.io/component: server }, serviceAccount: ztd-token-store }
+    to:
+      plane: management
+      podSelector: { app.kubernetes.io/name: verification-service }
+      serviceAccount: verification-service
+      ports:
+        - { port: 8080, protocol: TCP }
     enforcedBy: mesh
     l7Owner: sidecar
   # The connector's and the token store's OpenBao lanes: transit, KV and the Kubernetes auth login

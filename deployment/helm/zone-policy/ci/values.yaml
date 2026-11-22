@@ -1,6 +1,6 @@
 # The kind zone (deployment/helm/ztd/ci/values.yaml): the CI render and the local proof.
 # scripts/install-zone fills trustDomain, the plane namespaces and the pairs from the zone file over
-# the umbrella's defaults; CI renders with this file. The pairs are the five allowMatrix rows of the
+# the umbrella's defaults; CI renders with this file. The pairs are five allowMatrix rows of the
 # umbrella (deployment/helm/ztd/values.yaml) in the shape the installer hands over, and one
 # intra-plane pair that exists only here, so that the render shows a same-plane rule as well (it
 # names no l7Owner, so it renders the default, sidecar).
@@ -13,7 +13,7 @@ planes:
 pairs:
   - name: pdp-adapter-to-tsa
     l7Owner: sidecar
-    from: { plane: data, serviceAccount: pdp-adapter }
+    from: { plane: data, serviceAccount: ztd-policy-evaluator }
     to: { plane: management, podSelector: { app.kubernetes.io/name: tsa-policy-engine } }
   - name: atls-gateway-to-cmcd
     l7Owner: sidecar
@@ -32,10 +32,10 @@ pairs:
       ports:
         - { port: 4317, protocol: TCP }
         - { port: 4318, protocol: TCP }
-  - name: backend-to-verification-service
+  - name: token-store-to-verification-service
     l7Owner: sidecar
-    from: { plane: data, serviceAccount: backend }
-    to: { plane: management, podSelector: { app.kubernetes.io/name: verification-service } }
+    from: { plane: data, serviceAccount: ztd-token-store }
+    to: { plane: management, podSelector: { app.kubernetes.io/name: verification-service }, ports: [{ port: 8080, protocol: TCP }] }
   # A render fixture, not a pair of the zone: an intra-plane pair between two releases.
   - name: ci-intra-plane-example
     from: { plane: management, serviceAccount: ci-example-caller }

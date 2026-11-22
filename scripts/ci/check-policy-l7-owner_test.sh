@@ -134,11 +134,11 @@ expect "a NetworkPolicy of a row without its owner fails, naming the policy, its
   'FAIL planted: ztd NetworkPolicy ztd-mgmt/allow-pdp-adapter-to-tsa-ingress: allow-matrix policy of pdp-adapter-to-tsa without the annotation ztd.facis.io/l7-owner' \
   --manifest planted "$work/owner/ztd.yaml"
 plant "$work/zone-policy.yaml" "$work/owner/zone-policy.yaml" '
-for d in named("AuthorizationPolicy", "allow-backend-to-verification-service"):
+for d in named("AuthorizationPolicy", "allow-token-store-to-verification-service"):
     d["metadata"]["annotations"].pop("ztd.facis.io/l7-owner")
     planted = True'
 expect "an AuthorizationPolicy of a pair without its owner fails" 1 \
-  'FAIL planted: zone-policy AuthorizationPolicy ztd-mgmt/allow-backend-to-verification-service: allow-matrix policy of backend-to-verification-service without the annotation' \
+  'FAIL planted: zone-policy AuthorizationPolicy ztd-mgmt/allow-token-store-to-verification-service: allow-matrix policy of token-store-to-verification-service without the annotation' \
   --manifest planted "$work/owner/zone-policy.yaml"
 plant "$work/zone-policy.yaml" "$work/owner/cilium-owner.yaml" '
 for d in named("AuthorizationPolicy", "allow-pdp-adapter-to-tsa"):

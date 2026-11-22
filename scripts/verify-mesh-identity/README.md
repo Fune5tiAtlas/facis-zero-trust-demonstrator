@@ -191,7 +191,7 @@ peer's, and each check names both nodes and requires them to differ.
 
 Every stand-in of `fixtures/stand-ins.yaml` that runs a proxy or fetches an SVID runs in a service
 account of its own, named after the pod (`peer`, `caller`, `unregistered`, `unregistered-svid`,
-`pdp-adapter`, `data-plain`, `pdp-impostor`, `unpaired`, `tsa-policy-engine`, `openbao-standin`,
+`ztd-policy-evaluator`, `data-plain`, `pdp-impostor`, `unpaired`, `tsa-policy-engine`, `openbao-standin`,
 `mgmt-caller`), so its SPIFFE
 ID is `spiffe://<trust domain>/ns/<namespace>/sa/<pod>`. The two `probe` pods hold no identity and
 keep their namespace's default account; the per-node SVID stand-ins share the account `stand-in` in
@@ -200,10 +200,10 @@ keep their namespace's default account; the per-node SVID stand-ins share the ac
 `spiffe://<trust domain>/ns/<data plane>/sa/caller`, and the identity the peer saw must equal it.
 
 Under section 10 a third heading, **`stand-in-identities`**, has one check per meshed stand-in
-(`peer`, `caller`, `pdp-adapter`, `data-plain`, `pdp-impostor`, `unpaired`, `tsa-policy-engine`,
+(`peer`, `caller`, `ztd-policy-evaluator`, `data-plain`, `pdp-impostor`, `unpaired`, `tsa-policy-engine`,
 `openbao-standin`, `mgmt-caller`): its proxy's certificate, read with `istioctl proxy-config
 secret`, carries its own SPIFFE ID and is issued by the SPIRE CA. Two checks follow: the lane
-`pdp-adapter-to-tsa`'s caller `pdp-adapter`, the refused caller `data-plain` and the impostor
+`pdp-adapter-to-tsa`'s caller `ztd-policy-evaluator`, the refused caller `data-plain` and the impostor
 `pdp-impostor` (the lane's pod labels, its own account) carry three different IDs, and the
 management-plane stand-ins `tsa-policy-engine`, `openbao-standin` and `mgmt-caller` carry three
 different ones. A missing ID never counts as a different one. The network layer enforces the lanes
@@ -234,7 +234,7 @@ one is `error(no exit code)`, never a refusal.
 | `denied(…)` from a pod without a certificate | handshake | STRICT refused the connection before any identity was known; no denial line names the caller |
 
 Under section 11, **`mesh-default-deny`**: `pdp-impostor` → `tsa-policy-engine` is admitted by the
-lane's NetworkPolicy and answered `403 RBAC: access denied`, while `pdp-adapter` is still served;
+lane's NetworkPolicy and answered `403 RBAC: access denied`, while `ztd-policy-evaluator` is still served;
 `unpaired` → `peer` (inside `ztd-data`, open at the network layer) is answered 403, while `caller`
 is served through its pair; `caller` → `peer` `/echo?…&code=403` is the application's own 403, served
 by the mesh. Each refused call leaves exactly one denial line on the destination's proxy with both

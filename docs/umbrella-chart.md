@@ -68,11 +68,11 @@ contract with the component charts:
 
 | Lane | From (data plane) | Caller's service account | To (management plane) |
 |---|---|---|---|
-| `pdp-adapter-to-tsa` | `app.kubernetes.io/name=pdp-adapter` | `pdp-adapter` | `tsa-policy-engine` |
-| `atls-gateway-to-cmcd` | `atls-gateway` | `atls-gateway` | `cmcd` |
-| `atls-gateway-to-tcr` | `atls-gateway` | `atls-gateway` | `tcr` |
+| `pdp-adapter-to-tsa` | `app.kubernetes.io/name=ztd-policy-evaluator` (the guard chart's PDP adapter) | `ztd-policy-evaluator` | `tsa-policy-engine` |
+| `atls-gateway-to-cmcd` | `atls-gateway` (reserved: no chart runs the gateway yet, IF-07 v0) | `atls-gateway` | `cmcd` |
+| `atls-gateway-to-tcr` | `atls-gateway` (reserved, as above) | `atls-gateway` | `tcr` |
 | `workloads-to-otel-collector` | every data-plane pod | none: the whole plane (the namespace) | `otel-collector`, ports 4317 and 4318 only |
-| `backend-to-verification-service` | `backend` | `backend` | `verification-service` |
+| `token-store-to-verification-service` | `ztd-token-store` (`app.kubernetes.io/component=server`) | `ztd-token-store` | `verification-service`, port 8080 only |
 | `connector-to-openbao` | `ztd-connector` | `ztd-connector` | `openbao` (`component=server`), port 8200 only |
 | `token-store-to-openbao` | `ztd-token-store` (`app.kubernetes.io/component=server`) | `ztd-token-store` | `openbao` (`component=server`), port 8200 only |
 

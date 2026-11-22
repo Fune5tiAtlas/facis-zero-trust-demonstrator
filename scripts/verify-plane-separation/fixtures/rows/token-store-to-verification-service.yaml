@@ -1,4 +1,4 @@
-# Stand-ins of the allowMatrix row backend-to-verification-service (scripts/verify-plane-separation/verify.sh). Each object carries
+# Stand-ins of the allowMatrix row token-store-to-verification-service (scripts/verify-plane-separation/verify.sh). Each object carries
 # app.kubernetes.io/part-of: verify-plane-separation; each pod carries exactly the row's labels and service
 # account (verify_test.sh holds them to the rendered row), plus the SPIRE registration label. __TO__ is the
 # destination's namespace, __FROM__ the data-plane namespace the callers run in. The destination is
@@ -46,7 +46,7 @@ spec:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: backend
+  name: ztd-token-store
   namespace: __FROM__
   labels: { app.kubernetes.io/part-of: verify-plane-separation }
 ---
@@ -54,14 +54,14 @@ metadata:
 apiVersion: v1
 kind: Pod
 metadata:
-  name: backend-to-verification-service-caller
+  name: token-store-to-verification-service-caller
   namespace: __FROM__
-  labels: { app.kubernetes.io/name: backend, app.kubernetes.io/part-of: verify-plane-separation, spiffe.io/spire-managed-identity: "true" }
+  labels: { app.kubernetes.io/name: ztd-token-store, app.kubernetes.io/component: server, app.kubernetes.io/part-of: verify-plane-separation, spiffe.io/spire-managed-identity: "true" }
   annotations: { verify-plane-separation/role: caller }
 spec:
   activeDeadlineSeconds: 7200   # a stand-in left by a killed run stops on its own after 2 h
   terminationGracePeriodSeconds: 2
-  serviceAccountName: backend
+  serviceAccountName: ztd-token-store
   containers:
     - name: app
       image: docker.io/curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b
@@ -70,7 +70,7 @@ spec:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: backend-to-verification-service-impostor
+  name: token-store-to-verification-service-impostor
   namespace: __FROM__
   labels: { app.kubernetes.io/part-of: verify-plane-separation }
 ---
@@ -78,14 +78,14 @@ metadata:
 apiVersion: v1
 kind: Pod
 metadata:
-  name: backend-to-verification-service-impostor
+  name: token-store-to-verification-service-impostor
   namespace: __FROM__
-  labels: { app.kubernetes.io/name: backend, app.kubernetes.io/part-of: verify-plane-separation, spiffe.io/spire-managed-identity: "true" }
+  labels: { app.kubernetes.io/name: ztd-token-store, app.kubernetes.io/component: server, app.kubernetes.io/part-of: verify-plane-separation, spiffe.io/spire-managed-identity: "true" }
   annotations: { verify-plane-separation/role: impostor }
 spec:
   activeDeadlineSeconds: 7200   # a stand-in left by a killed run stops on its own after 2 h
   terminationGracePeriodSeconds: 2
-  serviceAccountName: backend-to-verification-service-impostor
+  serviceAccountName: token-store-to-verification-service-impostor
   containers:
     - name: app
       image: docker.io/curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b
@@ -95,14 +95,14 @@ spec:
 apiVersion: v1
 kind: Pod
 metadata:
-  name: backend-to-verification-service-unlabelled
+  name: token-store-to-verification-service-unlabelled
   namespace: __FROM__
   labels: { app.kubernetes.io/part-of: verify-plane-separation, spiffe.io/spire-managed-identity: "true" }
   annotations: { verify-plane-separation/role: unlabelled }
 spec:
   activeDeadlineSeconds: 7200   # a stand-in left by a killed run stops on its own after 2 h
   terminationGracePeriodSeconds: 2
-  serviceAccountName: backend
+  serviceAccountName: ztd-token-store
   containers:
     - name: app
       image: docker.io/curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b

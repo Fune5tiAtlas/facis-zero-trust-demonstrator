@@ -125,14 +125,14 @@ k -n "$MGMT" run tsa-policy-engine --image="$AGNHOST" --labels=app.kubernetes.io
 k -n "$MGMT" run openbao-standin --image="$AGNHOST" --labels=app.kubernetes.io/name=openbao-standin --port=8080 --expose -- netexec --http-port=8080 >/dev/null 2>&1
 k -n "$DATA" run data-target --image="$AGNHOST" --labels=app.kubernetes.io/name=data-target --port=8080 --expose -- netexec --http-port=8080 >/dev/null 2>&1
 k -n "$DATA" run data-plain --image="$CURL" --labels=app.kubernetes.io/name=data-plain --command -- sleep 3600 >/dev/null 2>&1
-k -n "$DATA" run pdp-adapter --image="$CURL" --labels=app.kubernetes.io/name=pdp-adapter --command -- sleep 3600 >/dev/null 2>&1
+k -n "$DATA" run ztd-policy-evaluator --image="$CURL" --labels=app.kubernetes.io/name=ztd-policy-evaluator --command -- sleep 3600 >/dev/null 2>&1
 k -n "$MGMT" run mgmt-probe --image="$CURL" --labels=app.kubernetes.io/name=mgmt-probe --command -- sleep 3600 >/dev/null 2>&1
 k -n "$MGMT" wait --for=condition=Ready pod/tsa-policy-engine pod/openbao-standin pod/mgmt-probe --timeout=180s >/dev/null 2>&1; check $? "management stand-ins Ready"
-k -n "$DATA" wait --for=condition=Ready pod/data-target pod/data-plain pod/pdp-adapter --timeout=180s >/dev/null 2>&1; check $? "data-plane stand-ins Ready"
+k -n "$DATA" wait --for=condition=Ready pod/data-target pod/data-plain pod/ztd-policy-evaluator --timeout=180s >/dev/null 2>&1; check $? "data-plane stand-ins Ready"
 expect_deny  "$DATA" data-plain  "http://openbao-standin.$MGMT.svc:8080/hostname"           "unlabelled data-plane pod → openbao-standin (management): DENIED"
 expect_deny  "$DATA" data-plain  "http://tsa-policy-engine.$MGMT.svc:8080/hostname" "unlabelled data-plane pod → tsa-policy-engine (management): DENIED"
-expect_allow "$DATA" pdp-adapter "http://tsa-policy-engine.$MGMT.svc:8080/hostname" "pdp-adapter → tsa-policy-engine: ALLOWED (matrix lane pdp-adapter-to-tsa)"
-expect_deny  "$DATA" pdp-adapter "http://openbao-standin.$MGMT.svc:8080/hostname"           "pdp-adapter → openbao-standin: DENIED (a lane is one pair, not a licence)"
+expect_allow "$DATA" ztd-policy-evaluator "http://tsa-policy-engine.$MGMT.svc:8080/hostname" "ztd-policy-evaluator → tsa-policy-engine: ALLOWED (matrix lane pdp-adapter-to-tsa)"
+expect_deny  "$DATA" ztd-policy-evaluator "http://openbao-standin.$MGMT.svc:8080/hostname"           "ztd-policy-evaluator → openbao-standin: DENIED (a lane is one pair, not a licence)"
 expect_allow "$DATA" data-plain  "http://data-target.$DATA.svc:8080/hostname"        "data-plane pod → data-plane pod: ALLOWED (intra-plane lane)"
 expect_deny  "$MGMT" mgmt-probe  "http://data-target.$DATA.svc:8080/hostname"        "management pod → data plane: DENIED (default deny is both directions)"
 r=$(k -n "$DATA" exec data-plain -- nslookup "tsa-policy-engine.$MGMT.svc.cluster.local" 2>&1 | tail -3 | tr '\n' ' '); k -n "$DATA" exec data-plain -- nslookup "tsa-policy-engine.$MGMT.svc.cluster.local" >/dev/null 2>&1; check $? "DNS bypass: the denied pod still resolves names" "$r"
@@ -146,7 +146,7 @@ for ns in "$MGMT" "$DATA"; do [ "$(k get ns "$ns" -o jsonpath='{.metadata.labels
 [ -z "$(k get ns "$DATA" -o jsonpath='{.metadata.labels.istio-injection}')" ]; check $? "ambient mode: the sidecar label is gone"
 k get ciliumclusterwidenetworkpolicy "${RELEASE}-allow-ambient-hostprobes" >/dev/null 2>&1; check $? "ambient mode: the Cilium host-probe exception is rendered (mode ambient, Cilium)"
 expect_deny  "$DATA" data-plain  "http://openbao-standin.$MGMT.svc:8080/hostname"   "ambient mode: cross-plane call still DENIED"
-expect_allow "$DATA" pdp-adapter "http://tsa-policy-engine.$MGMT.svc:8080/hostname" "ambient mode: matrix lane still ALLOWED"
+expect_allow "$DATA" ztd-policy-evaluator "http://tsa-policy-engine.$MGMT.svc:8080/hostname" "ambient mode: matrix lane still ALLOWED"
 out=$(h upgrade --install "$RELEASE" "$CHART" -n "$RNS" -f "$VALUES" --wait --timeout 5m 2>&1); rc=$?
 check $rc "back to sidecar mode returns 0"
 code "$(k get ns "$MGMT" "$DATA" -L ztd.facis.io/plane,istio.io/dataplane-mode,istio-injection | sed 's/  */ /g')"
@@ -154,7 +154,7 @@ for ns in "$MGMT" "$DATA"; do [ "$(k get ns "$ns" -o jsonpath='{.metadata.labels
 [ -z "$(k get ns "$DATA" -o jsonpath='{.metadata.labels.istio\.io/dataplane-mode}')" ]; check $? "sidecar mode restored: the ambient label is gone"
 k get ciliumclusterwidenetworkpolicy "${RELEASE}-allow-ambient-hostprobes" >/dev/null 2>&1; [ $? -ne 0 ]; check $? "sidecar mode restored: the ambient host-probe exception is gone"
 expect_deny  "$DATA" data-plain  "http://openbao-standin.$MGMT.svc:8080/hostname"   "sidecar mode restored: cross-plane call still DENIED"
-expect_allow "$DATA" pdp-adapter "http://tsa-policy-engine.$MGMT.svc:8080/hostname" "sidecar mode restored: matrix lane still ALLOWED"
+expect_allow "$DATA" ztd-policy-evaluator "http://tsa-policy-engine.$MGMT.svc:8080/hostname" "sidecar mode restored: matrix lane still ALLOWED"
 
 say '' "## 7. The management plane's API lane under Cilium" ''
 say 'Cilium does not select an API server that runs on a node by its address, so with Cilium the lane is a CiliumNetworkPolicy to the kube-apiserver entity and the CIDR the zone file records is not rendered. In a meshed zone the lane is required (the SPIRE server, its controller-manager and istiod call the API), so it is on from the install in every management-plane namespace and the schema refuses it off (section 8). Any HTTP code means the call reached the API server; denied(28), a timeout, means the policy dropped it; any other failure is an error.' ''
