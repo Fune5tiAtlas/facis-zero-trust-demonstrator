@@ -19,6 +19,19 @@ database:
 # that the zone installer installs last; a zone without it points this at its own.
 openbao:
   address: http://ztd-openbao.ztd-mgmt.svc:8200
+  # How the service authenticates to OpenBao. token (the default): the token file from the
+  # credentials Secret. kubernetes: OpenBao's Kubernetes auth method with a projected service-account
+  # token for `audience`, which the kubelet rotates (expirationSeconds, 600 at least) and the service
+  # rereads at every login; the service logs in again at half its OpenBao token's lease and before it
+  # expires, so no token is held in a Secret and none expires under the service
+  # (docs/secrets.md#kubernetes-auth). role names the OpenBao role, which must bind this namespace,
+  # the ServiceAccount and the audience.
+  auth:
+    method: token
+    role: ""
+    mount: kubernetes
+    audience: openbao
+    expirationSeconds: 600
 
 # The service.
 replicas: 1
@@ -28,7 +41,11 @@ runtime:
   existingConfigMap: ""
   configKey: acquisition.json
   credentialsSecret: ""
-  openbaoTokenKey: openbao-token
+  openbaoTokenKey: openbao-token   # not used with openbao.auth.method kubernetes
+  # With openbao.auth.method kubernetes, the keys of credentialsSecret the routes read (holder
+  # credentials, client secrets): only these are mounted, so a static OpenBao token left in the
+  # Secret never reaches the pod. With token, the whole Secret is mounted, as before.
+  credentialKeys: []
   replayCallers: []
 podAnnotations: {}
 nodeSelector: {}

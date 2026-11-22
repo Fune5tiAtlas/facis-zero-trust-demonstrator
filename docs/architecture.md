@@ -43,7 +43,7 @@ that implement it in this demonstrator. The allow matrix below lists the permitt
 these roles and refers to the roles by name, so coverage of the five components can be checked here
 before the permitted paths are read.
 
-The table also binds one role ZT-55 does not name: attestation, implemented by CMC. ZT-55
+The table also binds roles ZT-55 does not name. The first is attestation, implemented by CMC. ZT-55
 characterises the management plane with parenthetical examples rather than enumerating it, and its
 operative sentence is that compromise of the data plane must not grant any access to
 management-plane components. CMC is placed in the management plane by that test: cmcd holds the
@@ -51,6 +51,11 @@ zone's attestation keys, enrolled through the estserver, and the pipeline-signed
 (ZT-71) that the peer zone's trust decision rests on, so a workload able to alter it could alter
 what the system trusts. It is bound here because the data plane has a permitted path to it, which
 the allow matrix names by role.
+
+It binds a second: the secret store, OpenBao (ZT-11). It holds the zone's signing keys, which never
+leave it, and the token store's upstream credentials, so it is management plane by the same test.
+The connector and the token store reach it on its API port, each by its own identity, for transit,
+KV and their Kubernetes auth login; the allow matrix names those two paths by role.
 
 Every role in the table below is bound to at least one service; none is unimplemented.
 
@@ -72,6 +77,7 @@ source — not who supplies the service; see the allow matrix below.
 | OCM | OCM W-Stack, used by the backend as the credential verification service | Client-supplied | [External XFSC components](dependencies.md#external-xfsc-components) |
 | Observability stack | the zone's OpenTelemetry collectors (the zone gateway and the node collectors); the backends on the demonstrator cluster: the receiving collector, Prometheus, Jaeger | Project-built | [Observability placement](#observability-placement-zt-55-zt-26); [ADR-0017](adr/0017-central-observability-backends.md); [Operations](environments/osc.md#operations) |
 | Attestation | cmcd, the per-zone CMC daemon, and its enrolment server (estserver) | Project-built | [Specifications](specifications.md); [trust boundary between the zones](environments/osc.md#7-the-trust-boundary-between-the-zones) |
+| Secret store | OpenBao, the release `ztd-openbao` (transit signing keys, KV, the Kubernetes auth method) | Project-built | [Secrets](secrets.md); [Kubernetes auth](secrets.md#kubernetes-auth) |
 
 ### Allow matrix (data plane → management plane)
 
@@ -143,9 +149,11 @@ cluster mode of the harness and executes this matrix from every data-plane names
 | aTLS gateway → cmcd (`atls-gateway-to-cmcd`) | Attestation (CMC) | ALLOW (named pair) | NetworkPolicy: ALLOW, L3/L4 only, the pod pair (`allow-atls-gateway-to-cmcd-egress`, `allow-atls-gateway-to-cmcd-ingress`); mesh: ALLOW, L7 owner (mesh proxy: sidecar or waypoint, per `mesh.mode`), mTLS, `allow-atls-gateway-to-cmcd` | `<trust domain>/ns/ztd-data/sa/atls-gateway` | `@ZT-55 @BDD-ZT-055` |
 | workloads → OTel collector (export only; `workloads-to-otel-collector`) | Observability stack | ALLOW (declared bypass, ZT-26) | NetworkPolicy: ALLOW, L3/L4 only, the pair (`allow-workloads-to-otel-collector-egress`, `allow-workloads-to-otel-collector-ingress`) from every data-plane pod, egress rule limiting the source to the collector's export ports 4317 and 4318 (ZT-26); mesh: ALLOW, L7 owner (mesh proxy: sidecar or waypoint, per `mesh.mode`), mTLS, `allow-workloads-to-otel-collector`, ports 4317 and 4318 | every identity of the namespace `ztd-data` (source namespace) | `@ZT-55 @BDD-ZT-055` |
 | backend → verification service (`backend-to-verification-service`) | OCM | ALLOW (named pair) | NetworkPolicy: ALLOW, L3/L4 only, the pod pair (`allow-backend-to-verification-service-egress`, `allow-backend-to-verification-service-ingress`); mesh: ALLOW, L7 owner (mesh proxy: sidecar or waypoint, per `mesh.mode`), mTLS, `allow-backend-to-verification-service` | `<trust domain>/ns/ztd-data/sa/backend` | `@ZT-55 @BDD-ZT-055` |
+| connector → OpenBao (`connector-to-openbao`) | Secret store | ALLOW (named pair) | NetworkPolicy: ALLOW, L3/L4 only, the pod pair (`allow-connector-to-openbao-egress`, `allow-connector-to-openbao-ingress`), port 8200; mesh: ALLOW, L7 owner (mesh proxy: sidecar or waypoint, per `mesh.mode`), mTLS, `allow-connector-to-openbao`, port 8200 | `<trust domain>/ns/ztd-data/sa/ztd-connector` | `@ZT-55 @BDD-ZT-055` |
+| token store → OpenBao (`token-store-to-openbao`) | Secret store | ALLOW (named pair) | NetworkPolicy: ALLOW, L3/L4 only, the pod pair (`allow-token-store-to-openbao-egress`, `allow-token-store-to-openbao-ingress`), port 8200; mesh: ALLOW, L7 owner (mesh proxy: sidecar or waypoint, per `mesh.mode`), mTLS, `allow-token-store-to-openbao`, port 8200 | `<trust domain>/ns/ztd-data/sa/ztd-token-store` | `@ZT-55 @BDD-ZT-055` |
 | any data-plane workload → TSPA (trust-list publication) | TRAIN (publication) | **DENY** | NetworkPolicy: DENY; mesh: DENY | none | `@ZT-55 @BDD-ZT-055` |
 | any data-plane workload → SPIRE server | SPIRE control plane | **DENY** | NetworkPolicy: DENY; mesh: DENY | none | `@ZT-55 @BDD-ZT-055` |
-| anything else data → management: any management-plane destination without its own row, including a bound service without a row of its own (estserver) and other management components (for example ArgoCD, OpenBao, Harbor, admin APIs), except istiod's xDS port (a declared opening, no row yet) | any management-plane destination not listed above | **DENY** | NetworkPolicy: DENY; mesh: DENY | none | `@ZT-55 @BDD-ZT-055` |
+| anything else data → management: any management-plane destination without its own row, including a bound service without a row of its own (estserver) and other management components (for example ArgoCD, Harbor, admin APIs, and OpenBao from anything but its two rows), except istiod's xDS port (a declared opening, no row yet) | any management-plane destination not listed above | **DENY** | NetworkPolicy: DENY; mesh: DENY | none | `@ZT-55 @BDD-ZT-055` |
 
 Both layers hold every permitted row: the network layer admits a pod by its labels, the mesh layer
 by its identity, so a pod that carries a row's labels under another service account passes the

@@ -17,6 +17,10 @@ version, issuer and registration URLs, registrar audience ceiling, and the publi
 ConfigMap. The credential Secret has OpenBao token, access-token HMAC, registration HMAC and
 registrar-secret keys; the three HMAC/client secrets must be at least 32 bytes. Values carry names
 only. The mounted Secret volume can rotate the OpenBao token; keys are not exported from transit.
+With `openbao.auth.method: kubernetes` and `openbao.auth.role` the Connector holds no OpenBao token:
+it logs in with a projected service-account token for `openbao.auth.audience` and logs in again
+before each OpenBao token expires, and the Secret's OpenBao token key is not mounted
+([Secrets: Kubernetes auth](../../../docs/secrets.md#kubernetes-auth)).
 Public IF-03 JWKs and scope mapping JSON use the format read by `services/connector/vpconfig.go`.
 The fixture verifier's private key belongs to the caller, not this ConfigMap or chart.
 

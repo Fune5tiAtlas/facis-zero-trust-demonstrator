@@ -89,6 +89,13 @@ func TestParseServe(t *testing.T) {
 		{name: "no database", env: required(map[string]string{"CONNECTOR_DATABASE_URL": ""}), wantErr: "--database-url"},
 		{name: "no OpenBao", env: required(map[string]string{"CONNECTOR_OPENBAO_URL": ""}), wantErr: "--openbao-url"},
 		{name: "no OpenBao token file", env: required(map[string]string{"CONNECTOR_OPENBAO_TOKEN_FILE": ""}), wantErr: "--openbao-token-file"},
+		{name: "Kubernetes auth instead of the token file", env: required(map[string]string{"CONNECTOR_OPENBAO_TOKEN_FILE": "", "CONNECTOR_OPENBAO_AUTH_ROLE": "ztd-connector"}),
+			check: func(t *testing.T, c config) {
+				if c.openBaoAuthRole != "ztd-connector" || c.openBaoAuthMount != "kubernetes" || c.openBaoJWTFile != "/var/run/secrets/openbao/token" {
+					t.Errorf("Kubernetes auth: %+v", c)
+				}
+			}},
+		{name: "token file and Kubernetes auth together", env: required(map[string]string{"CONNECTOR_OPENBAO_AUTH_ROLE": "ztd-connector"}), wantErr: "exactly one"},
 		{name: "no issuer", env: required(map[string]string{"CONNECTOR_ISSUER": ""}), wantErr: "--issuer"},
 		{name: "no signing key", env: required(map[string]string{"CONNECTOR_SIGNING_KEY": ""}), wantErr: "--signing-key"},
 		{name: "no key version", env: required(map[string]string{"CONNECTOR_SIGNING_KEY_VERSION": ""}), wantErr: "--signing-key-version"},

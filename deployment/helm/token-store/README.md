@@ -39,6 +39,12 @@ both dependencies answered.
 | `database.existingSecret` | none, required | Secret in the release namespace holding the connection URL under `database.secretKey` |
 | `database.secretKey` | `url` | Key of the connection URL in that Secret |
 | `openbao.address` | `http://ztd-openbao.ztd-mgmt.svc:8200` | The key-value store's base URL, `http(s)://host[:port]` without a path; the chart refuses anything else |
+| `openbao.auth.method` | `token` | `token`: runtime mode reads `runtime.openbaoTokenKey` from the credentials Secret. `kubernetes`: log in with a projected service-account token ([Secrets: Kubernetes auth](../../../docs/secrets.md#kubernetes-auth)) |
+| `runtime.credentialKeys` | `[]` | With `kubernetes`: the only keys of the credentials Secret mounted (the routes' files); the OpenBao token key is refused, so a static token left in the Secret never reaches the pod |
+| `openbao.auth.role` | `""` | The OpenBao role; required with `kubernetes` |
+| `openbao.auth.mount` | `kubernetes` | The auth mount |
+| `openbao.auth.audience` | `openbao` | The projected token's audience, bound by the role |
+| `openbao.auth.expirationSeconds` | `600` | The projected token's lifetime; the kubelet rotates it, 600 at least |
 | `replicas` | `1` | Pods of the service |
 | `server.readinessTimeoutSeconds` | `2` | Budget of one `/readyz` evaluation; the probe's `timeoutSeconds` is this plus one |
 | `server.drainDelaySeconds` | `5` | On SIGTERM, how long `/readyz` answers 503 while the listeners stay open, so routing leaves the pod before it stops answering |
