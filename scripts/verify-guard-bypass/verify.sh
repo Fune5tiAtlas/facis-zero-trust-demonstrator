@@ -64,7 +64,7 @@ resource_pod=$(k get pod -l app.kubernetes.io/name=ztd-protected-resource -o jso
 stats() {
   k exec "$resource_pod" -c istio-proxy -- pilot-agent request GET stats 2>/dev/null \
     | grep -E '^(http\.inbound_0\.0\.0\.0_8080;\.rbac\.|listener\.0\.0\.0\.0_15006\.(no_filter_chain_match|downstream_cx_total|server_ssl_socket_factory)|listener\.0\.0\.0\.0_15006\.ssl\.connection_error)' \
-    | sort > "$1"
+    | sort > "$1" || true
 }
 snapshot "$out/before"
 k get authorizationpolicy ztd-protected-resource-caller -o json | jq '{spec}' > "$out/before/resource-authorizationpolicy.json"
@@ -90,7 +90,11 @@ fi
 sleep 3
 k logs deploy/ztd-guard -c guard --since=10m 2>/dev/null | grep -F "$guarded_id" > "$out/guarded-guard-record.jsonl" || true
 k logs "$resource_pod" -c ztd-protected-resource --since=10m 2>/dev/null | grep -F "$guarded_id" > "$out/guarded-resource-record.jsonl" || true
-if [ -s "$out/guarded-resource-record.jsonl" ]; then pass "guarded: the resource recorded request $guarded_id, the id the guard assigned"; else fail "guarded: the resource has no record of $guarded_id"; fi
+if [ -s "$out/guarded-resource-record.jsonl" ]; then
+  pass "guarded: the resource recorded request $guarded_id with the client of the token store's substituted token ($(jq -r .client_id "$out/guarded-resource-record.jsonl" | head -1)), which only the guard obtains"
+else
+  fail "guarded: the resource has no record of $guarded_id"
+fi
 
 echo "== 2. Direct calls to the resource, skipping the guard"
 probe_job() { # probe_job NAME MESHED
@@ -132,16 +136,28 @@ attempt() { # attempt JOB OUT: POST /demo to the resource's Service from the pro
 started() { [ "$(k get pod -l "job-name=$1" -o jsonpath='{.items[0].status.containerStatuses[?(@.name=="probe")].started}' 2>/dev/null)" = true ]; }
 wait_started() { for _ in $(seq 1 90); do started "$1" && return 0; sleep 2; done; return 1; }
 probes_from=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+unmeshed_refused=no
 for probe in meshed unmeshed; do
   name="ztd-bypass-$probe-$run"
   meshed=no; [ "$probe" = meshed ] && meshed=yes
-  if ! probe_job "$name" "$meshed" 2> "$out/$probe-apply.txt"; then
-    fail "$probe probe: not created: $(tr '\n' ' ' < "$out/$probe-apply.txt")"; continue
-  fi
+  # A cold admission cache answers ADM-PROVIDER-DOWN once; the same request is sent again.
+  created=no
+  for _ in 1 2 3 4 5; do
+    if probe_job "$name" "$meshed" 2> "$out/$probe-apply.txt"; then created=yes; break; fi
+    grep -q ADM-PROVIDER-DOWN "$out/$probe-apply.txt" || break
+    sleep 10
+  done
+  if [ "$created" = no ]; then fail "$probe probe: not created: $(tr '\n' ' ' < "$out/$probe-apply.txt")"; continue; fi
   if ! wait_started "$name"; then
     k get events --field-selector "involvedObject.kind=Job,involvedObject.name=$name" -o json | jq '[.items[] | {reason, message}]' > "$out/$probe-events.json"
-    k get pod -l "job-name=$name" -o json | jq '[.items[] | .status]' > "$out/$probe-pod-status.json"
-    fail "$probe probe: never started (events in $probe-events.json)"; continue
+    # A pod without a sidecar cannot exist in a plane namespace: the zone's admission rule refuses it.
+    if [ "$probe" = unmeshed ] && grep -q "proxy-takes-spire-socket" "$out/$probe-events.json"; then
+      pass "unmeshed direct caller: refused at admission (ValidatingAdmissionPolicy proxy-takes-spire-socket), so no workload without the mesh can call the resource from $ns"
+      unmeshed_refused=yes
+    else
+      fail "$probe probe: never started (events in $probe-events.json)"
+    fi
+    continue
   fi
   stats "$out/$probe-stats-before.txt"
   attempt "$name" "$out/$probe-response.txt"
@@ -150,16 +166,16 @@ for probe in meshed unmeshed; do
   k logs "$resource_pod" -c istio-proxy --since=2m 2>/dev/null | grep -E '"response_code":"?403|rbac_access_denied|filter_chain_not_found|NR ' > "$out/$probe-receiver-log.txt" || true
   diff "$out/$probe-stats-before.txt" "$out/$probe-stats-after.txt" > "$out/$probe-stats-diff.txt" || true
 done
-b=$(grep 'http.inbound_0.0.0.0_8080;.rbac.denied' "$out/meshed-stats-before.txt" 2>/dev/null | awk -F': ' '{print $2}')
-a=$(grep 'http.inbound_0.0.0.0_8080;.rbac.denied' "$out/meshed-stats-after.txt" 2>/dev/null | awk -F': ' '{print $2}')
+b=$(grep 'http.inbound_0.0.0.0_8080;.rbac.denied' "$out/meshed-stats-before.txt" 2>/dev/null | awk -F': ' '{print $2}' || true)
+a=$(grep 'http.inbound_0.0.0.0_8080;.rbac.denied' "$out/meshed-stats-after.txt" 2>/dev/null | awk -F': ' '{print $2}' || true)
 if grep -q 'RBAC: access denied' "$out/meshed-response.txt" 2>/dev/null && [ -n "$a" ] && [ "$a" -gt "${b:-0}" ]; then
   pass "meshed direct call (Participant identity): 403 RBAC: access denied; the resource's sidecar counted it (rbac.denied $b -> $a)"
 else
   fail "meshed direct call: response $(head -c 200 "$out/meshed-response.txt" 2>/dev/null | tr '\r\n' '  '), rbac.denied ${b:-?} -> ${a:-?}"
 fi
-if [ -f "$out/unmeshed-stats-diff.txt" ]; then
-  nb=$(grep 'no_filter_chain_match' "$out/unmeshed-stats-before.txt" | awk -F': ' '{print $2}')
-  na=$(grep 'no_filter_chain_match' "$out/unmeshed-stats-after.txt" | awk -F': ' '{print $2}')
+if [ "$unmeshed_refused" = no ] && [ -f "$out/unmeshed-stats-diff.txt" ]; then
+  nb=$(grep 'no_filter_chain_match' "$out/unmeshed-stats-before.txt" | awk -F': ' '{print $2}' || true)
+  na=$(grep 'no_filter_chain_match' "$out/unmeshed-stats-after.txt" | awk -F': ' '{print $2}' || true)
   if ! grep -q '^HTTP/1.1 200' "$out/unmeshed-response.txt" && [ -s "$out/unmeshed-stats-diff.txt" ]; then
     pass "unmeshed direct call (plaintext): no answer from the resource; its sidecar's inbound listener counted the refused connection (no_filter_chain_match ${nb:-?} -> ${na:-?}; diff in unmeshed-stats-diff.txt)"
   else
