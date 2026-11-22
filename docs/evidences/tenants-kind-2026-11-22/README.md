@@ -1,4 +1,4 @@
-# Two-tenant isolation on kind (FZTD-82)
+# Two-tenant isolation on kind (ZT-53)
 
 `scripts/verify-tenants/verify.sh --kind`, 2026-11-22, verdict PASS (28 checks, `verdict.txt`).
 A throwaway single-node kind cluster with Cilium 1.20.2 (Hubble on), the kind zone installed by

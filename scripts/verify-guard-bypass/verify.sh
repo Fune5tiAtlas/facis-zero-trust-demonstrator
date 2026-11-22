@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Guard bypass proof on a live zone (FZTD-103). First a guarded call that succeeds end to end (the
+# Guard bypass proof on a live zone. First a guarded call that succeeds end to end (the
 # zone's public Participant route: Participant -> guard -> resource), then direct calls to the
 # protected resource that skip the guard, each refused by the resource's own sidecar, with the
 # receiver-side evidence read from that sidecar (its RBAC and listener counters before and after,

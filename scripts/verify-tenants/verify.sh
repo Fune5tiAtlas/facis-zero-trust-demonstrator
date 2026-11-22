@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Two-tenant isolation (FZTD-82), both directions, each denial read from the layer that enforces it.
+# Two-tenant isolation (ZT-53), both directions, each denial read from the layer that enforces it.
 #
 #   scripts/verify-tenants/verify.sh --kind [--out DIR]
 #       a throwaway kind cluster: Cilium, the kind zone with tenant-a and tenant-b as planes.extra

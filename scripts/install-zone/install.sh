@@ -36,7 +36,7 @@
 #                                controls (deployment/helm/guard), from the zone file's guard.values,
 #                                with zone.trustDomain; the namespace is the umbrella's or the slice's
 #     ztd-tenant-<name>  <name>  one per tenant when the zone file sets tenants.install (participant
-#                                role, FZTD-82): the tenant's identities, credentials, policy ownership
+#                                role, ZT-53): the tenant's identities, credentials, policy ownership
 #                                and data service (deployment/helm/tenant), from tenants.values, each
 #                                tenant's Participant opened to the other tenants' guards; the
 #                                namespace is the zone file's planes.extra entry of that name
@@ -236,7 +236,7 @@ load_steps() {
   if [ "$ROLE" = participant ] && [ "$(zone_fact guard.install)" = true ]; then
     STEPS+=("ztd-guard|=guard.namespace|guard|guard|trustDomain=zone.trustDomain|")
   fi
-  # One release per tenant (FZTD-82), into the tenant's namespace, which the zone file declares as a
+  # One release per tenant (ZT-53), into the tenant's namespace, which the zone file declares as a
   # data-plane entry of planes.extra; "tenant:<name>" as values file is the zone file's tenants.values
   # for that tenant (merged_values).
   if [ "$ROLE" = participant ] && [ "$(zone_fact tenants.install)" = true ]; then

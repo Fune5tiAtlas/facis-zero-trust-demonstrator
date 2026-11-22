@@ -106,7 +106,7 @@ disjoint from `config.scope_tenants`). Insufficient scope is its own rule, `m3-s
 `trustDomain` from `zone.trustDomain`; `install.sh render ztd-guard` renders it the same way, and
 the policy checks (`scripts/ci/render-zones.sh`) render it for every shipped zone file that sets it.
 
-## Tenant mode (FZTD-82)
+## Tenant mode (ZT-53)
 
 `tenant.enabled` makes the release a tenant's guard, installed into the tenant's namespace (one
 release per tenant, with `deployment/helm/tenant` there). The guard's `target_tenant` is the release

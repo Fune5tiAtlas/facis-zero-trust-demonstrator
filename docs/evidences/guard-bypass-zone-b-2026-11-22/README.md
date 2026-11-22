@@ -1,4 +1,4 @@
-# Guard bypass proof on zone B (FZTD-103)
+# Guard bypass proof on zone B
 
 Records of `scripts/verify-guard-bypass/verify.sh` against zone B (context `zerotrust-b`,
 namespace `ztd-m3-b`), 2026-11-22 00:50-00:52 UTC, verdict PASS. The zone's releases were not

@@ -1,4 +1,4 @@
-# Second guard instance on zone A from values only (FZTD-108)
+# Second guard instance on zone A from values only
 
 2026-11-22 00:57-01:00 UTC, context `zerotrust-a`. The guard chart was installed as release
 `ztd-guard` (revision 1) into the data plane `ztd-data` by

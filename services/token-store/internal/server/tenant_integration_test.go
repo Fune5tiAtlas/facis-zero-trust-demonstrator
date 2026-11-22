@@ -33,7 +33,7 @@ import (
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/token-store/internal/acquire/acquiretest"
 )
 
-// tenantCase is one row of the two-tenant record (FZTD-82).
+// tenantCase is one row of the two-tenant record (ZT-53).
 type tenantCase struct {
 	Case          string      `json:"case"`
 	Status        int         `json:"status"`

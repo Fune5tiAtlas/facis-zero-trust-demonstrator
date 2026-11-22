@@ -136,7 +136,7 @@
               },
               "tenant": {
                 "type": "boolean",
-                "description": "a tenant's namespace (FZTD-82): a meshed data-plane entry that admission.enforceDataPlane labels for admission control like planes.data.namespace; default false"
+                "description": "a tenant's namespace (ZT-53): a meshed data-plane entry that admission.enforceDataPlane labels for admission control like planes.data.namespace; default false"
               }
             }
           }

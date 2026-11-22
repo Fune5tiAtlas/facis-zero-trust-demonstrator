@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The tenant releases of a zone file as the zone installer renders them (FZTD-82): zone A's file
+# The tenant releases of a zone file as the zone installer renders them (ZT-53): zone A's file
 # with tenants.guard.install turned on renders, per tenant, ztd-tenant-<name> and ztd-guard-<name> in
 # tenant mode - target tenant <name>, its policy's only member that tenant's Participant, the other
 # tenant's Participant admitted to the guard alone - and with it off renders no tenant guard.

@@ -42,7 +42,7 @@ planes:
     - { name: spire-system, plane: management, mesh: false }
     - { name: istio-system, plane: management, mesh: false }
     - { name: ztd-otel-node, plane: management, mesh: false }   # the node collectors: host network, no sidecar
-    # The two tenants (FZTD-82): data-plane namespaces under the baseline (default deny, DNS,
+    # The two tenants (ZT-53): data-plane namespaces under the baseline (default deny, DNS,
     # intra-namespace lane, mesh label, SPIFFE identities), their content from tenants below.
     - { name: tenant-a, plane: data, tenant: true }
     - { name: tenant-b, plane: data, tenant: true }
@@ -128,7 +128,7 @@ telemetryExport:
     transport: contingency-public-transit
   revocationStatusListUrl: ""
 
-# The second instance of the namespace guard (FZTD-108), from these values only: release ztd-guard
+# The second instance of the namespace guard, from these values only: release ztd-guard
 # into the data plane, installed by scripts/install-zone/install.sh. Images are the runtime builds of
 # the M3 close-out branch (linux/amd64) and zone B's Envoy runtime, by digest. The connector, token
 # store and resource it would call are not in this zone yet: until they are, every request is refused
@@ -153,7 +153,7 @@ guard:
     networkPolicy: {istiod: {enabled: true}}
     podAnnotations: {sidecar.istio.io/nativeSidecar: "true"}
 
-# The two tenants (FZTD-82), each a planes.extra namespace above with its own release of
+# The two tenants (ZT-53), each a planes.extra namespace above with its own release of
 # deployment/helm/tenant (ztd-tenant-<name>): its identities, credentials, policy ownership and data
 # service, installed by scripts/install-zone/install.sh. The data service runs zone B's Envoy
 # runtime by digest. Each tenant's guard and policy evaluator (ztd-guard-<name>, deployment/helm/guard

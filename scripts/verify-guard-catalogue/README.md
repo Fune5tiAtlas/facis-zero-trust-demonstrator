@@ -1,6 +1,6 @@
 # verify-guard-catalogue
 
-The guard's negative-case catalogue (FZTD-107) through the deployed chain on a throwaway kind
+The guard's negative-case catalogue through the deployed chain on a throwaway kind
 cluster: the guard chart (Envoy with the ext_authz hook, the policy evaluator) installed from values
 only, the protected resource, the token store and the connector from the working tree, PostgreSQL
 and OpenBao from the pinned images, every pod meshed by Istio 1.31.1 with STRICT mTLS and the zone's

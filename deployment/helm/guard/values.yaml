@@ -24,7 +24,7 @@ config:
   allowed_callers: []
   scope_tenants: {"report:read": report-read, "report:summary": report-summary}
 policyRevision: m3-v1
-# Tenant mode (FZTD-82): the release is a tenant's guard, installed in the tenant's namespace. Its
+# Tenant mode (ZT-53): the release is a tenant's guard, installed in the tenant's namespace. Its
 # route belongs to that namespace (config target_tenant, from where it is installed, never from a
 # request) and its policy evaluator admits only that namespace's Participant as a member
 # (tenant_members). callerNamespaces are other tenants whose Participant may reach this guard over

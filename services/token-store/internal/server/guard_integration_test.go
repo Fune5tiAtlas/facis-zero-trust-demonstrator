@@ -273,7 +273,7 @@ func TestGuardWithRealConnectorStorePolicyPostgresAndOpenBao(t *testing.T) {
 		})
 	}
 
-	// The negative-case catalogue (FZTD-107): each case's status, registry code and its own decision
+	// The negative-case catalogue: each case's status, registry code and its own decision
 	// event, found by the correlation id the caller received; for a case policy decided, the
 	// policy's event under the same id.
 	v2 := compileV2(t)

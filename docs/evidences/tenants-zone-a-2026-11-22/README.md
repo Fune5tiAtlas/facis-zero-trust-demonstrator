@@ -1,4 +1,4 @@
-# Two tenants on zone A, isolation proven both ways (FZTD-82)
+# Two tenants on zone A, isolation proven both ways (ZT-53)
 
 2026-11-22, context `zerotrust-a`. Verdict of the proof: PASS (21 checks, `proof/verdict.txt`).
 

@@ -12,6 +12,6 @@ plus the feed bridge deployed from `deployment/helm/feed-bridge` in the mesh:
   by the bridge's sidecar, `403 RBAC: access denied` (`responses/feed-participant.http`,
   `responses/feed-intruder-ingest.http`).
 
-Latency (FZTD-104), same conditions as before (100 sequential samples each, curl in the participant's
+Latency, same conditions as before (100 sequential samples each, curl in the participant's
 pod, single-node kind on a shared laptop): guarded presentation-required denial p50 5.8 ms, p99
 22.3 ms; mesh round trip without the guard p50 1.9 ms, p99 7.2 ms.

@@ -1,4 +1,4 @@
-# Guard negative-case catalogue on kind (FZTD-107, FZTD-106, FZTD-104)
+# Guard negative-case catalogue on kind
 
 Records of `scripts/verify-guard-catalogue/verify.sh` (verdict PASS, every check), run 2026-11-22
 00:20-00:43 UTC on a disposable kind cluster on an arm64 Mac (Docker Desktop), commit `a69861b0`
@@ -24,7 +24,7 @@ caller SPIFFE id, token subject, resource, rule `m3-report-summary`, bundle `kin
 the policy evaluator's event under the same id, the resource's request record
 (`requestId`/`correlationId`), and both events on the feed bridge's streams.
 
-## Latency (FZTD-104)
+## Latency
 
 Conditions: 100 sequential samples each, measured by curl inside the participant's pod (through
 its sidecar), kind single node on a shared, loaded laptop (other clusters running). Guarded: a
