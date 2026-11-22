@@ -80,7 +80,7 @@ func TestRuntimeDependencyHangsDeny(t *testing.T) {
 			out := runtime.Evaluate(ctx, req)
 			want, status := "TOK-STORE-UNAVAILABLE", 503
 			if dependency == "jwks" {
-				want, status = "TOK-SERVER-ERROR", 500
+				want, status = "TOK-KEYSET-UNAVAILABLE", 503
 			}
 			if out.Allowed || out.Status != status || out.ReasonCode != want {
 				t.Fatalf("hanging %s: status=%d reason=%s", dependency, out.Status, out.ReasonCode)

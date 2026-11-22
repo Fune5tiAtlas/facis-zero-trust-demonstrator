@@ -51,7 +51,7 @@ status.
 |---|---|---|---|---|
 | `ADM` | admission | 403 | `BLOCKED-ADMISSION` | — |
 | `MESH` | identity and mesh policy | none (connection refused) | `BLOCKED-IDENTITY` | — |
-| `TOK` | token authentication | 401 | `DENIED-TOKEN` | `TOK-SCOPE` 403, `TOK-REQUEST-INVALID` 400, `TOK-REGISTRATION-REJECTED` 400, `TOK-NO-UPSTREAM` 409, `TOK-CALLER-DENIED` 403, `TOK-ROUTE-DENIED` 403, `TOK-STORE-UNAVAILABLE` 503, `TOK-SERVER-ERROR` 500 |
+| `TOK` | token authentication | 401 | `DENIED-TOKEN` | `TOK-SCOPE` 403, `TOK-REQUEST-INVALID` 400, `TOK-REGISTRATION-REJECTED` 400, `TOK-NO-UPSTREAM` 409, `TOK-CALLER-DENIED` 403, `TOK-ROUTE-DENIED` 403, `TOK-STORE-UNAVAILABLE` 503, `TOK-SERVER-ERROR` 500, `TOK-KEYSET-UNAVAILABLE` 503 |
 | `POL` | policy decision | 403 | `DENIED-POLICY` | `POL-PRESENTATION-REQUIRED` 401, `POL-PDP-UNAVAILABLE` 503, `POL-BUNDLE-STALE` 503 |
 | `CRED` | credential verification | 403 | `DENIED-CREDENTIAL` | `CRED-REQUEST-INVALID` 400, `CRED-REQUEST-UNKNOWN` 404 |
 | `CHAN` | attested channel | none (handshake refused) | `CHANNEL-DOWN` | — |
@@ -142,7 +142,8 @@ and an invalid proof) remain distinguishable in the audit trail. The test
 | `scope_insufficient` | `TOK-SCOPE` | 403 |
 | `request_invalid` | `TOK-REQUEST-INVALID` | 400 |
 | `replay_unavailable` | `TOK-STORE-UNAVAILABLE` | 503 |
-| `key_set_unavailable`, `unclassified` | `TOK-SERVER-ERROR` | 500 |
+| `key_set_unavailable` | `TOK-KEYSET-UNAVAILABLE` | 503 |
+| `unclassified` | `TOK-SERVER-ERROR` | 500 |
 
 The M3 policy evaluator answers a denial with one rule per reason, so insufficient scope and a
 policy rule are distinct: `m3-default-deny` (the request's shape, caller, audience or proof),
