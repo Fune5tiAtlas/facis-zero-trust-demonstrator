@@ -16,3 +16,5 @@ Probe from one `source-ip-check` pod (Python `urllib`, 5 s):
 | zone A | an address outside the cluster, 443 | connected | refused (`URLError`, timed out) |
 | zone B | the next `source-ip-check` pod, 8080 | connected | connected |
 | zone B | an address outside the cluster, 443 | connected | refused (`URLError`, timed out) |
+
+The applied policies, before and after on both zones: [network-check-policies-2026-11-21.md](network-check-policies-2026-11-21.md).
