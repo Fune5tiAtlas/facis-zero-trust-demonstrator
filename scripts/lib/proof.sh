@@ -64,6 +64,9 @@ proof_guard_context() {
     *) refuse "neither a kind cluster (kind-<name>) nor a participant cluster (zerotrust-a, zerotrust-b); $PROOF_OTHER_CONTEXT";;
   esac
 }
+# abspath <path>: the absolute path, normalised, the path itself not required to exist; portable
+# where GNU `realpath -m` is not (macOS).
+abspath() { python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$1"; }
 # proof_run_dir <tool>: sets EVID to the run directory: ZTD_EVIDENCE_DIR as given, or the base of a
 # new one per run under ${XDG_STATE_HOME:-$HOME/.local/state}/ztd/<tool>/<context> (proof_run_dir_new
 # names it by the run's UTC start). A run never writes into the repository, so a directory inside it is
@@ -71,7 +74,7 @@ proof_guard_context() {
 # git ignores (the BDD harness's bundles/) is outside the tracked tree and accepted.
 proof_run_dir() {
   if [ -n "${ZTD_EVIDENCE_DIR:-}" ]; then EVID=$ZTD_EVIDENCE_DIR
-  else EVID=$(realpath -m -- "${XDG_STATE_HOME:-$HOME/.local/state}")/ztd/$1/$CONTEXT; fi
+  else EVID=$(abspath "${XDG_STATE_HOME:-$HOME/.local/state}")/ztd/$1/$CONTEXT; fi
   case $EVID/ in
     "$REPO"/*) [ "${PROOF_ALLOW_IGNORED_RUN_DIR:-0}" = 1 ] && [ "$EVID" != "$REPO" ] && git -C "$REPO" check-ignore -q -- "$EVID" && return 0
       echo "$PROOF_NAME: refusing run directory '$EVID': it is inside the repository, which holds no record of a run" >&2; exit 125;;
@@ -81,7 +84,7 @@ proof_run_dir() {
 # existing one is never reused.
 proof_run_dir_new() {
   if [ -z "${ZTD_EVIDENCE_DIR:-}" ]; then
-    base=$EVID/$(date -u -d "$started" +%Y%m%dT%H%M%SZ); EVID=$base; n=1
+    base=$EVID/${started//[-:]/}; EVID=$base; n=1
     while [ -e "$EVID" ]; do EVID=$base-$n; n=$((n+1)); done
   fi
 }

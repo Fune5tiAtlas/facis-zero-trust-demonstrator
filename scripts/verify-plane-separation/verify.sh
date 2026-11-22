@@ -229,8 +229,8 @@ case $# in
   *) usage >&2; echo "$PROOF_NAME: takes no arguments" >&2; exit 125;;
 esac
 proof_refuse_ci
-[ -n "${ZONE_VALUES:-}" ] && ZONE_VALUES=$(realpath -m -- "$ZONE_VALUES")
-[ -n "${ZTD_EVIDENCE_DIR:-}" ] && ZTD_EVIDENCE_DIR=$(realpath -m -- "$ZTD_EVIDENCE_DIR")
+[ -n "${ZONE_VALUES:-}" ] && ZONE_VALUES=$(abspath "$ZONE_VALUES")
+[ -n "${ZTD_EVIDENCE_DIR:-}" ] && ZTD_EVIDENCE_DIR=$(abspath "$ZTD_EVIDENCE_DIR")
 cd "$HERE" || exit 125
 REPO=$(git rev-parse --show-toplevel)
 CHART=$REPO/deployment/helm/ztd

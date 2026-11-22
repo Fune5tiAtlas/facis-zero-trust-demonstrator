@@ -111,8 +111,8 @@ esac
 proof_refuse_ci
 # A relative zone file or run directory is the caller's, read before the script moves into its own
 # directory.
-[ -n "${ZONE_VALUES:-}" ] && ZONE_VALUES=$(realpath -m -- "$ZONE_VALUES")
-[ -n "${ZTD_EVIDENCE_DIR:-}" ] && ZTD_EVIDENCE_DIR=$(realpath -m -- "$ZTD_EVIDENCE_DIR")
+[ -n "${ZONE_VALUES:-}" ] && ZONE_VALUES=$(abspath "$ZONE_VALUES")
+[ -n "${ZTD_EVIDENCE_DIR:-}" ] && ZTD_EVIDENCE_DIR=$(abspath "$ZTD_EVIDENCE_DIR")
 cd "$(dirname "$0")" || exit 125
 REPO=$(git rev-parse --show-toplevel)
 CHART=$REPO/deployment/helm/ztd
@@ -665,7 +665,7 @@ out=$(k -n "$DATA" exec unregistered-svid -c svid -- /opt/spire/bin/spire-agent 
 [ $rc -ne 0 ]; check $? "an unlabelled pod's fetch over the mounted socket returns no SVID" "$(grep -v 'command terminated' <<<"$out" | tail -1)"
 say '' "The \`caller\` above runs on one node, the scheduler's choice. Every node with a SPIRE agent, the \`caller\`'s included, is asked too, by the per-node stand-ins of section 5 (\`svid-on-<node>\`, the \`caller\`'s \`svid\` container alone, service account \`stand-in\`, the identity label). They are unmeshed and in \`$SPIRE_NS\` because that is the plane namespace without the injection label on every cluster the proof accepts, so they need no proxy and no opt-out; the fetch is a read over a Unix socket to the agent of the pod's own node and needs no lane. The meshed stand-ins of every node are shown in section 10. They are placed one per node by their own node affinity, so the SVID is shown on every node a workload can run on:" ''
 SVID_NODE_ID="spiffe://$TD/ns/$SPIRE_NS/sa/stand-in"
-svid_n=$(wc -w <<<"$SVID_NODES"); svid_ready=0; svid_state=""
+svid_n=$(($(wc -w <<<"$SVID_NODES"))); svid_ready=0; svid_state=""
 for NODE in $SVID_NODES; do
   s=$(k -n "$SPIRE_NS" get pod "svid-on-$NODE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
   [ "$s" = True ] && svid_ready=$((svid_ready+1))
@@ -1000,7 +1000,7 @@ check $? "the peer's proxy records the requests as mutual_tls"
 say '' '### mesh-on-every-node' ''
 say "One meshed stand-in per node with a SPIRE agent (\`mesh-on-<node>\`, section 5), one check per node: placed on its node, Ready (so its native-sidecar proxy is ready), and the workload certificate its proxy holds is issued by the SPIRE CA with that stand-in's own SPIFFE ID (\`spiffe://$TD/ns/$DATA/sa/mesh-on-<node>\`, one service account per node), read with \`istioctl proxy-config secret\` and checked as in \`mesh-identity-issued-by-spire\` (section 8)." ''
 MESH_NODES=$SVID_NODES
-mesh_n=$(wc -w <<<"$MESH_NODES")
+mesh_n=$(($(wc -w <<<"$MESH_NODES")))
 # mesh_id <node>: the SPIFFE ID of the meshed stand-in of <node>, from its own service account
 mesh_id() { echo "spiffe://$TD/ns/$DATA/sa/mesh-on-$1"; }
 for NODE in $MESH_NODES; do
@@ -1050,7 +1050,7 @@ id_pdp=${standin_id[$DATA/pdp-adapter]}; id_plain=${standin_id[$DATA/data-plain]
 check $? "lane pdp-adapter-to-tsa: the lane's caller pdp-adapter, the refused caller data-plain and the impostor pdp-impostor (the lane's pod labels) carry three different SPIFFE IDs" "pdp-adapter ${id_pdp:-no ID}, data-plain ${id_plain:-no ID}, pdp-impostor ${id_imp:-no ID}"
 mgmt_ids=("${standin_id[$MGMT/tsa-policy-engine]}" "${standin_id[$MGMT/openbao-standin]}" "${standin_id[$MGMT/mgmt-caller]}")
 n_set=0; for i in "${mgmt_ids[@]}"; do [ -n "$i" ] && n_set=$((n_set+1)); done
-[ "$n_set" = 3 ] && [ "$(printf '%s\n' "${mgmt_ids[@]}" | sort -u | wc -l)" = 3 ]
+[ "$n_set" = 3 ] && [ "$(printf '%s\n' "${mgmt_ids[@]}" | sort -u | wc -l)" -eq 3 ]
 check $? "the management-plane stand-ins tsa-policy-engine, openbao-standin and mgmt-caller carry three different SPIFFE IDs" "tsa-policy-engine ${mgmt_ids[0]:-no ID}, openbao-standin ${mgmt_ids[1]:-no ID}, mgmt-caller ${mgmt_ids[2]:-no ID}"
 rm -f "$work"/standin-*
 
@@ -1671,7 +1671,7 @@ CRDS_KEEP=$(k get crd -o json | jq -r '[.items[] | select(.spec.group == "spire.
 if [ "$keep_zone" != 1 ]; then
   section "$([ "$KEEP" = 1 ] && [ "$failures" -gt 0 ] && [ -n "${before:-}" ] && echo 17 || echo 16). Teardown: uninstall in reverse order"
   say "Not kept: $not_kept." ''
-  [ "$(wc -w <<<"$CRDS_KEEP")" = 3 ] && ! grep -q '=keep' <<<"$CRDS_KEEP"
+  [ "$(wc -w <<<"$CRDS_KEEP")" -eq 3 ] && ! grep -q '=keep' <<<"$CRDS_KEEP"
   check $? "the three SPIRE CRDs carry no helm.sh/resource-policy keep, so the uninstall of spire-crds removes them through Helm alone (the installer deletes CRDs itself only for istio-base)" "$CRDS_KEEP"
   "$INSTALL" uninstall >"$work/uninstall.log" 2>&1; rc=$?
   # The first release removed (a participant zone's telemetry releases come later in its order, and
