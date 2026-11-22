@@ -1,6 +1,6 @@
 # Guard negative-case catalogue on kind (FZTD-107, FZTD-106, FZTD-104)
 
-Records of `scripts/verify-guard-catalogue/verify.sh` (verdict PASS, 24 checks), run 2026-11-22
+Records of `scripts/verify-guard-catalogue/verify.sh` (verdict PASS, every check), run 2026-11-22
 00:20-00:43 UTC on a disposable kind cluster on an arm64 Mac (Docker Desktop), commit `a69861b0`
 with the script as committed in `56f8c000` (the run's tree was dirty only by that script and this
 folder). What ran, what it proves and what it does not: `scripts/verify-guard-catalogue/README.md`.
