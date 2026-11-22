@@ -123,3 +123,28 @@ telemetryExport:
     port: 4317
     transport: contingency-public-transit
   revocationStatusListUrl: ""
+
+# The second instance of the namespace guard (FZTD-108), from these values only: release ztd-guard
+# into the data plane, installed by scripts/install-zone/install.sh. Images are the runtime builds of
+# the M3 close-out branch (linux/amd64) and zone B's Envoy runtime, by digest. The connector, token
+# store and resource it would call are not in this zone yet: until they are, every request is refused
+# (fail closed), which is what this instance shows.
+guard:
+  install: true
+  namespace: ztd-data
+  values:
+    zone: a
+    images:
+      guard: {repository: ghcr.io/fune5tiatlas/facis-zero-trust-demonstrator/guard, digest: "sha256:97f74a9cd2bc3bd1da0449dfbe2169fea66c1de87e030a0c9d67aa92140c488f"}
+      policy: {repository: ghcr.io/fune5tiatlas/facis-zero-trust-demonstrator/policy-evaluator, digest: "sha256:5958fd74fdef9467f413422cf81a21a677ccd4296aaf9c293564a997b186ed28"}
+      envoy: {repository: ghcr.io/fune5tiatlas/facis-zero-trust-demonstrator/envoy-runtime, digest: "sha256:0cd70a69172bb144ba70ed7cad61f3f5172f971c5e130ef48116e60e5fa815c1"}
+    config:
+      issuer: https://connector.zone-a.invalid
+      jwks_url: http://ztd-connector:8080/.well-known/jwks.json
+      inbound_audience: https://guard.facis.invalid
+      upstream_audience: https://resource.facis.invalid
+      published_base_url: http://ztd-guard:8080
+      peer_zone: zone-a
+    policyRevision: zone-a-m3-v1
+    networkPolicy: {istiod: {enabled: true}}
+    podAnnotations: {sidecar.istio.io/nativeSidecar: "true"}
