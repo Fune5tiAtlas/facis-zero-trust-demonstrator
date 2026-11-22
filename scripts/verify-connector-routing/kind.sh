@@ -135,7 +135,8 @@ docker run --rm --network kind -v "$W/ca.crt:/ca.crt:ro" docker.io/curlimages/cu
 grep -q ztd-participant "$W/after"; rcheck $? "after the adoption the entry still serves the outside client ($(head -c 60 "$W/after"))"
 [ "$(k -n "$M3" get svc ztd-edge -o jsonpath='{.metadata.uid}')" = "$UID_BEFORE" ] && [ "$(k -n "$M3" get svc ztd-edge -o jsonpath='{.spec.ports[0].nodePort}')" = "$NODEPORT" ]
 rcheck $? "the entry's Service kept its UID and node port (a load balancer keeps its address)"
-sleep 2
+# Envoy writes its access log in batches (about every 10 s): read again for up to 60 s.
+for _ in $(seq 12); do k -n "$M3" logs deploy/ztd-edge -c envoy 2>/dev/null | grep -q '"ztd-rt-entry-after"' && break; sleep 5; done
 k -n "$M3" logs deploy/ztd-edge -c envoy 2>/dev/null | grep -q '"ztd-rt-entry-after"'; rcheck $? "the entry's access log records the outside call"
 spec=$(k -n "$M3" get deploy ztd-edge -o json | jq -c '.spec.template.spec | {args: .containers[0].args, mounts: [.containers[0].volumeMounts[].mountPath], volumes: [.volumes[].name]}')
 note "  Adopted pod spec: $spec"
