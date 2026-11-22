@@ -520,7 +520,8 @@ jobs:
 
       # No address in a policy (ZT-25): every NetworkPolicy, CiliumNetworkPolicy and
       # AuthorizationPolicy the umbrella, zone-policy and ztd-openbao render with each shipped zone
-      # file and the CI zone file is free of ipBlock, CIDR rules and address literals; the test
+      # file and the CI zone file, and every other chart renders with its ci values and variants, is
+      # free of ipBlock, CIDR rules and address literals; the test
       # plants an address and the derogation branch (the API lane without Cilium) and expects both
       # reported. zone-policy and ztd-openbao render through the installer, which fetches nothing for
       # them but the upstream openbao dependency (from its Chart.lock, checked by digest).

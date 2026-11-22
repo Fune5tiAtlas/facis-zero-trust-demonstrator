@@ -10,7 +10,10 @@
 # CiliumClusterwideNetworkPolicy or AuthorizationPolicy document carries a key ipBlock, ipBlocks,
 # notIpBlocks, remoteIpBlocks, notRemoteIpBlocks, toCIDR, toCIDRSet, fromCIDR or fromCIDRSet, or a
 # string holding an IPv4 or IPv6 address (with or without a port: 10.0.0.1:8080, [::1]:8080) or a
-# CIDR, naming the zone file, the release, the policy and what it found.
+# CIDR, naming the zone file, the release, the policy and what it found. The component charts the
+# zone render does not cover (every chart under deployment/helm/ with a ci/values.yaml, except ztd,
+# zone-policy and ztd-openbao) are scanned too, rendered with ci/values.yaml and with each
+# ci/<variant>-values.yaml layered on it, as scripts/ci/check-charts.sh renders them.
 #
 # The non-Cilium branch of the umbrella's API lane (networkPolicy.kubeApi without Cilium, an
 # ipBlock; the derogation path of a zone whose CNI is not Cilium) stays in the template: this check
@@ -147,8 +150,28 @@ for zone in "${zones[@]}"; do
     failures=$((failures + 1))
   fi
 done
+# The component charts (only in the default run: zone files given name zones only).
+if [ $# -eq 0 ]; then
+  for chart in "$root"/deployment/helm/*/; do
+    chart=${chart%/}; name=$(basename "$chart")
+    case $name in ztd|zone-policy|ztd-openbao) continue;; esac
+    [ -f "$chart/ci/values.yaml" ] || continue
+    for variant in "" "$chart"/ci/*-values.yaml; do
+      [ -z "$variant" ] || [ -f "$variant" ] || continue
+      label=${chart#"$root"/}${variant:+ (ci/$(basename "$variant"))}
+      file=$work/chart-$name-$(basename "${variant:-values.yaml}")
+      if ! helm template "$name" "$chart" -f "$chart/ci/values.yaml" ${variant:+-f "$variant"} >"$file" 2>"$file.err"; then
+        echo "FAIL $label: render failed: $(head -1 "$file.err")"
+        failures=$((failures + 1)); continue
+      fi
+      out=$(scan "$label" "$file"); rc=$?
+      grep '^FAIL' <<<"$out"
+      if [ $rc -eq 0 ]; then echo "$label: $(tail -1 <<<"$out"), no address"; else failures=$((failures + 1)); fi
+    done
+  done
+fi
 if [ "$failures" -gt 0 ]; then
-  echo "$failures zone file(s) render a policy that names an address" >&2
+  echo "$failures zone file(s) or chart rendering(s) render a policy that names an address" >&2
   exit 1
 fi
-echo "no policy of any zone names an address"
+echo "no policy of any zone or component chart names an address"
