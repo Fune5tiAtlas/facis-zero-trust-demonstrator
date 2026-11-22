@@ -21,7 +21,7 @@ func testConfig(endpoint string) Config {
 }
 
 func TestNewRejectsInvalidConfiguration(t *testing.T) {
-	for _, change := range []func(*Config){func(c *Config) { c.PublishedBaseURL = "https://resource.example/path" }, func(c *Config) { c.StoreURL = "http://user:password@store" }, func(c *Config) { c.PolicyURL = "ftp://policy" }, func(c *Config) { c.Issuer = "" }, func(c *Config) { c.InboundAudience = "" }, func(c *Config) { c.UpstreamAudience = "" }, func(c *Config) { c.UpstreamAudience = c.InboundAudience }, func(c *Config) { c.InboundAudience = " " }, func(c *Config) { c.UpstreamAudience = "bad audience" }, func(c *Config) { c.InboundAudience = "guard\u00a0audience" }, func(c *Config) { c.UpstreamAudience = "resource\u2003audience" }, func(c *Config) { c.JWKSURL = "bad" }, func(c *Config) { c.AllowedCallers = []string{"invalid"} }, func(c *Config) { c.ScopeTenants["report:summary"] = "read" }} {
+	for _, change := range []func(*Config){func(c *Config) { c.PublishedBaseURL = "https://resource.example/path" }, func(c *Config) { c.StoreURL = "http://user:password@store" }, func(c *Config) { c.PolicyURL = "ftp://policy" }, func(c *Config) { c.Issuer = "" }, func(c *Config) { c.InboundAudience = "" }, func(c *Config) { c.UpstreamAudience = "" }, func(c *Config) { c.UpstreamAudience = c.InboundAudience }, func(c *Config) { c.InboundAudience = " " }, func(c *Config) { c.UpstreamAudience = "bad audience" }, func(c *Config) { c.InboundAudience = "guard\u00a0audience" }, func(c *Config) { c.UpstreamAudience = "resource\u2003audience" }, func(c *Config) { c.JWKSURL = "bad" }, func(c *Config) { c.AllowedCallers = []string{"invalid"} }, func(c *Config) { c.ScopeTenants["report:summary"] = "read" }, func(c *Config) { c.TargetTenant = "Tenant A" }} {
 		c := testConfig("http://127.0.0.1:1")
 		change(&c)
 		if _, err := New(c, nil); err == nil {
@@ -197,5 +197,39 @@ func TestRefusalsUseTheRegistry(t *testing.T) {
 		if _, ok := registry[code]; !ok {
 			t.Fatalf("verifier code %s unmapped", code)
 		}
+	}
+}
+
+type tenantEvents struct{ ps []hook.EventPayload }
+
+func (s *tenantEvents) Emit(_ string, p hook.EventPayload) { s.ps = append(s.ps, p) }
+
+// TestTargetTenantComesFromConfiguration: the policy input and every decision event name the
+// configured tenant, whatever the request says.
+func TestTargetTenantComesFromConfiguration(t *testing.T) {
+	var got []string
+	policy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var input hook.Input
+		_ = json.NewDecoder(r.Body).Decode(&input)
+		got = append(got, input.TargetTenant)
+		_ = json.NewEncoder(w).Encode(map[string]any{"allow": false, "reason_code": hook.ReasonRuleDeny, "rule_id": "m3-tenant-membership", "bundle_revision": "test", "deny_body": map[string]string{"error": "access_denied"}})
+	}))
+	defer policy.Close()
+	c := testConfig(policy.URL)
+	c.TargetTenant = "tenant-a"
+	events := &tenantEvents{}
+	r, err := New(c, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.verifier = verifiedUnitIdentity{}
+	headers := http.Header{"X-Forwarded-Client-Cert": []string{"URI=spiffe://test/ns/demo/sa/participant"}, "X-Facis-Tenant": []string{"tenant-b"}, "Tenant": []string{"tenant-b"}}
+	denied := r.Evaluate(t.Context(), hook.Request{Method: "POST", Path: "/demo", Host: "resource.example", Headers: headers})
+	refused := r.Evaluate(t.Context(), hook.Request{Method: "POST", Path: "/demo", Host: "resource.example", Headers: http.Header{}})
+	if denied.Allowed || denied.RuleID != "m3-tenant-membership" || refused.ReasonCode != "MESH-PAIR-DENIED" || !slices.Equal(got, []string{"tenant-a"}) {
+		t.Fatalf("policy saw %v; outcomes %+v %+v", got, denied, refused)
+	}
+	if len(events.ps) != 2 || events.ps[0].Tenant != "tenant-a" || events.ps[1].Tenant != "tenant-a" {
+		t.Fatalf("events do not carry the configured tenant: %+v", events.ps)
 	}
 }

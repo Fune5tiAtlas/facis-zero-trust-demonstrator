@@ -30,6 +30,9 @@ type Input struct {
 	Token         Token       `json:"token"`
 	// Tenant is serialised as null when there is none; the member is always present.
 	Tenant *string `json:"tenant"`
+	// TargetTenant is the tenant the guard's route belongs to, from the guard's configuration and
+	// never from the request; absent on a guard that serves no tenant.
+	TargetTenant string `json:"target_tenant,omitempty"`
 }
 
 // Source is the workload the request comes from.
