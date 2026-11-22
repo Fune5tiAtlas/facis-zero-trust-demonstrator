@@ -20,3 +20,15 @@ The connector, token store and resource the guard would call are not deployed in
 request with a token is refused (fail closed); a full positive path in zone A waits for those
 services. The probe pods, their service accounts and their one egress policy were removed after the
 run (none remain). Rollback of the instance: `helm uninstall ztd-guard -n ztd-data`.
+
+## Revision 2 (2026-11-22 01:29 UTC, after the review)
+
+`ztd-guard` upgraded to revision 2 from the zone file, the same command, with the reviewed builds
+(guard `sha256:a885b465…`, evaluator `sha256:5f77bbe8…`): a missing key set now answers 503
+`TOK-KEYSET-UNAVAILABLE` (it answered 500 before), a refusal after policy keeps its rule, and the
+evaluator writes v2 events in either engine. Checked again with a short-lived probe (removed): a
+signed-looking token with no key set reachable (no connector in zone A) is refused 503
+`TOK-KEYSET-UNAVAILABLE` (`revision-2/keyset.http`), no token 401 `TOK-MISSING`, both with their
+`guard-a` v2 events (`revision-2/guard-events.jsonl`). `revision-2/history-before.txt` is the
+release history before the upgrade. Rollback to revision 1: `helm rollback ztd-guard 1 -n ztd-data`;
+removal: `helm uninstall ztd-guard -n ztd-data`.

@@ -89,4 +89,5 @@ data:
 {{- if .Values.tenant.enabled }}{{- $_ := set $policy "tenant_members" (dict .Release.Namespace (list (first $callers))) }}{{- end }}
 {{- with .Values.policyRules.blockedClients }}{{- $_ := set $policy "blocked_clients" . }}{{- end }}
 {{- if .Values.policyRules.presentation.scopes }}{{- $_ := set $policy "presentation" (dict "scopes" .Values.policyRules.presentation.scopes "oid4vp_link" .Values.policyRules.presentation.oid4vpLink) }}{{- end }}
+{{- if .Values.tsa.evaluationURL }}{{- $_ := set $policy "tsa" (dict "evaluation_url" .Values.tsa.evaluationURL "timeout_ms" (int .Values.tsa.timeoutMS)) }}{{- end }}
   config.json: {{ toJson $policy | quote }}

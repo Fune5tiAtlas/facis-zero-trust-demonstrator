@@ -47,12 +47,13 @@ cleanup() {
   k delete job -l "ztd.facis.io/probe-run=$run" --wait=true --timeout=120s >/dev/null 2>&1 || true
   k wait --for=delete pod -l "ztd.facis.io/probe-run=$run" --timeout=120s >/dev/null 2>&1 || true
   if [ -z "$(k get job,pod -l "ztd.facis.io/probe-run=$run" -o name 2>/dev/null)" ]; then
-    echo "PASS  cleanup: no probe Job or Pod of run $run remains" | tee -a "$out/verdict.txt"
+    pass "cleanup: no probe Job or Pod of run $run remains"
   else
-    echo "FAIL  cleanup: probe objects of run $run remain" | tee -a "$out/verdict.txt"
+    fail "cleanup: probe objects of run $run remain"
   fi
 }
-trap cleanup EXIT
+# On an early exit the cleanup still runs and its failure is the exit status.
+trap 'cleanup; exit $(( failures > 0 ? failures : 1 ))' EXIT
 
 # The state the proof must leave as it found: every policy object and workload of the namespace.
 snapshot() {
@@ -176,10 +177,14 @@ fi
 if [ "$unmeshed_refused" = no ] && [ -f "$out/unmeshed-stats-diff.txt" ]; then
   nb=$(grep 'no_filter_chain_match' "$out/unmeshed-stats-before.txt" | awk -F': ' '{print $2}' || true)
   na=$(grep 'no_filter_chain_match' "$out/unmeshed-stats-after.txt" | awk -F': ' '{print $2}' || true)
-  if ! grep -q '^HTTP/1.1 200' "$out/unmeshed-response.txt" && [ -s "$out/unmeshed-stats-diff.txt" ]; then
-    pass "unmeshed direct call (plaintext): no answer from the resource; its sidecar's inbound listener counted the refused connection (no_filter_chain_match ${nb:-?} -> ${na:-?}; diff in unmeshed-stats-diff.txt)"
+  # The receiver must have counted the refusal: a plaintext connection to a STRICT inbound matches
+  # no filter chain, or fails its TLS handshake. A changed byte count alone is not a denial.
+  eb=$(grep 'ssl.connection_error' "$out/unmeshed-stats-before.txt" | awk -F': ' '{print $2}' || true)
+  ea=$(grep 'ssl.connection_error' "$out/unmeshed-stats-after.txt" | awk -F': ' '{print $2}' || true)
+  if ! grep -q '^HTTP/1.1 200' "$out/unmeshed-response.txt" && { [ "${na:-0}" -gt "${nb:-0}" ] || [ "${ea:-0}" -gt "${eb:-0}" ]; }; then
+    pass "unmeshed direct call (plaintext): no answer from the resource; its sidecar counted the refusal (no_filter_chain_match ${nb:-0} -> ${na:-0}, ssl.connection_error ${eb:-0} -> ${ea:-0})"
   else
-    fail "unmeshed direct call: $(head -c 200 "$out/unmeshed-response.txt" | tr '\r\n' '  '); receiver counters unchanged"
+    fail "unmeshed direct call: $(head -c 200 "$out/unmeshed-response.txt" | tr '\r\n' '  '); no receiver-side denial counter increased"
   fi
 fi
 k logs "$resource_pod" -c ztd-protected-resource --since-time="$probes_from" > "$out/resource-app-log-during-probes.txt" 2>/dev/null || true
@@ -190,7 +195,8 @@ else
 fi
 
 echo "== 3. The namespace as found"
-cleanup; trap - EXIT
+trap - EXIT
+cleanup
 snapshot "$out/after"
 if diff "$out/before/objects.json" "$out/after/objects.json" > "$out/objects.diff" && diff "$out/before/releases.json" "$out/after/releases.json" >> "$out/objects.diff"; then
   pass "no policy, workload, Service or release of $ns changed (resourceVersions equal)"

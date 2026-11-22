@@ -134,7 +134,7 @@ var registry = map[string]struct {
 	"scope_insufficient":   {"TOK-SCOPE", http.StatusForbidden},
 	"request_invalid":      {"TOK-REQUEST-INVALID", http.StatusBadRequest},
 	"replay_unavailable":   {hook.ReasonTokenStoreUnavailable, http.StatusServiceUnavailable},
-	"key_set_unavailable":  {"TOK-SERVER-ERROR", http.StatusInternalServerError},
+	"key_set_unavailable":  {"TOK-KEYSET-UNAVAILABLE", http.StatusServiceUnavailable},
 	"unclassified":         {"TOK-SERVER-ERROR", http.StatusInternalServerError},
 }
 

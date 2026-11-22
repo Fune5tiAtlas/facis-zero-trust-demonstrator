@@ -3,7 +3,7 @@
   "title": "ztd-openbao chart values",
   "type": "object",
   "additionalProperties": false,
-  "required": ["managementNamespace", "cilium", "mesh", "trustDomain", "openbao", "bootstrap", "external"],
+  "required": ["managementNamespace", "cilium", "mesh", "trustDomain", "openbao", "bootstrap", "kubernetesAuth", "external"],
   "properties": {
     "managementNamespace": {
       "$ref": "#/$defs/name",
@@ -60,6 +60,31 @@
       "required": ["image"],
       "properties": {
         "image": { "type": "string", "pattern": "@sha256:[0-9a-f]{64}$", "description": "The bootstrap Job's and the verification hook's image, pinned by digest." }
+      }
+    },
+    "kubernetesAuth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "roles"],
+      "description": "The Kubernetes auth method and its roles (docs/secrets.md#kubernetes-auth); needs openbao.server.authDelegator.enabled.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "roles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "namespace", "serviceAccount", "audience", "ttl", "policy"],
+            "properties": {
+              "name": { "$ref": "#/$defs/name", "description": "The role's and its policy's name." },
+              "namespace": { "$ref": "#/$defs/name", "description": "The only namespace the role admits." },
+              "serviceAccount": { "$ref": "#/$defs/name", "description": "The only ServiceAccount the role admits." },
+              "audience": { "type": "string", "pattern": "^[A-Za-z0-9._:/-]+$", "description": "The audience the projected token must carry." },
+              "ttl": { "type": "string", "pattern": "^[1-9][0-9]*[smh]$", "description": "token_ttl and token_max_ttl of the issued token." },
+              "policy": { "type": "string", "minLength": 1, "description": "The role's ACL policy (HCL), least privilege." }
+            }
+          }
+        }
       }
     },
     "external": {

@@ -34,6 +34,11 @@ the challenge); `TestGuardWithRealConnectorStorePolicyPostgresAndOpenBao` covers
 guard's own `MESH-PAIR-DENIED` on the token path with the real connector, store, PostgreSQL and
 OpenBao, and writes the same catalogue to `$GUARD_CATALOGUE_OUT/catalogue.json`.
 
+The feed bridge is then installed from its chart (`deployment/helm/feed-bridge`) in the mesh: the
+producer identity posts the guard's and the policy's lines to `/ingest`, the UI's identity reads
+both feed versions and finds the allowed request's events, and the Participant's identity (feed) and
+another identity (`/ingest`) are refused by the bridge's sidecar (`403 RBAC: access denied`).
+
 The run also records the latency of the presentation-required decision through the guard (the
 whole chain, denied at policy, 401) against a mesh round trip from the same pod to another service
 without the guard (the connector's key set, 200), `GUARD_CATALOGUE_SAMPLES` (100) of each,

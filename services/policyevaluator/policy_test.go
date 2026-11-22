@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/contractpath"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hook"
 )
@@ -191,6 +195,49 @@ func TestTenantMembership(t *testing.T) {
 		c.TenantMembers = members
 		if _, err := New(c, nil); err == nil {
 			t.Fatalf("tenant_members %v accepted", members)
+		}
+	}
+}
+
+// checkV2Event validates one written event line against the IF-01 v2 schema and returns it.
+func checkV2Event(t *testing.T, line []byte) hook.Event {
+	t.Helper()
+	c := jsonschema.NewCompiler()
+	sch, err := c.Compile(filepath.Join(contractpath.Contracts(t), "if01-event.v2.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	line = bytes.TrimSpace(line)
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(line))
+	if err != nil {
+		t.Fatalf("event %q: %v", line, err)
+	}
+	if err := sch.Validate(doc); err != nil {
+		t.Fatalf("event does not validate against IF-01 v2: %v\n%s", err, line)
+	}
+	var e hook.Event
+	_ = json.Unmarshal(line, &e)
+	return e
+}
+
+// TestBuiltInRulesWriteValidV2Events: the Go rule source's events through the real v2 sink.
+func TestBuiltInRulesWriteValidV2Events(t *testing.T) {
+	var events bytes.Buffer
+	p, err := New(testConfig(), hook.NewLogSinkV2(&events, "policy-b", "go-test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []string{"report:summary", "other:read"} {
+		events.Reset()
+		in := validInput()
+		in.Token.Scope = scope
+		body, _ := json.Marshal(in)
+		req := httptest.NewRequest(http.MethodPost, "/decision", bytes.NewReader(body))
+		req.Header.Set("X-Forwarded-Client-Cert", "URI="+guardID)
+		p.ServeHTTP(httptest.NewRecorder(), req)
+		e := checkV2Event(t, events.Bytes())
+		if e.Payload.BundleRevision != "test-1" || e.Payload.RuleID == "" || e.CorrelationID != "corr-1" {
+			t.Fatalf("event %+v", e)
 		}
 	}
 }

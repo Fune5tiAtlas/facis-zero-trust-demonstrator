@@ -51,7 +51,7 @@ status.
 |---|---|---|---|---|
 | `ADM` | admission | 403 | `BLOCKED-ADMISSION` | — |
 | `MESH` | identity and mesh policy | none (connection refused) | `BLOCKED-IDENTITY` | — |
-| `TOK` | token authentication | 401 | `DENIED-TOKEN` | `TOK-SCOPE` 403, `TOK-REQUEST-INVALID` 400, `TOK-REGISTRATION-REJECTED` 400, `TOK-NO-UPSTREAM` 409, `TOK-CALLER-DENIED` 403, `TOK-ROUTE-DENIED` 403, `TOK-STORE-UNAVAILABLE` 503, `TOK-SERVER-ERROR` 500 |
+| `TOK` | token authentication | 401 | `DENIED-TOKEN` | `TOK-SCOPE` 403, `TOK-REQUEST-INVALID` 400, `TOK-REGISTRATION-REJECTED` 400, `TOK-NO-UPSTREAM` 409, `TOK-CALLER-DENIED` 403, `TOK-ROUTE-DENIED` 403, `TOK-STORE-UNAVAILABLE` 503, `TOK-SERVER-ERROR` 500, `TOK-KEYSET-UNAVAILABLE` 503 |
 | `POL` | policy decision | 403 | `DENIED-POLICY` | `POL-PRESENTATION-REQUIRED` 401, `POL-PDP-UNAVAILABLE` 503, `POL-BUNDLE-STALE` 503 |
 | `CRED` | credential verification | 403 | `DENIED-CREDENTIAL` | `CRED-REQUEST-INVALID` 400, `CRED-REQUEST-UNKNOWN` 404 |
 | `CHAN` | attested channel | none (handshake refused) | `CHANNEL-DOWN` | — |
@@ -142,7 +142,8 @@ and an invalid proof) remain distinguishable in the audit trail. The test
 | `scope_insufficient` | `TOK-SCOPE` | 403 |
 | `request_invalid` | `TOK-REQUEST-INVALID` | 400 |
 | `replay_unavailable` | `TOK-STORE-UNAVAILABLE` | 503 |
-| `key_set_unavailable`, `unclassified` | `TOK-SERVER-ERROR` | 500 |
+| `key_set_unavailable` | `TOK-KEYSET-UNAVAILABLE` | 503 |
+| `unclassified` | `TOK-SERVER-ERROR` | 500 |
 
 The M3 policy evaluator answers a denial with one rule per reason, so insufficient scope and a
 policy rule are distinct: `m3-default-deny` (the request's shape, caller, audience or proof),
@@ -159,25 +160,32 @@ without a target tenant, or a target tenant the evaluator does not serve is deni
 `m3-tenant-membership`. The guard's and the evaluator's v2 events then carry `tenant`, the target
 tenant of the decision.
 
-### Feed bridge: ownership and sequencing
+### Feed bridge: versions, ownership and sequencing
 
-The bridge is `cmd/feed-bridge` (`internal/feedbridge`); it serves `/snapshot` and `/events` of
-the [feed API](contracts/if01-feed.v1.openapi.yaml) from the IF-01 log lines it reads. Ownership:
+The bridge is `cmd/feed-bridge` (`internal/feedbridge`), deployed in the mesh by
+`deployment/helm/feed-bridge`. The client selects the feed version by path:
+[v1](contracts/if01-feed.v1.openapi.yaml) (`/snapshot`, `/events`) stays valid against the v1
+schemas — a v2 event is served in its v1 form and a source v1 does not name (the policy evaluators)
+is left out — and [v2](contracts/if01-feed.v2.openapi.yaml) (`/v2/snapshot`, `/v2/events`,
+[snapshot v2](contracts/if01-snapshot.v2.schema.json)) serves every line as written and every v2
+source. Producers post their lines to `/ingest`. Ownership:
 
 - **Sequence numbers are the producers'.** Each process names its own run (`guard-<start time>`,
   `policy-<start time>`) and numbers its events from 0, so `(run_id, seq)` is unique and the
   bridge never renumbers. A repeated seq is an at-least-once duplicate and is dropped; a seq that
   skips ahead is recorded as a `gap` event (`VIS-STALE`) under the first missing number.
-- **The buffer is the bridge's**: the last 1000 events per run; a reader asking for older ones
-  receives a `gap` event first, then reads the snapshot again.
+- **Memory is the bridge's**, and bounded: the last 1000 events per run (a reader asking for older
+  ones receives a `gap` event first), every run together within a byte budget (`--budget-bytes`,
+  32 MiB by default) by dropping the least recently updated runs, which are answered `410`; a line
+  over 64 KiB is drained and counted, never buffered.
 - **Retention is the collectors'**, not the bridge's: the same lines travel the IF-04 path of the
   observability release (node collector → zone gateway → entry) into one file per zone on the
   entry's volume, rotated by size with nine backups (`deployment/helm/values/otel-entry.yaml`,
   `logExport`); `scripts/verify-observability` proves the export (`logs-exported`,
   `if01-fields-kept`). The bridge keeps nothing on disk.
-- **Not built here**: the bridge's deployment and its mesh identity towards the UI; it runs as a
-  binary fed with the components' log streams (`kubectl logs`); reading the exported files would
-  need an OTLP-JSON reader, which is not written.
+- **Access is the mesh's**: the bridge authenticates nobody itself. Its chart sets STRICT mTLS and an
+  AuthorizationPolicy that admits only the UI's identity to the feed and only the listed producers
+  to `/ingest`; outside the mesh it binds to the loopback.
 
 ## IF-02 — connector authorization surface
 

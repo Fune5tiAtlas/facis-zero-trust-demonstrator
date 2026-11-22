@@ -198,7 +198,11 @@ func (g *Guard) refuse(id string, r Refusal, detail string, seen EventPayload) O
 	if len(detail) > 512 {
 		detail = detail[:512]
 	}
-	seen.State, seen.ReasonCode, seen.RuleID, seen.Detail = "denied", r.ReasonCode, r.RuleID, detail
+	// A refusal after policy (a substitution the store refused) keeps the rule that allowed it.
+	seen.State, seen.ReasonCode, seen.Detail = "denied", r.ReasonCode, detail
+	if r.RuleID != "" {
+		seen.RuleID = r.RuleID
+	}
 	g.emit(id, seen)
 	return Outcome{
 		Allowed: false, CorrelationID: id, Status: StatusFor(r.ReasonCode), ReasonCode: r.ReasonCode, RuleID: r.RuleID,

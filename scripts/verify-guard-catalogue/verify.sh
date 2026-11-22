@@ -62,7 +62,6 @@ work="$(mktemp -d)"
 export KUBECONFIG="$work/kubeconfig"
 cluster_owned=false
 registry_owned=false
-bridge_pid=""
 
 failures=0
 pass() { echo "PASS  $*" | tee -a "$out/verdict.txt"; }
@@ -70,7 +69,6 @@ fail() { echo "FAIL  $*" | tee -a "$out/verdict.txt"; failures=$((failures + 1))
 step() { echo; echo "== $*"; }
 # shellcheck disable=SC2329 # invoked by the EXIT trap
 cleanup() {
-  if [ -n "$bridge_pid" ]; then kill "$bridge_pid" >/dev/null 2>&1 || true; fi
   if [ -n "${KEEP:-}" ]; then echo "kept: cluster $cluster, KUBECONFIG=$KUBECONFIG"; return; fi
   if [ "$cluster_owned" = true ]; then kind delete cluster --name "$cluster" >/dev/null 2>&1 || true; fi
   if [ "$registry_owned" = true ]; then docker rm -f "$reg_name" >/dev/null 2>&1 || true; fi
@@ -150,7 +148,7 @@ wait_until() {
 }
 
 step "Images from the working tree"
-for image in connector token-store guard policy-evaluator protected-resource; do
+for image in connector token-store guard policy-evaluator protected-resource feed-bridge; do
   docker build -q -f "deployment/docker/$image/Dockerfile" -t "$host_reg/$image:verify" . >/dev/null
 done
 
@@ -175,7 +173,7 @@ for node in $(kind get nodes --name "$cluster"); do
 done
 wait_until 20 curl -sf -o /dev/null "http://$host_reg/v2/"
 declare -A digest
-for image in connector token-store guard policy-evaluator protected-resource; do
+for image in connector token-store guard policy-evaluator protected-resource feed-bridge; do
   docker push -q "$host_reg/$image:verify" >/dev/null
   digest[$image]=$(docker image inspect --format '{{index .RepoDigests 0}}' "$host_reg/$image:verify" | sed 's/.*@//')
 done
@@ -242,6 +240,7 @@ EOF
 }
 {
   pod_spec operator operator operator
+  pod_spec ui ztd-ui ztd-ui
   pod_spec participant ztd-participant ztd-participant
   pod_spec intruder intruder ztd-participant
   cat <<EOF
@@ -296,7 +295,7 @@ for try in 1 2 3 4 5; do
   sleep 15
 done
 kubectl -n "$ns" rollout status deploy/postgres deploy/openbao --timeout=300s >/dev/null
-kubectl -n "$ns" wait --for=condition=Ready pod/operator pod/participant pod/intruder --timeout=300s >/dev/null
+kubectl -n "$ns" wait --for=condition=Ready pod/operator pod/participant pod/intruder pod/ui --timeout=300s >/dev/null
 pg "CREATE DATABASE connector" >/dev/null
 pg "CREATE DATABASE tokenstore" >/dev/null
 bao secrets enable transit </dev/null >/dev/null
@@ -646,20 +645,35 @@ step "The expired token"
 sleep $((lifespan + 31))
 guarded participant expired-token "$viewer_token" "$work/viewer.pem" >/dev/null; expect expired-token 401 TOK-EXPIRED "" no
 
-step "The feed bridge over the guard's and the policy's lines"
+step "The feed bridge in the mesh: the UI reads it, nobody else does"
 logs guard > "$out/guard-events.jsonl"
 kubectl -n "$ns" logs deploy/ztd-policy-evaluator -c policy-evaluator >> "$out/policy-events.jsonl" 2>/dev/null || true
-go build -o "$work/feed-bridge" ./cmd/feed-bridge
-cat "$out/guard-events.jsonl" "$out/policy-events.jsonl" | "$work/feed-bridge" --listen 127.0.0.1:18090 --contracts docs/contracts &
-bridge_pid=$!
-sleep 2
+if helm install ztd-feed-bridge deployment/helm/feed-bridge -n "$ns" --set "image.repository=$reg/feed-bridge" \
+  --set "image.digest=${digest[feed-bridge]}" --set trustDomain=$td --set "ui.namespace=$ns" --set ui.serviceAccount=ztd-ui \
+  --set-json "producers=[{\"namespace\":\"$ns\",\"serviceAccount\":\"operator\"}]" --wait --timeout 5m > "$out/feed-bridge-install.txt" 2>&1; then
+  pass "the feed bridge is ready from its chart: STRICT mTLS, the UI's identity alone admitted to the feed"
+else
+  fail "feed bridge install: $(tail -3 "$out/feed-bridge-install.txt")"
+fi
+bridge=http://ztd-feed-bridge:8090
+# The producers' lines, posted by the one identity the chart admits to /ingest.
+cat "$out/guard-events.jsonl" "$out/policy-events.jsonl" | kubectl -n "$ns" exec -i operator -c curl -- \
+  curl -sS -m 30 -X POST -H 'Content-Type: application/x-ndjson' --data-binary @- "$bridge/ingest" > "$out/feed-ingest.json" 2>&1 || true
+if [ "$(jq -r '.accepted // 0' "$out/feed-ingest.json" 2>/dev/null)" -gt 0 ]; then pass "ingest by the producer identity: $(cat "$out/feed-ingest.json")"; else fail "ingest: $(head -c 200 "$out/feed-ingest.json")"; fi
 found=0
 for run in $(jq -r .run_id "$out/guard-events.jsonl" "$out/policy-events.jsonl" 2>/dev/null | sort -u); do
-  curl -sf -m 5 "http://127.0.0.1:18090/snapshot?run_id=$run" > "$out/snapshot-$run.json" || true
-  curl -s -m 2 "http://127.0.0.1:18090/events?run_id=$run&from_seq=0" > "$out/feed-$run.txt" || true
-  if grep -q "\"correlation_id\":\"$allowed_id\"" "$out/feed-$run.txt"; then found=$((found + 1)); fi
+  for v in "" /v2; do
+    tag=v1; [ -n "$v" ] && tag=v2
+    kubectl -n "$ns" exec ui -c curl -- curl -sS -m 10 "$bridge$v/snapshot?run_id=$run" > "$out/snapshot-$tag-$run.json" 2>/dev/null || true
+    kubectl -n "$ns" exec ui -c curl -- curl -s -m 3 "$bridge$v/events?run_id=$run&from_seq=0" > "$out/feed-$tag-$run.txt" 2>/dev/null || true
+  done
+  if grep -q "\"correlation_id\":\"$allowed_id\"" "$out/feed-v2-$run.txt"; then found=$((found + 1)); fi
 done
-if [ "$found" = 2 ]; then pass "the feed bridge serves the allowed request's guard and policy events under $allowed_id"; else fail "the feed bridge serves $found of 2 events of $allowed_id"; fi
+if [ "$found" = 2 ]; then pass "the UI reads the allowed request's guard and policy events under $allowed_id from /v2/events"; else fail "the UI reads $found of 2 events of $allowed_id"; fi
+code=$(ccurl participant "$out/feed-participant.http" "$bridge/v2/snapshot?run_id=$run")
+if [ "$code" = 403 ] && grep -q 'RBAC: access denied' "$out/feed-participant.http"; then pass "another identity (the Participant's) is refused by the bridge's sidecar: 403 RBAC"; else fail "the Participant read the feed: $code"; fi
+code=$(ccurl intruder "$out/feed-intruder-ingest.http" -X POST --data-binary '{}' "$bridge/ingest")
+if [ "$code" = 403 ] && grep -q 'RBAC: access denied' "$out/feed-intruder-ingest.http"; then pass "an identity that is not a producer cannot ingest: 403 RBAC"; else fail "a non-producer ingested: $code"; fi
 
 {
   echo "{"

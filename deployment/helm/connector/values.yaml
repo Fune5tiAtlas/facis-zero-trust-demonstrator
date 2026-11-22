@@ -8,7 +8,7 @@ database:
 credentials:
   existingSecret: ""
   keys:
-    openbaoToken: openbao-token
+    openbaoToken: openbao-token   # not mounted with openbao.auth.method kubernetes
     tokenHMAC: token-hmac
     registrationHMAC: registration-hmac
     registrarSecret: registrar-secret
@@ -16,6 +16,19 @@ openbao:
   address: http://ztd-openbao.ztd-mgmt.svc:8200
   signingKey: ""
   signingKeyVersion: 1
+  # How the service authenticates to OpenBao. token (the default): the token file from the
+  # credentials Secret. kubernetes: OpenBao's Kubernetes auth method with a projected service-account
+  # token for `audience`, which the kubelet rotates (expirationSeconds, 600 at least) and the service
+  # rereads at every login; the service logs in again at half its OpenBao token's lease and before it
+  # expires, so no token is held in a Secret and none expires under the service
+  # (docs/secrets.md#kubernetes-auth). role names the OpenBao role, which must bind this namespace,
+  # the ServiceAccount and the audience.
+  auth:
+    method: token
+    role: ""
+    mount: kubernetes
+    audience: openbao
+    expirationSeconds: 600
 oauth:
   issuer: ""
   registrationEndpoint: ""
