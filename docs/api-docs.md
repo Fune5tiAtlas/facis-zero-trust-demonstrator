@@ -186,6 +186,11 @@ source. Producers post their lines to `/ingest`. Ownership:
 - **Access is the mesh's**: the bridge authenticates nobody itself. Its chart sets STRICT mTLS and an
   AuthorizationPolicy that admits only the UI's identity to the feed and only the listed producers
   to `/ingest`; outside the mesh it binds to the loopback.
+- **Known limit: no tenant authorisation.** The bridge selects runs by `run_id` alone: a reader it
+  admits sees every run, every tenant's decisions included (the v2 events carry `tenant`, but the
+  bridge filters nothing by it). It is a UI-only feed, reachable only through the mesh rule above or
+  the loopback; a per-tenant view would need the reader's tenant bound to its identity and a filter
+  on `tenant`, which is not built.
 
 ## IF-02 — connector authorization surface
 
