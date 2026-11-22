@@ -114,12 +114,14 @@ jobs:
       # stores, the shared packages, and the Participant and Protected Resource end to end through
       # the real connector, and the OID4VP conformance fixtures through the presentation policy.
       # Run twice, once per access-token form the connector issues.
-      # A skipped test means a missing dependency, so it fails the job.
+      # A skipped test means a missing dependency, so it fails the job. The OpenBao Kubernetes-auth
+      # test needs a cluster's service-account tokens and runs in its own kind proof
+      # (scripts/verify-openbao-kubernetes-auth), so it is left out here.
       - name: Run the token path with opaque and with signed access tokens
         run: |
           set -o pipefail
           for tokens in opaque jwt; do
-            CONNECTOR_TEST_TOKENS=$tokens go test -count=1 -race -timeout 20m -v \
+            CONNECTOR_TEST_TOKENS=$tokens go test -count=1 -race -timeout 20m -v -skip '^TestOpenBaoKubernetesAuth$' \
               ./services/token-store/... ./services/connector/... ./internal/... \
               ./services/participant/... ./services/protectedresource/... \
               ./cmd/participant/... ./cmd/protected-resource/... ./cmd/sdjwt-fixture/... \
