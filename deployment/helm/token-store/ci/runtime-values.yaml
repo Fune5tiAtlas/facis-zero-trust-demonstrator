@@ -5,6 +5,14 @@ runtime:
   credentialsSecret: ztd-token-store-credentials
   replayCallers:
     - spiffe://zone-b.trust.invalid/ns/example/sa/ztd-guard
+  callers:
+    - {namespace: example, name: ztd-guard}
+trustDomain: zone-b.trust.invalid
+database:
+  mesh:
+    selector: {app: postgres}
+    callers:
+      - {namespace: example, name: ztd-connector}
 networkPolicy:
   enabled: true
   schemaEgress:

@@ -31,6 +31,12 @@ the platform's injection/registration labels, STRICT mTLS and reachable Istiod/S
 supports per-pod image overrides; every injected image must satisfy the existing admission policy.
 The chart does not install the mesh, admission policy, database, OpenBao, TLS edge or namespace.
 
+The mesh callers are declared with `trustDomain` and `callers`, by namespace and service account:
+`callers.oauth` may use `/oauth2/*` and the key set (the Participant, the token store),
+`callers.keySet` only `GET /.well-known/jwks.json` (the guard, the protected resource, which only
+verify tokens). They render the AuthorizationPolicy `ztd-connector-callers` on port 8080; with both
+lists empty none renders and the mesh default deny refuses every caller.
+
 The chart is standalone because token-store and application-service are standalone. Do not upgrade
 the zone's umbrella to deploy it. `ci/values.yaml` contains render-only references and a zero digest;
 it is not a live deployment file. Update the deployment when public verification configuration

@@ -164,7 +164,13 @@ PeerAuthentication; inbound `SANITIZE_SET` for XFCC is mesh-wide, set by the pla
 plane namespace). That setting is a prerequisite, not proof
 of effective mesh configuration: verify the injected proxy and refuse forged XFCC
 before live use. `runtime.replayCallers` lists allowed SPIFFE service accounts;
-acquisition route callers remain in the acquisition configuration.
+acquisition route callers remain in the acquisition configuration. The mesh layer's rule for the
+same callers is `runtime.callers` with `trustDomain` (namespace and service account each): the
+AuthorizationPolicy `ztd-token-store-callers` admits them to `POST /internal/substitute` and
+`/internal/replay-check` on port 8080; none listed, none renders, and the mesh default deny refuses
+every caller. When the database runs in the mesh, `database.mesh.selector` (its pod labels) and
+`database.mesh.port` render `ztd-token-store-database`, admitting the store's two accounts and
+`database.mesh.callers` (the connector) to that port.
 
 Configure explicit ingress peers and egress rules for PostgreSQL, OpenBao,
 Connector and mesh control traffic, and for the verification service of every

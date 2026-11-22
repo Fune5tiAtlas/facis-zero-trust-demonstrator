@@ -261,6 +261,40 @@
       ],
       "additionalProperties": false
     },
+    "trustDomain": {
+      "type": "string"
+    },
+    "callers": {
+      "type": "object",
+      "properties": {
+        "oauth": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "namespace": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+              "name": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"}
+            },
+            "required": ["namespace", "name"],
+            "additionalProperties": false
+          }
+        },
+        "keySet": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "namespace": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+              "name": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"}
+            },
+            "required": ["namespace", "name"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["oauth", "keySet"],
+      "additionalProperties": false
+    },
     "podAnnotations": {
       "type": "object",
       "additionalProperties": {
@@ -343,6 +377,8 @@
     "replicas",
     "serviceAccount",
     "identity",
+    "trustDomain",
+    "callers",
     "podAnnotations",
     "nodeSelector",
     "server",

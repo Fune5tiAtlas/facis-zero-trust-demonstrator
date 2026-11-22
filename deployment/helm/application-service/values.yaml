@@ -16,6 +16,12 @@ serviceAccount:
   name: ""
 identity:
   spireManagedIdentity: false
+# The mesh callers admitted on `port` (AuthorizationPolicy <name>-callers), each by namespace and
+# service account in trustDomain (spiffe://<trustDomain>/ns/<namespace>/sa/<name>): e.g. the
+# Participant's entry, ztd-edge. Empty: no rule, and in a meshed namespace the default deny refuses
+# every caller.
+trustDomain: ""
+callers: []   # - {namespace: ztd-data, name: ztd-edge}
 podAnnotations: {}
 nodeSelector: {}
 # NAME: {name: existing-secret, key: secret-key}; values never contain credentials.

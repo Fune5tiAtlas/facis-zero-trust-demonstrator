@@ -14,6 +14,7 @@ route. It creates no cluster-scoped objects.
 | `resources` | Defaults fit the OSC shared namespace's LimitRange |
 | `networkPolicy.ingressFrom` | Peers allowed to reach `port`; empty denies all inbound traffic |
 | `networkPolicy.egress` | Egress rules besides DNS; empty denies all other egress |
+| `trustDomain`, `callers` | Mesh callers admitted on `port` by the AuthorizationPolicy `<name>-callers`, each `{namespace, name}` of a service account; empty renders none |
 | `ingress.enabled`, `ingress.host`, `ingress.className` | Route through the ingress controller |
 | `ingress.tlsSecret` | `kubernetes.io/tls` Secret for the host; empty serves the controller's default certificate |
 | `ingress.basicAuthSecret` | Secret with an htpasswd `auth` key; the route then requires HTTP basic authentication |

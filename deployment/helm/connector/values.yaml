@@ -56,6 +56,16 @@ serviceAccount:
   name: ztd-connector
 identity:
   spireManagedIdentity: true
+# The mesh callers the connector's sidecar admits (AuthorizationPolicy ztd-connector-callers), each by
+# namespace and service account in trustDomain (spiffe://<trustDomain>/ns/<namespace>/sa/<name>), on
+# the API port only. oauth: the OAuth2 endpoints (/oauth2/*: registration, challenge, token) and the
+# key set - the Participant and the token store. keySet: the key set (GET /.well-known/jwks.json)
+# alone - the guard and the protected resource, which only verify tokens (IF-02). With both empty no
+# policy renders and the mesh default deny refuses every caller.
+trustDomain: ""
+callers:
+  oauth: []    # - {namespace: ztd-data, name: ztd-participant}
+  keySet: []   # - {namespace: ztd-data, name: ztd-guard}
 podAnnotations: {}
 nodeSelector: {}
 server:
