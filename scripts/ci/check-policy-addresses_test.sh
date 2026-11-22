@@ -117,8 +117,8 @@ cat "$work/names-to.yaml" >>"$work/names.yaml"
 expect "a host name with a port and a SPIFFE principal pass" 0 'planted: 2 policies, no address' \
   --manifest planted "$work/names.yaml"
 
-# 4. The committed zone files and the CI zone file.
-expect "every committed zone file passes" 0 'no policy of any zone names an address'
+# 4. The committed zone files, the CI zone file and the component charts.
+expect "every committed zone file and component chart passes" 0 'no policy of any zone or component chart names an address'
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures case(s) failed"
