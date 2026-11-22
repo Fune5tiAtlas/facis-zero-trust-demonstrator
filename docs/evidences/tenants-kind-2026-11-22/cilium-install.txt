@@ -1,6 +1,6 @@
 Release "cilium" does not exist. Installing it now.
 NAME: cilium
-LAST DEPLOYED: Sun Nov 22 01:11:53 2026
+LAST DEPLOYED: Sun Nov 22 01:42:07 2026
 NAMESPACE: kube-system
 STATUS: deployed
 REVISION: 1

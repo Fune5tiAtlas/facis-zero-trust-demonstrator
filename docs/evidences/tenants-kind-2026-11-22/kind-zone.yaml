@@ -24,8 +24,10 @@ planes:
     mesh: false
   - name: tenant-a
     plane: data
+    tenant: true
   - name: tenant-b
     plane: data
+    tenant: true
 networkPolicy:
   kubeApi:
     enabled: true
@@ -58,8 +60,31 @@ tenants:
   - tenant-b
   values:
     data:
-      image:
+      image: &id001
         repository: docker.io/envoyproxy/envoy
         digest: sha256:3a76238cdf52c7a3e33951f44c02d694108e6481feffe6663bf9319f55ec1394
-    podAnnotations:
+    podAnnotations: &id002
       sidecar.istio.io/nativeSidecar: 'true'
+  guard:
+    install: true
+    values:
+      zone: a
+      images:
+        guard:
+          repository: kind-registry-tenants:5000/guard
+          digest: sha256:5652e8911ae09c2cc27ee421f03133adcff647adcc7f3b613b3e431216d49aca
+        policy:
+          repository: kind-registry-tenants:5000/policy-evaluator
+          digest: sha256:287bd4a3bc5d06ebe24941c3aaaf5c291a711310da40e71973de837830b9428a
+        envoy: *id001
+      config:
+        issuer: https://issuer.tenants.invalid
+        jwks_url: http://ztd-connector:8080/.well-known/jwks.json
+        inbound_audience: https://guard.facis.invalid
+        upstream_audience: https://resource.facis.invalid
+        peer_zone: zone-b
+      policyRevision: tenants-kind-1
+      networkPolicy:
+        istiod:
+          enabled: true
+      podAnnotations: *id002
