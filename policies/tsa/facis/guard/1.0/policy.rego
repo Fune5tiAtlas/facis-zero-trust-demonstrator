@@ -20,7 +20,7 @@ selected := "report:read" if {
 	"report:summary" in scopes
 }
 
-request_ok if {
+shape_ok if {
 	input.source.spiffe_id in data.config.participant_callers
 	input.request.method == "POST"
 	input.request.path == "/demo"
@@ -31,10 +31,41 @@ request_ok if {
 	input.token.sub != ""
 	input.token.client_id != ""
 	input.token.jkt != ""
+}
+
+# Tenant membership, as the built-in evaluator's m3-tenant-membership: the guard names the tenant of
+# its route (target_tenant), this policy's data names who belongs to it (data.config.tenant_members,
+# tenant -> member SPIFFE IDs). With a target tenant, or with members configured, the caller must be
+# a member of the target tenant; a policy that serves no tenant refuses a target tenant.
+target_tenant := object.get(input, "target_tenant", "")
+
+tenant_members := object.get(data.config, "tenant_members", {})
+
+member_ok if {
+	target_tenant == ""
+	count(tenant_members) == 0
+}
+
+member_ok if {
+	input.source.spiffe_id in object.get(tenant_members, target_tenant, [])
+}
+
+request_ok if {
+	shape_ok
+	member_ok
 	input.tenant == data.config.scope_tenants[selected]
 }
 
 decision := {
+	"allow": false,
+	"reason_code": "POL-RULE-DENY",
+	"rule_id": "m3-tenant-membership",
+	"bundle_revision": revision,
+	"deny_body": {"error": "access_denied"},
+} if {
+	shape_ok
+	not member_ok
+} else := {
 	"allow": false,
 	"reason_code": "POL-RULE-DENY",
 	"rule_id": "m3-scope-withdrawn",

@@ -61,9 +61,15 @@ failure with its `correlation_id` and the reason.
 
 `policies/tsa/facis/guard/1.0/`: `policy.rego` (package `facis.guard`, the TSA's naming convention
 `{group}/{name}/{version}`) and `data.json`, the zone's configuration (`data.config`: audience, host,
-Participant callers, scope tenants, withdrawn scopes). It is the rule set of the built-in evaluator in
-Rego: `m3-report-read` and `m3-report-summary` allow with the substitution obligation,
-`m3-scope-withdrawn` denies a scope the zone has withdrawn, `m3-default-deny` denies everything else.
+Participant callers, scope tenants, withdrawn scopes and, for a tenant's guard, `tenant_members`: each
+tenant's member SPIFFE IDs). It is the rule set of the built-in evaluator in Rego:
+`m3-report-read` and `m3-report-summary` allow with the substitution obligation,
+`m3-tenant-membership` denies a caller that is not a member of the tenant the guard's route names
+(`target_tenant`), and any target tenant where no members are configured, `m3-scope-withdrawn`
+denies a scope the zone has withdrawn, `m3-default-deny` denies everything else. `policy_test.rego`
+holds the membership cases of the built-in evaluator's tests, run in OPA at the TSA's version by the
+`TSA policy` workflow (`docker run … "$OPA_IMAGE" test policies/tsa/facis/guard/1.0`); it is not
+packed into a bundle.
 `decision` is the IF-05 decision; its `bundle_revision` is `data.bundle.revision`, which only the
 publisher writes.
 

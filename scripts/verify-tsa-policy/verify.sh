@@ -2,7 +2,8 @@
 # The TSA policy proof on a throwaway kind cluster: the real XFSC TSA policy service (pinned digest)
 # from deployment/helm/tsa-policy, and the guard chart's IF-05 evaluator deciding through it.
 #
-#   1. bundle v1 active: an entitled summary request is allowed (rule and revision v1);
+#   1. bundle v1 active: an entitled summary request is allowed (rule and revision v1), and denied by
+#      rule m3-tenant-membership when it names a target tenant the bundle has no members for;
 #   2. bundle v2 declared (a policy change withdrawing the summary scope): the same request is
 #      denied by rule m3-scope-withdrawn under v2, with no pod restarted;
 #   3. an unsigned bundle, one signed by another key, one whose policy was altered after signing and
@@ -186,13 +187,14 @@ pods() {
 before=$(pods)
 input='{"correlation_id":"CID","source":{"spiffe_id":"spiffe://zone-b.trust.invalid/ns/ztd-guard/sa/ztd-participant"},"request":{"method":"POST","path":"/demo","host":"ztd-guard:8080"},"token":{"present":true,"sub":"subject","client_id":"client","jkt":"thumbprint","scope":"report:summary","aud":"https://guard.facis.invalid","proof_valid":true},"tenant":"report-summary"}'
 : > "$out/decisions.jsonl"
-# decide: one IF-05 request as the guard sends it; the answer is recorded with its correlation id.
+# decide [input]: one IF-05 request as the guard sends it (default $input); the answer is recorded
+# with its correlation id.
 decide() {
-  local id d
+  local id d req=${1:-$input}
   id="proof-$(wc -l < "$out/decisions.jsonl" | tr -d ' ')"
   d=$(kubectl -n "$guard_ns" exec client -- curl -sS -m 5 -X POST http://ztd-policy-evaluator:8080/decision \
     -H 'Content-Type: application/json' -H "X-Forwarded-Client-Cert: URI=spiffe://zone-b.trust.invalid/ns/$guard_ns/sa/ztd-guard" \
-    -d "${input/CID/$id}")
+    -d "${req/CID/$id}")
   jq -nc --arg id "$id" --arg d "$d" '{id: $id, answer: ($d | fromjson? // $d)}' >> "$out/decisions.jsonl"
   echo "$d"
 }
@@ -210,9 +212,9 @@ until_revision() {
 # until_answered: a decision, asking again while the answer is the fail-closed 503 (a loaded node
 # can make one evaluation miss the bound; that is a refusal, never a wrong decision, and stays in
 # decisions.jsonl).
-until_answered() {
+until_answered() { # until_answered [input]
   for _ in $(seq 1 10); do
-    d=$(decide)
+    d=$(decide "${1:-}")
     jq -e '.bundle_revision' <<<"$d" >/dev/null 2>&1 && break
     sleep 3
   done
@@ -224,6 +226,10 @@ expect() { # expect <label> <decision> <allow> <rule> <revision>
 
 step "1. v1 allows"
 expect "v1 active, entitled summary request" "$(until_revision v1)" true m3-report-summary v1
+# Tenant membership in the bundle's Rego: the same request on a route a guard names for tenant-a,
+# while the bundle's data names no member of any tenant.
+expect "v1 active, the same request for target tenant tenant-a, of which the bundle names no member" \
+  "$(until_answered "$(jq -c '. + {target_tenant: "tenant-a"}' <<<"$input")")" false m3-tenant-membership v1
 
 step "2. v2 denies, without a restart"
 declare_bundle v2 v2

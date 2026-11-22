@@ -81,7 +81,8 @@ and ORCE for orchestration. Versions are pinned at deployment and recorded with 
 The TSA pod also runs two runtime images, not linked into project code: the NATS server the TSA's
 event client needs (`nats:2.15.3`, Apache-2.0, `NATS_IMAGE`) and a git daemon for its start-up clone
 (`deployment/docker/tsa-git`: Alpine 3.22 with `git-daemon` 2.49.1, GPL-2.0, run unmodified as a
-separate process). The TSA integration adds no Go or npm dependency: bundle verification reuses the
+separate process). CI runs the guard bundle's Rego tests in OPA at the TSA's version (`opa:0.58.0-static`,
+Apache-2.0, `OPA_IMAGE`), a test tool only. The TSA integration adds no Go or npm dependency: bundle verification reuses the
 first-party OCI client and cosign verifier, the rest is the standard library.
 
 ## Go dependencies

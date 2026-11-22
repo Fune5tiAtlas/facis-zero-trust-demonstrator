@@ -52,6 +52,13 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # The bundle's Rego in OPA at the TSA's version: the tenant-membership cases of the built-in
+      # evaluator's tests, against the same policy the proof below loads into the TSA.
+      - name: Test the guard policy's Rego
+        run: |
+          . scripts/tools/pins.env
+          docker run --rm -v "$PWD/policies/tsa/facis/guard/1.0:/p:ro" "$OPA_IMAGE" test -v /p
+
       - name: Install the pinned tools
         run: scripts/tools/install.sh "$RUNNER_TEMP/bin" kind kubectl cosign istio-crds
 
