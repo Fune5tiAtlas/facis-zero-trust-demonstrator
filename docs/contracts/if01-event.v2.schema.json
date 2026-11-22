@@ -126,6 +126,11 @@
               "const": "not_evaluated"
             }
           ]
+        },
+        "tenant": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$",
+          "description": "On a decision of a tenant guard or its policy: the target tenant of the decision, from the guard's route configuration. Absent elsewhere."
         }
       }
     }

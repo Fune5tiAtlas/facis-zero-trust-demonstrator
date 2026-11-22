@@ -14,6 +14,10 @@
 {{- if and .Values.config.allowed_callers (or (ne (len .Values.config.allowed_callers) 1) (not (has $participant .Values.config.allowed_callers))) -}}{{ fail "allowed_callers must match this namespace's configured Participant service account" }}{{- end -}}
 {{- if not (has (toString .Values.zone) (list "a" "b")) -}}{{ fail "zone must be a or b (the IF-01 event sources guard-<zone>, policy-<zone>)" }}{{- end -}}
 {{- with .Values.policyRules.presentation -}}{{- if and .scopes (not (regexMatch "^(https|openid4vp)://" (toString .oid4vpLink))) -}}{{ fail "policyRules.presentation needs an https or openid4vp oid4vpLink" }}{{- end -}}{{- end -}}
+{{- if and .Values.tenant.callerNamespaces (not .Values.tenant.enabled) -}}{{ fail "tenant.callerNamespaces needs tenant.enabled" }}{{- end -}}
+{{- range .Values.tenant.callerNamespaces -}}
+{{- if or (eq . $.Release.Namespace) (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" .)) -}}{{ fail (printf "tenant.callerNamespaces: %s is not another tenant's namespace" .) }}{{- end -}}
+{{- end -}}
 {{- $scopes := .Values.config.scope_tenants -}}
 {{- if or (not (get $scopes "report:read")) (not (get $scopes "report:summary")) (eq (get $scopes "report:read") (get $scopes "report:summary")) -}}{{ fail "full-report and summary scope tenants must be distinct" }}{{- end -}}
 {{- end -}}
@@ -21,6 +25,18 @@
 {{/* XFCC sanitization is mesh-wide (zone-policy, EnvoyFilter xfcc-sanitize-set):
 zone-policy refuses a per-pod proxy configuration in a plane namespace, and native sidecars start the
 proxy before the application without holdApplicationUntilProxyStarts. */}}
+{{/* The Participants the guard admits over the mesh: its own namespace's, then, in tenant mode, those
+of tenant.callerNamespaces. */}}
+{{- define "guard.callers" -}}
+{{- $out := list (printf "spiffe://%s/ns/%s/sa/%s" .Values.trustDomain .Release.Namespace .Values.participantServiceAccount) -}}
+{{- if .Values.tenant.enabled -}}
+{{- range .Values.tenant.callerNamespaces -}}
+{{- $out = append $out (printf "spiffe://%s/ns/%s/sa/%s" $.Values.trustDomain . $.Values.participantServiceAccount) -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $out -}}
+{{- end -}}
+
 {{- define "guard.annotations" -}}
 {{- if hasKey .Values.podAnnotations "proxy.istio.io/config" -}}{{ fail "podAnnotations: proxy.istio.io/config is refused at admission in a plane namespace (zone-policy); XFCC sanitization is mesh-wide, the EnvoyFilter xfcc-sanitize-set of zone-policy" }}{{- end -}}
 {{- toYaml .Values.podAnnotations -}}

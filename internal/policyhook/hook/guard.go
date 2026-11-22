@@ -80,6 +80,9 @@ type Config struct {
 	SourceID string
 	// Tenant is the configured upstream route partition, never copied from a request header.
 	Tenant *string
+	// TargetTenant is the tenant this guard's route belongs to (configuration only); policy decides
+	// whether the caller is a member of it.
+	TargetTenant string
 	// DecisionTimeout bounds one policy decision; zero means unbounded.
 	DecisionTimeout time.Duration
 }
@@ -130,6 +133,7 @@ func (g *Guard) Evaluate(ctx context.Context, req Request) Outcome {
 	in := Input{
 		CorrelationID: id,
 		Tenant:        g.cfg.Tenant,
+		TargetTenant:  g.cfg.TargetTenant,
 		Source:        Source{SPIFFEID: source},
 		Request:       RequestInfo{Method: method, Path: path, Host: req.Host},
 		Token:         g.auth.Authenticate(req.Headers.Get("Authorization"), req.Headers.Get("DPoP")),
@@ -145,7 +149,7 @@ func (g *Guard) Evaluate(ctx context.Context, req Request) Outcome {
 		err = dec.Validate()
 	}
 	// The v2 decision fields: who asked for what, and once policy answered, under which rule and bundle.
-	seen := EventPayload{CallerSPIFFEID: source, Resource: method + " " + g.cfg.PublishedBaseURL + path}
+	seen := EventPayload{CallerSPIFFEID: source, Resource: method + " " + g.cfg.PublishedBaseURL + path, Tenant: g.cfg.TargetTenant}
 	if in.Token.Present {
 		seen.TokenSubject = in.Token.Sub
 	}
@@ -259,6 +263,8 @@ type EventPayload struct {
 	TokenSubject   string `json:"token_subject,omitempty"`
 	Resource       string `json:"resource,omitempty"`
 	BundleRevision string `json:"bundle_revision,omitempty"`
+	// Tenant is the target tenant of the decision, on a tenant guard's and its policy's events only.
+	Tenant string `json:"tenant,omitempty"`
 }
 
 // NotEvaluated is the v2 value of a decision field the request never reached: refused before

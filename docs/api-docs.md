@@ -149,8 +149,16 @@ The M3 policy evaluator answers a denial with one rule per reason, so insufficie
 policy rule are distinct: `m3-default-deny` (the request's shape, caller, audience or proof),
 `m3-client-blocked` (a rule naming the client), `m3-presentation-required`
 (`POL-PRESENTATION-REQUIRED`, the OID4VP link in the body), `m3-tenant-route` (the configured
-route does not match the scope) and `m3-scope-required` (no scope the policy grants). Every answer
-is one v2 event under the guard's correlation id, with the rule id and the bundle revision.
+route does not match the scope), `m3-tenant-membership` (the caller is not a member of the target
+tenant) and `m3-scope-required` (no scope the policy grants). Every answer is one v2 event under the
+guard's correlation id, with the rule id and the bundle revision.
+
+A tenant guard (guard configuration `target_tenant`) sends the tenant its route belongs to as the
+IF-05 input's `target_tenant`, from its configuration and never from the request; the evaluator's
+`tenant_members` names the callers that are members of each tenant, and any other caller, a request
+without a target tenant, or a target tenant the evaluator does not serve is denied by
+`m3-tenant-membership`. The guard's and the evaluator's v2 events then carry `tenant`, the target
+tenant of the decision.
 
 ### Feed bridge: versions, ownership and sequencing
 
@@ -178,6 +186,11 @@ source. Producers post their lines to `/ingest`. Ownership:
 - **Access is the mesh's**: the bridge authenticates nobody itself. Its chart sets STRICT mTLS and an
   AuthorizationPolicy that admits only the UI's identity to the feed and only the listed producers
   to `/ingest`; outside the mesh it binds to the loopback.
+- **Known limit: no tenant authorisation.** The bridge selects runs by `run_id` alone: a reader it
+  admits sees every run, every tenant's decisions included (the v2 events carry `tenant`, but the
+  bridge filters nothing by it). It is a UI-only feed, reachable only through the mesh rule above or
+  the loopback; a per-tenant view would need the reader's tenant bound to its identity and a filter
+  on `tenant`, which is not built.
 
 ## IF-02 — connector authorization surface
 

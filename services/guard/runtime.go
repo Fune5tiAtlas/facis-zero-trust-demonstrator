@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -38,7 +39,13 @@ type Config struct {
 	AllowedCallers   []string          `json:"allowed_callers"`
 	// EventSource names this guard on the IF-01 feed: guard-a or guard-b.
 	EventSource string `json:"event_source"`
+	// TargetTenant, when set, is the tenant this guard's route belongs to: sent to policy with every
+	// request and recorded on every decision event. It comes from here only, never from the request.
+	TargetTenant string `json:"target_tenant,omitempty"`
 }
+
+// tenantName is a tenant as the contracts name it: a Kubernetes namespace name.
+var tenantName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
 
 type Runtime struct {
 	cfg      Config
@@ -62,6 +69,9 @@ func New(cfg Config, events hook.EventSink) (*Runtime, error) {
 	}
 	if cfg.EventSource != "guard-a" && cfg.EventSource != "guard-b" {
 		return nil, errors.New("guard requires event_source guard-a or guard-b")
+	}
+	if cfg.TargetTenant != "" && !tenantName.MatchString(cfg.TargetTenant) {
+		return nil, errors.New("guard target_tenant must be a namespace name")
 	}
 	if cfg.PeerZone == "" || len(cfg.AllowedCallers) == 0 || cfg.ScopeTenants["report:read"] == "" || cfg.ScopeTenants["report:summary"] == "" || cfg.ScopeTenants["report:read"] == cfg.ScopeTenants["report:summary"] {
 		return nil, errors.New("guard requires peer zone and allowed mesh callers")
@@ -158,7 +168,7 @@ func (r *Runtime) Evaluate(ctx context.Context, in hook.Request) hook.Outcome {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	path, _, _ := strings.Cut(in.Path, "?")
-	seen := hook.EventPayload{Resource: resource(in.Method, r.cfg.PublishedBaseURL, path)}
+	seen := hook.EventPayload{Resource: resource(in.Method, r.cfg.PublishedBaseURL, path), Tenant: r.cfg.TargetTenant}
 	if in.Method != http.MethodPost || in.Path != "/demo" {
 		return r.refuse("route_denied", seen)
 	}
@@ -194,7 +204,7 @@ func (r *Runtime) Evaluate(ctx context.Context, in hook.Request) hook.Outcome {
 		}
 	}
 	g := hook.New(hook.Config{PublishedBaseURL: r.cfg.PublishedBaseURL, PeerZone: r.cfg.PeerZone,
-		Audience: r.cfg.UpstreamAudience, Tenant: tenant, DecisionTimeout: 6 * time.Second}, r.clients, claims, r.clients, r.events)
+		Audience: r.cfg.UpstreamAudience, Tenant: tenant, TargetTenant: r.cfg.TargetTenant, DecisionTimeout: 6 * time.Second}, r.clients, claims, r.clients, r.events)
 	out := g.Evaluate(ctx, in)
 	if out.Allowed {
 		out.RemoveHeaders = append(out.RemoveHeaders, "x-forwarded-client-cert")

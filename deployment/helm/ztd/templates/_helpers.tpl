@@ -19,7 +19,7 @@ namespaces), which then carries no mesh label. Read it back with fromJsonArray.
 {{- if ne (include "ztd.role" .) "demonstrator" -}}
 {{- $out = list (dict "name" .Values.planes.management.namespace "plane" "management" "mesh" true) (dict "name" .Values.planes.data.namespace "plane" "data" "mesh" true) -}}
 {{- range .Values.planes.extra -}}
-{{- $out = append $out (dict "name" .name "plane" .plane "mesh" (ne (toString .mesh) "false")) -}}
+{{- $out = append $out (dict "name" .name "plane" .plane "mesh" (ne (toString .mesh) "false") "tenant" (eq (toString .tenant) "true")) -}}
 {{- end -}}
 {{- end -}}
 {{- toJson $out -}}

@@ -28,7 +28,11 @@ spec:
   rules:
     - from:
         - source:
+            {{- if eq $target "guard" }}
+            principals: [{{ range $i, $c := include "guard.callers" $ | fromJsonArray }}{{ if $i }}, {{ end }}{{ trimPrefix "spiffe://" $c | quote }}{{ end }}]
+            {{- else }}
             principals: [{{ printf "%s/ns/%s/sa/%s" $.Values.trustDomain $.Release.Namespace $account | quote }}]
+            {{- end }}
       to:
         - operation:
             ports: [{{ if eq $target "resource" }}{{ $.Values.resourcePort | quote }}{{ else }}"8080"{{ end }}]
@@ -48,6 +52,14 @@ spec:
     - from:
         - podSelector:
             matchLabels: {app.kubernetes.io/name: {{ $source }}}
+        {{- if and (eq $target "guard") $.Values.tenant.enabled }}
+        {{- range $.Values.tenant.callerNamespaces }}
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ . }}}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: {{ $source }}}
+        {{- end }}
+        {{- end }}
       ports: [{protocol: TCP, port: {{ if eq $target "resource" }}{{ $.Values.resourcePort }}{{ else }}8080{{ end }}}]
   {{- if ne $target "resource" }}
   egress:

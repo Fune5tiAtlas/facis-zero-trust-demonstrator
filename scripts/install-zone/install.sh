@@ -35,6 +35,15 @@
 #                                namespace guard, its policy evaluator and their identity and network
 #                                controls (deployment/helm/guard), from the zone file's guard.values,
 #                                with zone.trustDomain; the namespace is the umbrella's or the slice's
+#     ztd-tenant-<name>  <name>  one per tenant when the zone file sets tenants.install (participant
+#                                role, FZTD-82): the tenant's identities, credentials, policy ownership
+#                                and data service (deployment/helm/tenant), from tenants.values, each
+#                                tenant's Participant opened to the other tenants' guards; the
+#                                namespace is the zone file's planes.extra entry of that name
+#     ztd-guard-<name>   <name>  after each, when the zone file also sets tenants.guard.install: the
+#                                tenant's guard and policy evaluator (deployment/helm/guard, tenant
+#                                mode) from tenants.guard.values: target tenant <name>, its policy's
+#                                member that tenant's Participant, the other tenants' denied by policy
 #  12 gatekeeper   gatekeeper-system  only when the zone file sets admission.install (either role, after
 #                                its last release): the admission release of the umbrella chart -
 #                                Gatekeeper, the image-verification provider, the admission policy and
@@ -227,6 +236,21 @@ load_steps() {
   if [ "$ROLE" = participant ] && [ "$(zone_fact guard.install)" = true ]; then
     STEPS+=("ztd-guard|=guard.namespace|guard|guard|trustDomain=zone.trustDomain|")
   fi
+  # One release per tenant (FZTD-82), into the tenant's namespace, which the zone file declares as a
+  # data-plane entry of planes.extra; "tenant:<name>" as values file is the zone file's tenants.values
+  # for that tenant (merged_values).
+  if [ "$ROLE" = participant ] && [ "$(zone_fact tenants.install)" = true ]; then
+    local tenant
+    for tenant in $(zone_py <<'PY'
+print(" ".join(fact(zone_doc(), "tenants.names") or []))
+PY
+    ); do
+      STEPS+=("ztd-tenant-$tenant|$tenant|tenant|tenant:$tenant|trustDomain=zone.trustDomain|")
+      if [ "$(zone_fact tenants.guard.install)" = true ]; then
+        STEPS+=("ztd-guard-$tenant|$tenant|guard|tenant-guard:$tenant|trustDomain=zone.trustDomain|")
+      fi
+    done
+  fi
   # The admission release, when the zone file opts in (either role); "admission" as values file means
   # the zone file with Gatekeeper's values and the stage settings (merged_values).
   if [ "$(python3 -c 'import sys, yaml; z = yaml.safe_load(open(sys.argv[1])) or {}; print((z.get("admission") or {}).get("install") is True)' "$ZONE_VALUES" 2>/dev/null)" = True ]; then
@@ -390,6 +414,7 @@ chart_label() {
     zone-policy) echo "deployment/helm/zone-policy" ;;
     ztd-openbao) echo "deployment/helm/ztd-openbao" ;;
     guard) echo "deployment/helm/guard" ;;
+    tenant) echo "deployment/helm/tenant" ;;
     spire-crds) echo "spire-crds $SPIRE_CRDS_VERSION" ;;
     spire) echo "spire $SPIRE_VERSION" ;;
     istio-base) echo "base $ISTIO_VERSION" ;;
@@ -489,6 +514,7 @@ chart_path() {
     zone-policy) echo "$REPO/deployment/helm/zone-policy" ;;
     ztd-openbao) build_openbao_chart ;;
     guard) echo "$REPO/deployment/helm/guard" ;;
+    tenant) echo "$REPO/deployment/helm/tenant" ;;
     spire-crds) fetch_spire_chart spire-crds "$SPIRE_CRDS_VERSION" "$SPIRE_CRDS_SHA256" ;;
     spire) fetch_spire_chart spire "$SPIRE_VERSION" "$SPIRE_SHA256" ;;
     istio-base) echo "$(fetch_istio)/base" ;;
@@ -523,6 +549,32 @@ merged_values() {
 yaml.safe_dump(fact(zone_doc(), "guard.values") or {}, open(ARGS[0], "w"), sort_keys=False)
 PY
     merged_values "$1" "$work/$1.guard-values.yaml" "$3" "$4"
+    return
+  fi
+  if [[ $2 == tenant-guard:* ]]; then
+    # The tenant's guard: tenants.guard.values in tenant mode, its route, its scope routes and the
+    # resource from the tenant's name, the other tenants as the callers its policy denies.
+    zone_py "$work/$1.tenant-guard-values.yaml" "${2#tenant-guard:}" <<'PY'
+doc, t = zone_doc(), ARGS[1]
+values = dict(fact(doc, "tenants.guard.values") or {})
+values["config"] = dict(values.get("config") or {}, published_base_url=f"http://ztd-guard.{t}:8080",
+                        scope_tenants={"report:read": f"{t}-read", "report:summary": f"{t}-summary"})
+values["resourceName"] = "tenant-data"
+values["tenant"] = {"enabled": True, "callerNamespaces": [o for o in fact(doc, "tenants.names") or [] if o != t]}
+yaml.safe_dump(values, open(ARGS[0], "w"), sort_keys=False)
+PY
+    merged_values "$1" "$work/$1.tenant-guard-values.yaml" "$3" "$4"
+    return
+  fi
+  if [[ $2 == tenant:* ]]; then
+    # The tenant's values: tenants.values, and the other tenants' guards as its guardNamespaces.
+    zone_py "$work/$1.tenant-values.yaml" "${2#tenant:}" <<'PY'
+doc = zone_doc()
+values = dict(fact(doc, "tenants.values") or {})
+values["guardNamespaces"] = [t for t in fact(doc, "tenants.names") or [] if t != ARGS[1]]
+yaml.safe_dump(values, open(ARGS[0], "w"), sort_keys=False)
+PY
+    merged_values "$1" "$work/$1.tenant-values.yaml" "$3" "$4"
     return
   fi
   if [ "$2" = admission ]; then
