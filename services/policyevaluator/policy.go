@@ -141,28 +141,40 @@ func (p *Policy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(decision)
 }
 
-// record writes the decision event under the guard's correlation id. Caller-controlled strings
-// are bounded or replaced so the event always satisfies its schema.
-func (p *Policy) record(in hook.Input, d hook.Decision) {
-	if p.events == nil {
+// record writes the decision event under the guard's correlation id.
+func (p *Policy) record(in hook.Input, d hook.Decision) { recordDecision(p.events, p.cfg.Host, in, d) }
+
+// recordDecision writes one IF-01 v2 decision event for an answered input, whichever engine
+// decided: the rule id and the bundle revision of the decision, or not_evaluated when the engine
+// gave none (an unavailable engine). host is the authority the resource is named with; an empty
+// host takes the input's own when it is well formed. Caller-controlled strings are bounded or
+// replaced so the event always satisfies its schema.
+func recordDecision(events hook.EventSink, host string, in hook.Input, d hook.Decision) {
+	if events == nil {
 		return
 	}
-	e := hook.EventPayload{State: "allowed", RuleID: d.RuleID, BundleRevision: d.BundleRevision, CallerSPIFFEID: bounded(in.Source.SPIFFEID, "spiffe://"),
-		Resource: "UNKNOWN " + p.cfg.Host + "/"}
+	e := hook.EventPayload{State: "allowed", RuleID: d.RuleID, BundleRevision: d.BundleRevision, CallerSPIFFEID: bounded(in.Source.SPIFFEID, "spiffe://")}
 	if !d.Allow {
 		e.State, e.ReasonCode = "denied", d.ReasonCode
 	}
 	if in.Token.Present {
 		e.TokenSubject = bounded(in.Token.Sub, "")
 	}
-	if slices.Contains([]string{http.MethodPost, http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch}, in.Request.Method) && in.Request.Host == p.cfg.Host && in.Request.Path == "/demo" {
-		e.Resource = in.Request.Method + " " + p.cfg.Host + in.Request.Path
+	if host == "" && len(in.Request.Host) <= 253 && in.Request.Host != "" && strings.IndexFunc(in.Request.Host, func(c rune) bool { return c <= ' ' || c > '~' || c == '/' }) < 0 {
+		host = in.Request.Host
+	}
+	e.Resource = "UNKNOWN " + host + "/"
+	if slices.Contains([]string{http.MethodPost, http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch}, in.Request.Method) && in.Request.Host == host && in.Request.Path == "/demo" {
+		e.Resource = in.Request.Method + " " + host + in.Request.Path
+	}
+	if host == "" {
+		e.Resource = "UNKNOWN /"
 	}
 	id := in.CorrelationID
 	if len(id) > 128 || strings.IndexFunc(id, func(c rune) bool { return c <= ' ' || c > '~' }) >= 0 {
 		id = ""
 	}
-	p.events.Emit(id, e)
+	events.Emit(id, e)
 }
 
 // spiffeID is the v2 event schema's pattern for caller_spiffe_id.

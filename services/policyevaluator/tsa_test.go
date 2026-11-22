@@ -3,6 +3,7 @@ package policyevaluator
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hook"
 	"io"
 	"log/slog"
 	"net/http"
@@ -31,9 +32,9 @@ func TestTSAAdapterPassesValidDecisionsAndFailsClosed(t *testing.T) {
 		_, _ = io.WriteString(w, rep.answer)
 	}))
 	defer tsa.Close()
-	var logs bytes.Buffer
+	var logs, events bytes.Buffer
 	adapter, err := NewTSA(TSAConfig{EvaluationURL: tsa.URL + "/policy/policies/facis/guard/1.0/evaluation", TimeoutMS: 200},
-		[]string{guard}, slog.New(slog.NewJSONHandler(&logs, nil)))
+		[]string{guard}, slog.New(slog.NewJSONHandler(&logs, nil)), hook.NewLogSinkV2(&events, "policy-b", "tsa-test"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +72,7 @@ func TestTSAAdapterPassesValidDecisionsAndFailsClosed(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			current.Store(&reply{c.answer, c.delay})
 			logs.Reset()
+			events.Reset()
 			start := time.Now()
 			status, body := call(guard)
 			if status != c.status {
@@ -89,13 +91,27 @@ func TestTSAAdapterPassesValidDecisionsAndFailsClosed(t *testing.T) {
 			if c.status != http.StatusOK && !strings.Contains(body, "POL-PDP-UNAVAILABLE") {
 				t.Fatalf("failure body %s", body)
 			}
+			// The IF-01 v2 decision event: the TSA's rule and revision, or not_evaluated when it failed.
+			ev := checkV2Event(t, events.Bytes())
+			if ev.CorrelationID != "c-1" || ev.Source != "policy-b" {
+				t.Fatalf("event %+v", ev)
+			}
+			if c.status == http.StatusOK {
+				var answer hook.Decision
+				_ = json.Unmarshal([]byte(body), &answer)
+				if ev.Payload.RuleID != answer.RuleID || ev.Payload.BundleRevision != answer.BundleRevision || (ev.Payload.State == "allowed") != answer.Allow {
+					t.Fatalf("event %+v does not carry the decision %+v", ev.Payload, answer)
+				}
+			} else if ev.Payload.State != "denied" || ev.Payload.ReasonCode != hook.ReasonPDPUnavailable || ev.Payload.RuleID != hook.NotEvaluated || ev.Payload.BundleRevision != hook.NotEvaluated {
+				t.Fatalf("failure event %+v", ev.Payload)
+			}
 		})
 	}
 	current.Store(&reply{allow, 0})
 	if status, _ := call("spiffe://zone-b.test/ns/m3/sa/intruder"); status != http.StatusForbidden {
 		t.Fatalf("unlisted caller: %d", status)
 	}
-	if _, err := NewTSA(TSAConfig{EvaluationURL: tsa.URL, TimeoutMS: 1000}, []string{guard}, slog.Default()); err == nil {
+	if _, err := NewTSA(TSAConfig{EvaluationURL: tsa.URL, TimeoutMS: 1000}, []string{guard}, slog.Default(), nil); err == nil {
 		t.Fatal("a timeout at the guard's bound accepted")
 	}
 }

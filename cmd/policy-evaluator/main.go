@@ -35,11 +35,16 @@ func run() error {
 	if dec.Decode(&cfg) != nil || dec.Decode(&struct{}{}) != io.EOF {
 		return errors.New("configuration invalid")
 	}
+	// Both engines write the IF-01 v2 decision event under the guard's correlation id.
+	events := hook.NewLogSinkV2(os.Stdout, cfg.EventSource, "policy-"+time.Now().UTC().Format("20060102T150405.000000000Z"))
 	var policy http.Handler
 	if cfg.TSA != nil {
-		policy, err = policyevaluator.NewTSA(*cfg.TSA, cfg.GuardCallers, slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+		if cfg.EventSource != "policy-a" && cfg.EventSource != "policy-b" {
+			return errors.New("policy event_source must be policy-a or policy-b")
+		}
+		policy, err = policyevaluator.NewTSA(*cfg.TSA, cfg.GuardCallers, slog.New(slog.NewJSONHandler(os.Stdout, nil)), events)
 	} else {
-		policy, err = policyevaluator.New(cfg.Config, hook.NewLogSinkV2(os.Stdout, cfg.EventSource, "policy-"+time.Now().UTC().Format("20060102T150405.000000000Z")))
+		policy, err = policyevaluator.New(cfg.Config, events)
 	}
 	if err != nil {
 		return errors.New("policy configuration invalid")

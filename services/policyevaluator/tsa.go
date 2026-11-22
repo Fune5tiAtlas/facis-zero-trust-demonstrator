@@ -58,9 +58,12 @@ type TSA struct {
 	http    *http.Client
 	callers *meshcaller.XFCC
 	log     *slog.Logger
+	events  hook.EventSink
 }
 
-func NewTSA(cfg TSAConfig, guardCallers []string, log *slog.Logger) (*TSA, error) {
+// NewTSA returns the adapter. events receives the IF-01 v2 decision event of every answered input,
+// with the rule id and bundle revision the TSA returned; it may be nil.
+func NewTSA(cfg TSAConfig, guardCallers []string, log *slog.Logger, events hook.EventSink) (*TSA, error) {
 	if cfg.EvaluationURL == "" || cfg.TimeoutMS < 1 || cfg.TimeoutMS >= 1000 || len(guardCallers) == 0 {
 		return nil, errors.New("tsa configuration incomplete")
 	}
@@ -70,7 +73,7 @@ func NewTSA(cfg TSAConfig, guardCallers []string, log *slog.Logger) (*TSA, error
 	}
 	return &TSA{url: cfg.EvaluationURL, timeout: time.Duration(cfg.TimeoutMS) * time.Millisecond,
 		http:    &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
-		callers: callers, log: log}, nil
+		callers: callers, log: log, events: events}, nil
 }
 
 // Decide asks the TSA. Any error, timeout or decision outside the IF-05 contract is an error, never
@@ -134,11 +137,13 @@ func (t *TSA) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	d, err := t.Decide(r.Context(), in)
 	if err != nil {
 		t.log.Error("policy decision", "correlation_id", in.CorrelationID, "engine", "tsa", "reason_code", hook.ReasonPDPUnavailable, "error", err.Error())
+		recordDecision(t.events, "", in, hook.Decision{ReasonCode: hook.ReasonPDPUnavailable})
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"reason_code":"` + hook.ReasonPDPUnavailable + `"}`))
 		return
 	}
 	t.log.Info("policy decision", "correlation_id", in.CorrelationID, "engine", "tsa", "allow", d.Allow,
 		"rule_id", d.RuleID, "bundle_revision", d.BundleRevision, "reason_code", d.ReasonCode)
+	recordDecision(t.events, "", in, d)
 	_ = json.NewEncoder(w).Encode(d)
 }
