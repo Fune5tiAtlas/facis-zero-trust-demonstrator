@@ -10,7 +10,7 @@ folder). What ran, what it proves and what it does not: `scripts/verify-guard-ca
 | `catalogue.tsv` | one row per case: status, reason code, rule, correlation id, the guard's and the policy's IF-01 v2 event, the expectation and the verdict |
 | `responses/<case>.http` | each answer as the caller received it (headers and body; no credential is echoed) |
 | `events/guard-events.jsonl`, `events/policy-events.jsonl` | every decision line the guard and the evaluator wrote during the run |
-| `events/feed-*.txt`, `events/snapshot-*.json` | the feed bridge's `/events` stream and `/snapshot` per run, fed with those lines |
+| `events/feed-v1-*.txt`, `events/snapshot-v1-*.json`, `events/feed-v2-*.txt`, `events/snapshot-v2-*.json` | the feed bridge's streams and snapshots per run in both feed versions, regenerated from those lines by the versioned bridge (the run's own `/snapshot` files named a policy panel, which v1 does not allow, and were replaced); `TestArchivedEvidenceValidatesInBothVersions` validates them |
 | `resource-record.json` | the resource's record of the allowed request, under the guard's correlation id |
 | `latency.tsv` | the presentation-required decision through the guard against a mesh round trip without it |
 | `guard-values.yaml` | the guard chart's values: the whole configuration of the deployed chain |

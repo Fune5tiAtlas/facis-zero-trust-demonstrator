@@ -325,7 +325,8 @@ function checkRefs(node, doc, dir, where, keys = []) {
         if (target === undefined) fail(`${where}: $ref ${value} at ${at}: chain ends at a missing entry`);
       }
     } else if (key === 'x-facis-message-schema') {
-      checkSchemaRef(String(value), doc, dir, `${where}#/${[...keys, key].map(escapePointer).join('/')}`);
+      // One schema, or a list of the schemas a message may follow (IF-01 v2 streams v1 and v2 events).
+      for (const ref of [value].flat()) checkSchemaRef(String(ref), doc, dir, `${where}#/${[...keys, key].map(escapePointer).join('/')}`);
     } else {
       checkRefs(value, doc, dir, where, [...keys, key]);
     }

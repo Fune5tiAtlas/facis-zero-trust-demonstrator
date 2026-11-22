@@ -152,25 +152,32 @@ policy rule are distinct: `m3-default-deny` (the request's shape, caller, audien
 route does not match the scope) and `m3-scope-required` (no scope the policy grants). Every answer
 is one v2 event under the guard's correlation id, with the rule id and the bundle revision.
 
-### Feed bridge: ownership and sequencing
+### Feed bridge: versions, ownership and sequencing
 
-The bridge is `cmd/feed-bridge` (`internal/feedbridge`); it serves `/snapshot` and `/events` of
-the [feed API](contracts/if01-feed.v1.openapi.yaml) from the IF-01 log lines it reads. Ownership:
+The bridge is `cmd/feed-bridge` (`internal/feedbridge`), deployed in the mesh by
+`deployment/helm/feed-bridge`. The client selects the feed version by path:
+[v1](contracts/if01-feed.v1.openapi.yaml) (`/snapshot`, `/events`) stays valid against the v1
+schemas — a v2 event is served in its v1 form and a source v1 does not name (the policy evaluators)
+is left out — and [v2](contracts/if01-feed.v2.openapi.yaml) (`/v2/snapshot`, `/v2/events`,
+[snapshot v2](contracts/if01-snapshot.v2.schema.json)) serves every line as written and every v2
+source. Producers post their lines to `/ingest`. Ownership:
 
 - **Sequence numbers are the producers'.** Each process names its own run (`guard-<start time>`,
   `policy-<start time>`) and numbers its events from 0, so `(run_id, seq)` is unique and the
   bridge never renumbers. A repeated seq is an at-least-once duplicate and is dropped; a seq that
   skips ahead is recorded as a `gap` event (`VIS-STALE`) under the first missing number.
-- **The buffer is the bridge's**: the last 1000 events per run; a reader asking for older ones
-  receives a `gap` event first, then reads the snapshot again.
+- **Memory is the bridge's**, and bounded: the last 1000 events per run (a reader asking for older
+  ones receives a `gap` event first), every run together within a byte budget (`--budget-bytes`,
+  32 MiB by default) by dropping the least recently updated runs, which are answered `410`; a line
+  over 64 KiB is drained and counted, never buffered.
 - **Retention is the collectors'**, not the bridge's: the same lines travel the IF-04 path of the
   observability release (node collector → zone gateway → entry) into one file per zone on the
   entry's volume, rotated by size with nine backups (`deployment/helm/values/otel-entry.yaml`,
   `logExport`); `scripts/verify-observability` proves the export (`logs-exported`,
   `if01-fields-kept`). The bridge keeps nothing on disk.
-- **Not built here**: the bridge's deployment and its mesh identity towards the UI; it runs as a
-  binary fed with the components' log streams (`kubectl logs`); reading the exported files would
-  need an OTLP-JSON reader, which is not written.
+- **Access is the mesh's**: the bridge authenticates nobody itself. Its chart sets STRICT mTLS and an
+  AuthorizationPolicy that admits only the UI's identity to the feed and only the listed producers
+  to `/ingest`; outside the mesh it binds to the loopback.
 
 ## IF-02 — connector authorization surface
 
