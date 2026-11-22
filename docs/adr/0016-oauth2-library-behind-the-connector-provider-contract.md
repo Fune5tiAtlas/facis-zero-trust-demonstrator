@@ -156,8 +156,9 @@ change to the contract's API is a change to this record, made by the procedure i
   it means publishing the new key next to the old one in the key set for at least the longest token
   lifetime before signing with it; the resource-side verifier (`internal/tokenverify`) already accepts
   several keys and refreshes on an unknown `kid`. The procedure is not automated yet.
-- **Deployment.** Closed: the connector chart (`deployment/helm/connector`) deploys it, and it runs
-  on zone B ([registration endpoint over SPIRE mTLS](../evidences/dcr-mtls-zone-b-2026-11-22/README.md)).
+- **Deployment.** Closed: the connector chart (`deployment/helm/connector`) deploys it into the
+  management plane with its own identity, behind a registration policy with every decision audited
+  ([Connector service](../connector.md)), and it runs on zone B ([registration endpoint over SPIRE mTLS](../evidences/dcr-mtls-zone-b-2026-11-22/README.md)).
 
 ## References
 
