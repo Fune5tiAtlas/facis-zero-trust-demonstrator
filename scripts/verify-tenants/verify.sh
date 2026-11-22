@@ -6,8 +6,11 @@
 #       data-plane namespaces (umbrella, SPIRE, Istio, zone-policy, OpenBao, the two ztd-tenant-*
 #       releases, all through scripts/install-zone), and each tenant's guard (deployment/helm/guard in
 #       tenant mode, built from the working tree). Deleted on exit; KEEP=1 keeps it.
-#   ZTD_CONFIRM_CONTEXT=<context> scripts/verify-tenants/verify.sh --live --trust-domain TD --out DIR [--guard]
-#       a zone where the tenants are installed already; --guard when their guards are too.
+#   ZTD_CONFIRM_CONTEXT=<context> scripts/verify-tenants/verify.sh --live --trust-domain TD --out DIR
+#       [--guard --issuer URL --issuer-key PEM]
+#       a zone where the tenants are installed already; --guard when their guards are too, with the
+#       issuer whose key set the guards trust and its private signing key (EC P-256, kid "tenants"),
+#       which the proof needs to mint the members' tokens; refused without them.
 #
 # For each tenant X and the other tenant Y (A->B and B->A):
 #   data         X's Participant reaches X's data service (control). Y's is dropped by the network layer
@@ -33,13 +36,15 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 # shellcheck source=scripts/tools/pins.env disable=SC1091
 . scripts/tools/pins.env
-mode="" out="" guard=no td=""
+mode="" out="" guard=no td="" issuer="" issuer_key=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --kind) mode=kind; guard=yes; shift ;;
     --live) mode=live; shift ;;
     --guard) guard=yes; shift ;;
     --trust-domain) td=$2; shift 2 ;;
+    --issuer) issuer=$2; shift 2 ;;
+    --issuer-key) issuer_key=$2; shift 2 ;;
     --out) out=$2; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 125 ;;
   esac
@@ -93,9 +98,16 @@ jws() { local input; input="$(printf '%s' "$2" | b64url).$(printf '%s' "$3" | b6
 jwk_of() { local xy; xy=$(ec_xy "$1"); jq -nc --arg x "${xy% *}" --arg y "${xy#* }" '{crv: "P-256", kty: "EC", x: $x, y: $y}'; }
 jkt_of() { jwk_of "$1" | jq -cS . | tr -d '\n' | openssl dgst -sha256 -binary | b64url; }
 
+if [ "$mode" = live ] && [ "$guard" = yes ]; then
+  if [ -z "$issuer" ] || [ ! -f "$issuer_key" ] || ! openssl pkey -in "$issuer_key" -noout 2>/dev/null; then
+    echo "refused: --guard needs --issuer URL and --issuer-key PEM (the key the guards' issuer key set publishes)" >&2; exit 125
+  fi
+  cp "$issuer_key" "$work/issuer.pem"
+fi
 if [ "$mode" = live ]; then
   context=$(kubectl config current-context)
   [ "${ZTD_CONFIRM_CONTEXT:-}" = "$context" ] || { echo "refused: ZTD_CONFIRM_CONTEXT=$context is required" >&2; exit 125; }
+
 else
   for tool in docker kind helm python3; do command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 125; }; done
   export KUBECONFIG="$work/kubeconfig"
@@ -138,28 +150,37 @@ EOF
   kubectl wait --for=condition=Ready nodes --all --timeout=5m >/dev/null
   [ -f deployment/helm/ztd/charts/gatekeeper-3.23.1.tgz ] || { helm repo add gatekeeper https://open-policy-agent.github.io/gatekeeper/charts >/dev/null 2>&1 || true; helm dependency build deployment/helm/ztd >/dev/null; }
   scripts/ci/verify-chart-dependencies.sh deployment/helm/ztd >/dev/null
-  python3 - deployment/helm/ztd/ci/values.yaml "$work/zone.yaml" "$ENVOY_IMAGE" <<'PY'
+  issuer=https://issuer.tenants.invalid
+  openssl ecparam -name prime256v1 -genkey -noout -out "$work/issuer.pem" 2>/dev/null
+  # The kind zone with the two tenants and their guards, all installed by the zone installer.
+  python3 - deployment/helm/ztd/ci/values.yaml "$work/zone.yaml" "$ENVOY_IMAGE" "$issuer" \
+      "$reg_name:5000/guard@${digest[guard]}" "$reg_name:5000/policy-evaluator@${digest[policy-evaluator]}" <<'PY'
 import sys, yaml
 zone = yaml.safe_load(open(sys.argv[1]))
 zone["planes"]["extra"] += [{"name": "tenant-a", "plane": "data", "tenant": True}, {"name": "tenant-b", "plane": "data", "tenant": True}]
-repo, digest = sys.argv[3].split("@")
+envoy = {"repository": sys.argv[3].split("@")[0].rsplit(":", 1)[0], "digest": sys.argv[3].split("@")[1]}
+native = {"sidecar.istio.io/nativeSidecar": "true"}
 zone["tenants"] = {"install": True, "names": ["tenant-a", "tenant-b"],
-                   "values": {"data": {"image": {"repository": repo.split(":")[0], "digest": digest}},
-                              "podAnnotations": {"sidecar.istio.io/nativeSidecar": "true"}}}
+                   "values": {"data": {"image": envoy}, "podAnnotations": native},
+                   "guard": {"install": True, "values": {
+                       "zone": "a", "images": {"guard": {"repository": sys.argv[5].split("@")[0], "digest": sys.argv[5].split("@")[1]},
+                                               "policy": {"repository": sys.argv[6].split("@")[0], "digest": sys.argv[6].split("@")[1]}, "envoy": envoy},
+                       "config": {"issuer": sys.argv[4], "jwks_url": "http://ztd-connector:8080/.well-known/jwks.json",
+                                  "inbound_audience": "https://guard.facis.invalid", "upstream_audience": "https://resource.facis.invalid", "peer_zone": "zone-b"},
+                       "policyRevision": "tenants-kind-1", "networkPolicy": {"istiod": {"enabled": True}}, "podAnnotations": native}}}
 yaml.safe_dump(zone, open(sys.argv[2], "w"), sort_keys=False)
 PY
   cp "$work/zone.yaml" "$out/kind-zone.yaml"
   if ZONE_VALUES="$work/zone.yaml" KUBE_CONTEXT="$context" scripts/install-zone/install.sh install \
-      ztd spire-crds spire istio-base istiod istio-cni zone-policy ztd-openbao ztd-tenant-tenant-a ztd-tenant-tenant-b > "$out/install-zone.txt" 2>&1; then
-    pass "kind zone installed through scripts/install-zone with tenant-a and tenant-b as planes.extra data-plane namespaces and their ztd-tenant releases"
+      ztd spire-crds spire istio-base istiod istio-cni zone-policy ztd-openbao \
+      ztd-tenant-tenant-a ztd-guard-tenant-a ztd-tenant-tenant-b ztd-guard-tenant-b > "$out/install-zone.txt" 2>&1; then
+    pass "kind zone installed through scripts/install-zone: tenant-a and tenant-b as planes.extra tenant entries, each with its ztd-tenant release and its guard (ztd-guard-<tenant>, tenant mode)"
   else
     fail "install-zone: $(tail -3 "$out/install-zone.txt")"; exit "$failures"
   fi
   td=$(python3 -c 'import sys,yaml;print(yaml.safe_load(open(sys.argv[1]))["zone"]["trustDomain"])' "$work/zone.yaml")
 
-  step "Each tenant's guard (tenant mode) with an Envoy stand-in for its issuer key set and token store"
-  issuer=https://issuer.tenants.invalid
-  openssl ecparam -name prime256v1 -genkey -noout -out "$work/issuer.pem" 2>/dev/null
+  step "An Envoy stand-in for each tenant guard's issuer key set and token store"
   jwks=$(jwk_of "$work/issuer.pem" | jq -c '{keys: [. + {kid: "tenants", alg: "ES256", use: "sig"}]}')
   for t in "${tenants[@]}"; do
     other=tenant-a; [ "$t" = tenant-a ] && other=tenant-b
@@ -221,33 +242,10 @@ spec:
   action: ALLOW
   rules: [{from: [{source: {principals: ["$td/ns/$t/sa/ztd-guard"]}}]}]
 EOF
-    cat > "$work/guard-$t.yaml" <<EOF
-zone: a
-trustDomain: $td
-resourceName: tenant-data
-images:
-  guard: {repository: $reg_name:5000/guard, digest: "${digest[guard]}"}
-  policy: {repository: $reg_name:5000/policy-evaluator, digest: "${digest[policy-evaluator]}"}
-  envoy: {repository: ${ENVOY_IMAGE%%:*}, digest: "${ENVOY_IMAGE##*@}"}
-config:
-  issuer: $issuer
-  jwks_url: http://ztd-connector:8080/.well-known/jwks.json
-  inbound_audience: https://guard.facis.invalid
-  upstream_audience: https://resource.facis.invalid
-  published_base_url: http://ztd-guard.$t:8080
-  peer_zone: zone-b
-  scope_tenants: {"report:read": $t-read, "report:summary": $t-summary}
-policyRevision: $t-kind-1
-tenant: {enabled: true, callerNamespaces: [$other]}
-networkPolicy: {istiod: {enabled: true}}
-podAnnotations: {sidecar.istio.io/nativeSidecar: "true"}
-EOF
-    cp "$work/guard-$t.yaml" "$out/guard-$t-values.yaml"
-    if helm install ztd-guard deployment/helm/guard -n "$t" --kube-context "$context" -f "$work/guard-$t.yaml" --wait --timeout 6m > "$out/guard-$t-install.txt" 2>&1 \
-        && kubectl -n "$t" rollout status deploy/tenants-stand-in --timeout=180s >/dev/null; then
-      pass "$t: guard (target tenant $t, callers of $other admitted to the guard only) and policy evaluator ready"
+    if kubectl -n "$t" rollout status deploy/tenants-stand-in deploy/ztd-guard deploy/ztd-policy-evaluator --timeout=300s >/dev/null; then
+      pass "$t: guard (target tenant $t, callers of $other admitted to the guard only), policy evaluator and stand-in ready"
     else
-      fail "$t guard: $(tail -3 "$out/guard-$t-install.txt")"
+      fail "$t: guard, policy evaluator or stand-in not ready"
     fi
   done
 fi
