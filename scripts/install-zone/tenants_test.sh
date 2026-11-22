@@ -47,9 +47,11 @@ for t in tenants:
     assert sorted(p["participant_callers"]) == sorted(g["allowed_callers"]), p
     ap = guard["ztd-guard-caller"]["spec"]["rules"][0]["from"][0]["source"]["principals"]
     assert sorted(ap) == sorted(participant(x)[len("spiffe://"):] for x in [t] + others), ap
+    members = {x["metadata"]["name"]: x for x in docs(f"ztd-tenant-{t}")}["tenant-data-members"]["spec"]["rules"][0]["from"][0]["source"]["principals"]
+    assert members == [participant(t)[len("spiffe://"):]], members
     tenant_values = yaml.safe_load(open(f"{d}/ztd-tenant-{t}.values.yaml"))
     assert tenant_values["guardNamespaces"] == others, tenant_values
-    print(f"PASS  {t}: ztd-tenant-{t} and ztd-guard-{t} (target tenant {t}, member {participant(t)}, {', '.join(others)} admitted to the guard only)")
+    print(f"PASS  {t}: ztd-tenant-{t} and ztd-guard-{t} (target tenant {t}, member {participant(t)} of the guard and the data service, {', '.join(others)} admitted to the guard only)")
 PY
 
 ZONE_VALUES="$zone" KUBE_CONTEXT=none "$root/scripts/install-zone/install.sh" plan > "$work/off.log" 2>&1 || true

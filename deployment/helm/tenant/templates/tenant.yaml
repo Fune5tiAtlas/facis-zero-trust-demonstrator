@@ -1,4 +1,5 @@
 {{- if not .Values.trustDomain }}{{ fail "trustDomain is required" }}{{ end }}
+{{- if not .Values.members }}{{ fail "members must name at least one account of the tenant" }}{{ end }}
 {{- if not (regexMatch "^sha256:[a-f0-9]{64}$" .Values.data.image.digest) }}{{ fail "data.image.digest must be a sha256 digest" }}{{ end }}
 {{- range .Values.guardNamespaces }}
 {{- if or (eq . $.Release.Namespace) (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" .)) }}{{ fail (printf "guardNamespaces: %s is not another tenant's namespace" .) }}{{ end }}
@@ -59,7 +60,7 @@ roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: tenant-owner}
 subjects:
   - {kind: ServiceAccount, name: tenant-admin, namespace: {{ $ns }}}
 ---
-# The data service answers this tenant's identities only, over mutual TLS (the mesh layer); the
+# The data service answers this tenant's members only (values members), over mutual TLS (the mesh layer); the
 # network layer is the umbrella's baseline: default deny with the intra-namespace lane.
 apiVersion: security.istio.io/v1
 kind: PeerAuthentication
@@ -85,7 +86,7 @@ spec:
   rules:
     - from:
         - source:
-            principals: [{{ printf "%s/ns/%s/sa/*" .Values.trustDomain $ns | quote }}]
+            principals: [{{ range $i, $m := .Values.members }}{{ if $i }}, {{ end }}{{ printf "%s/ns/%s/sa/%s" $.Values.trustDomain $ns $m | quote }}{{ end }}]
       to:
         - operation: {ports: ["8080"]}
 {{- if .Values.guardNamespaces }}
