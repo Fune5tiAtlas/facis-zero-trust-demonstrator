@@ -133,3 +133,64 @@ func TestEveryDecisionIsRecorded(t *testing.T) {
 		t.Fatal("link copied into the event")
 	}
 }
+
+// TestTenantMembership: with tenants configured, a request is allowed only for a member of the
+// target tenant the guard's route names, in both directions; the event carries that tenant. Scope
+// separation still holds inside a tenant.
+func TestTenantMembership(t *testing.T) {
+	const memberA, memberB = "spiffe://zone-a.test/ns/tenant-a/sa/ztd-participant", "spiffe://zone-a.test/ns/tenant-b/sa/ztd-participant"
+	for _, own := range []struct{ tenant, member, other string }{{"tenant-a", memberA, memberB}, {"tenant-b", memberB, memberA}} {
+		c := testConfig()
+		c.ParticipantCallers = []string{memberA, memberB}
+		c.TenantMembers = map[string][]string{own.tenant: {own.member}}
+		c.ScopeTenants = map[string]string{"report:read": own.tenant + "-read", "report:summary": own.tenant + "-summary"}
+		events := &sink{}
+		p, err := New(c, events)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in := validInput()
+		route := own.tenant + "-summary"
+		in.Tenant, in.TargetTenant, in.Source.SPIFFEID = &route, own.tenant, own.member
+		if d := p.Decide(in); !d.Allow || d.RuleID != "m3-report-summary" {
+			t.Fatalf("%s member refused: %+v", own.tenant, d)
+		}
+		for name, change := range map[string]func(*hook.Input){
+			"other tenant's caller":        func(i *hook.Input) { i.Source.SPIFFEID = own.other },
+			"no target tenant":             func(i *hook.Input) { i.TargetTenant = "" },
+			"route of a tenant not served": func(i *hook.Input) { i.TargetTenant = "tenant-c" },
+		} {
+			bad := in
+			change(&bad)
+			if d := p.Decide(bad); d.Allow || d.RuleID != RuleTenantMembership || d.ReasonCode != hook.ReasonRuleDeny {
+				t.Fatalf("%s %s: got %+v", own.tenant, name, d)
+			}
+		}
+		// Scope separation inside the tenant: a summary token never selects the full-report route.
+		full := own.tenant + "-read"
+		in.Tenant = &full
+		if d := p.Decide(in); d.Allow || d.RuleID != RuleTenantRoute {
+			t.Fatalf("%s summary token on the full route: %+v", own.tenant, d)
+		}
+		cross := in
+		cross.Source.SPIFFEID, cross.Tenant = own.other, &route
+		p.record(cross, p.Decide(cross))
+		if e := events.ps[len(events.ps)-1]; e.Tenant != own.tenant || e.RuleID != RuleTenantMembership || e.State != "denied" || e.CallerSPIFFEID != own.other {
+			t.Fatalf("%s cross-tenant event: %+v", own.tenant, e)
+		}
+	}
+	// A target tenant reaching a policy that serves no tenant is denied, not ignored.
+	p, _ := New(testConfig(), nil)
+	in := validInput()
+	in.TargetTenant = "tenant-a"
+	if d := p.Decide(in); d.Allow || d.RuleID != RuleTenantMembership {
+		t.Fatalf("untenanted policy accepted a target tenant: %+v", d)
+	}
+	for _, members := range []map[string][]string{{"Tenant A": {participant}}, {"tenant-a": nil}, {"tenant-a": {"spiffe://zone-a.test/ns/x/sa/not-a-caller"}}} {
+		c := testConfig()
+		c.TenantMembers = members
+		if _, err := New(c, nil); err == nil {
+			t.Fatalf("tenant_members %v accepted", members)
+		}
+	}
+}

@@ -26,6 +26,7 @@ const (
 	RuleClientBlocked        = "m3-client-blocked"
 	RulePresentationRequired = "m3-presentation-required"
 	RuleTenantRoute          = "m3-tenant-route"
+	RuleTenantMembership     = "m3-tenant-membership"
 )
 
 type Config struct {
@@ -42,7 +43,14 @@ type Config struct {
 	// Presentation, when set, denies a token carrying one of its scopes until the caller presents
 	// a credential, answering with the OID4VP link.
 	Presentation *Presentation `json:"presentation,omitempty"`
+	// TenantMembers, when set, names the callers that are members of each tenant: a request is
+	// allowed only for a member of the target tenant the guard's route names. Configured, a request
+	// without a target tenant is denied; unconfigured, so is one with a target tenant.
+	TenantMembers map[string][]string `json:"tenant_members,omitempty"`
 }
+
+// tenantName is a tenant as the contracts name it: a Kubernetes namespace name.
+var tenantName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
 
 type Presentation struct {
 	Scopes     []string `json:"scopes"`
@@ -74,6 +82,11 @@ func New(cfg Config, events hook.EventSink) (*Policy, error) {
 			}
 		}
 	}
+	for tenant, members := range cfg.TenantMembers {
+		if !tenantName.MatchString(tenant) || len(members) == 0 || slices.ContainsFunc(members, func(m string) bool { return !slices.Contains(cfg.ParticipantCallers, m) }) {
+			return nil, errors.New("policy tenant_members needs namespace-named tenants whose members are participant callers")
+		}
+	}
 	auth, err := meshcaller.NewXFCC(cfg.GuardCallers)
 	if err != nil {
 		return nil, err
@@ -93,6 +106,11 @@ func (p *Policy) deny(rule string) hook.Decision {
 func (p *Policy) Decide(in hook.Input) hook.Decision {
 	if !slices.Contains(p.cfg.ParticipantCallers, in.Source.SPIFFEID) || in.Request.Method != http.MethodPost || in.Request.Path != "/demo" || in.Request.Host != p.cfg.Host || !in.Token.Present || !in.Token.ProofValid || in.Token.Aud != p.cfg.Audience || in.Token.Sub == "" || in.Token.ClientID == "" || in.Token.JKT == "" {
 		return p.deny(RuleDefaultDeny)
+	}
+	// Membership of the target tenant is decided here, from this policy's configuration: the guard
+	// names the tenant of its route, never which callers belong to it.
+	if (in.TargetTenant != "" || len(p.cfg.TenantMembers) > 0) && !slices.Contains(p.cfg.TenantMembers[in.TargetTenant], in.Source.SPIFFEID) {
+		return p.deny(RuleTenantMembership)
 	}
 	if slices.Contains(p.cfg.BlockedClients, in.Token.ClientID) {
 		return p.deny(RuleClientBlocked)
@@ -149,6 +167,9 @@ func (p *Policy) record(in hook.Input, d hook.Decision) {
 	}
 	e := hook.EventPayload{State: "allowed", RuleID: d.RuleID, BundleRevision: d.BundleRevision, CallerSPIFFEID: bounded(in.Source.SPIFFEID, "spiffe://"),
 		Resource: "UNKNOWN " + p.cfg.Host + "/"}
+	if tenantName.MatchString(in.TargetTenant) {
+		e.Tenant = in.TargetTenant
+	}
 	if !d.Allow {
 		e.State, e.ReasonCode = "denied", d.ReasonCode
 	}
