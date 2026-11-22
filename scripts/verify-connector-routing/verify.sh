@@ -77,6 +77,7 @@ esac
 for t in ${DIRECT_TARGETS:-}; do target_ok "$t" || nogo "DIRECT_TARGETS entry '$t' is not <namespace>/<service>:<port>/<http|https>"; done
 for t in ${DIRECT_EXTERNAL:-}; do external_ok "$t" || nogo "DIRECT_EXTERNAL entry '$t' is not <IPv4>:<port>/<http|https>"; done
 [ -n "${ZTD_EVIDENCE_DIR:-}" ] && ZTD_EVIDENCE_DIR=$(realpath -m -- "$ZTD_EVIDENCE_DIR")
+if [ -n "${DECLARED_FILE:-}" ]; then [ -f "$DECLARED_FILE" ] || nogo "DECLARED_FILE $DECLARED_FILE: no such file"; DECLARED_FILE=$(realpath -- "$DECLARED_FILE"); fi
 cd "$(dirname "$0")" || exit 125
 REPO=$(git rev-parse --show-toplevel)
 CHART=$REPO/deployment/helm/ztd
