@@ -288,9 +288,17 @@ func (r *running) stop(t *testing.T) int {
 	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
-	// The listeners stay open for the drain delay while readiness already says draining.
+	// The listeners stay open for the drain delay while readiness already says draining. A refused
+	// connection means the delay passed before this poll ran (a loaded machine): sawDraining stays
+	// false, and only the tests that need it fail on that.
 	for range 20 {
-		if code, _, body := get(t, "http://"+r.opsAddr+"/readyz"); code == http.StatusServiceUnavailable && strings.Contains(body, `"draining":true`) {
+		resp, err := http.Get("http://" + r.opsAddr + "/readyz")
+		if err != nil {
+			break
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusServiceUnavailable && strings.Contains(string(body), `"draining":true`) {
 			r.sawDraining = true
 			break
 		}
