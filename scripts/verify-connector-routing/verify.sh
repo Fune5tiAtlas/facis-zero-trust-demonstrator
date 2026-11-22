@@ -16,10 +16,10 @@
 #            gateway's own label under another identity gets no lane out (Hubble's policy drop).
 #   ingress  the entry ENTRY_NAME in ENTRY_NAMESPACE. entry: it forwards every request to one upstream,
 #            and every Service of type LoadBalancer or NodePort in the cluster is the entry or one of
-#            DECLARED_ENTRIES (namespace/name); every declared entry needs at least one DECLARED_PROBES
-#            line, sent from the proof host (outside the cluster) to the Service's load-balancer address, so
-#            a declared entry is held to its scope, never passed silently. DIRECT_TARGETS and
-#            DIRECT_EXTERNAL are required.
+#            DECLARED_FILE, compared as (namespace/Service, port, protocol) tuples in both directions; every
+#            declared entry is held to every scope assertion of the file, sent from the proof host (outside
+#            the cluster) to the Service's load-balancer address. DIRECT_TARGETS and DIRECT_EXTERNAL are
+#            required.
 # Both roles: direct-path, the caller's attempt at the peer entry (egress), at every DIRECT_EXTERNAL and
 # every DIRECT_TARGETS is denied, with evidence: a network denial counts only with the policy drop Hubble
 # recorded for the flow (no Hubble on the node fails the check), a mesh denial only with the destination
@@ -42,13 +42,16 @@
 #   PEER_LOG_CMD       egress: a command printing the peer entry's access log (required)
 #   DIRECT_EXTERNAL    space-separated <IPv4>:<port>/<http|https> outside the cluster the caller must not reach
 #   DIRECT_TARGETS     space-separated <namespace>/<service>:<port>/<http|https> inside the zone
-#   ENTRY_NAMESPACE, ENTRY_NAME, DECLARED_ENTRIES   the entry section (see above)
-#   DECLARED_PROBES    one line per scope assertion of a declared entry, fields separated by |:
-#                        <ns>/<svc>|https|<METHOD> <host> <path>|<code, or !2xx>
-#                        <ns>/<svc>|tls12|<host>|refused        (TLS 1.2 handshake refused)
-#                        <ns>/<svc>|dns|<qname> <type>|<rcode>  (UDP and TCP)
+#   ENTRY_NAMESPACE, ENTRY_NAME   the entry; ENTRY_PORTS its exposed <port>/<PROTO> (default 443/TCP)
+#   DECLARED_FILE      the zone's declared public entries (committed: declared/<zone>.txt): lines
+#                        entry <ns>/<svc>:<port>/<PROTO>
+#                        probe <ns>/<svc>|https|<METHOD> <host> <path> [<JSON body>]|<code, or 404/405>
+#                        probe <ns>/<svc>|tls12|<host>|refused
+#                        probe <ns>/<svc>|dns|<qname> <type>|<rcode>        (UDP and TCP)
+#                        probe <ns>/<svc>|trustlist|<host>|valid            (TSPA_FRAMEWORK names the list)
+#   TSPA_FRAMEWORK     the trust framework whose published list and VC the trustlist probe reads
 #   ZTD_EVIDENCE_DIR   the run directory (default: a new one under ~/.local/state/ztd/verify-connector-routing)
-# shellcheck disable=SC2016,SC1091,SC2319,SC2329,SC2086
+# shellcheck disable=SC2016,SC1091,SC2319,SC2329,SC2086,SC2013
 set -uo pipefail
 PROOF_NAME=verify-connector-routing
 PROOF_OTHER_CONTEXT="the run creates stand-ins in the zone"
@@ -137,18 +140,25 @@ url() { # url <host> <port> <proto>: a valid request of the target's protocol (n
   echo "$3://$1:$2/"
 }
 peer_log() { bash -c "$PEER_LOG_CMD" 2>/dev/null; }
-hubble_on() { local C; C=$(cilium_on "$(node_of "$NS" "$1")"); [ -n "$C" ] && k -n kube-system exec "$C" -c cilium-agent -- hubble status >/dev/null 2>&1; }
-hubble_drop() { # hubble_drop <pod> <pattern>: the last policy drop Hubble recorded from <pod> to a destination matching <pattern>
-  local C; C=$(cilium_on "$(node_of "$NS" "$1")")
-  [ -n "$C" ] && k -n kube-system exec "$C" -c cilium-agent -- hubble observe --since 3m --from-pod "$NS/$1" \
-    --verdict DROPPED -o compact 2>/dev/null | grep -i policy | grep -F -- "$2" | tail -1
-}
-denied_by_network() { # denied_by_network <pod> <outcome> <pattern> <title>: a drop with Hubble's policy drop
-  local pod=$1 out=$2 pattern=$3 title=$4 drop
-  if ! hubble_on "$pod"; then check 1 "$title" "outcome: $out; no Hubble on the node: no evidence of a policy drop"; return; fi
-  drop=$(hubble_drop "$pod" "$pattern")
+probe_drop() { # probe_drop <pod> <title> <hubble filter...> -- <url> <curl args...>: sends the probe and counts
+  # it as a network denial only with the policy drop Hubble recorded for this flow: from <pod>, to the
+  # filtered destination (address and port, or the Service's pods and target port), inside the probe's own
+  # window read on the caller node's clock.
+  local pod=$1 title=$2; shift 2
+  local filt=() C t0 t1 out drop
+  while [ "$1" != -- ]; do filt+=("$1"); shift; done; shift
+  C=$(cilium_on "$(node_of "$NS" "$pod")")
+  if [ -z "$C" ] || ! k -n kube-system exec "$C" -c cilium-agent -- hubble status >/dev/null 2>&1; then
+    out=$(send "$pod" "$@"); check 1 "$title" "outcome: $out; no Hubble on the node: no evidence of a policy drop"; return
+  fi
+  t0=$(k -n kube-system exec "$C" -c cilium-agent -- date -u +%Y-%m-%dT%H:%M:%SZ)
+  out=$(send "$pod" "$@")
+  sleep 2
+  t1=$(k -n kube-system exec "$C" -c cilium-agent -- date -u +%Y-%m-%dT%H:%M:%SZ)
+  drop=$(k -n kube-system exec "$C" -c cilium-agent -- hubble observe --since "$t0" --until "$t1" --from-pod "$NS/$pod" \
+    "${filt[@]}" --verdict DROPPED -o compact 2>/dev/null | grep -i policy | tail -1)
   case $out in denied*) [ -n "$drop" ];; *) false;; esac
-  check $? "$title" "outcome: $out; Hubble: ${drop:-no policy drop recorded}"
+  check $? "$title" "outcome: $out; probe window $t0..$t1; Hubble: ${drop:-no policy drop recorded for this flow}"
 }
 
 direct=${DIRECT_EXTERNAL:-}
@@ -202,8 +212,8 @@ if [ "$ROLE" = egress ]; then
     sed -e "s/__NS__/$NS/g" -e "s/__GW__/$GW/g" fixtures/gateway-spoof.yaml >"$WORK/spoof.yaml"
     if create "$NS" "$WORK/spoof.yaml"; then
       for _ in $(seq 60); do k -n "$NS" exec route-gateway-spoof -c app -- true >/dev/null 2>&1 && break; sleep 3; done
-      out=$(send route-gateway-spoof "$(url "$peer" "$pport" https)" -k -A "$UA-spoof")
-      denied_by_network route-gateway-spoof "$out" "$peer:$pport" "a pod carrying the gateway's label under another identity gets no lane to the peer entry"
+      probe_drop route-gateway-spoof "a pod carrying the gateway's label under another identity gets no lane to the peer entry" \
+        --to-ip "$peer" --to-port "$pport" -- "$(url "$peer" "$pport" https)" -k -A "$UA-spoof"
     else
       check 1 "a pod carrying the gateway's label under another identity gets no lane to the peer entry" "$(cat "$WORK/create.err")"
     fi
@@ -214,8 +224,8 @@ section direct-path
 [ "$ROLE" = egress ] && peer_log >"$WORK/peer.before"
 for d in $direct; do
   hp=${d%/*}; proto=${d##*/}; ip=${hp%:*}; port=${hp##*:}
-  out=$(send route-backend "$(url "$ip" "$port" "$proto")" -k -A "$UA-direct")
-  denied_by_network route-backend "$out" "$ip:$port" "the caller's direct $proto attempt at $hp, around the gateway, is dropped by the network layer"
+  probe_drop route-backend "the caller's direct $proto attempt at $hp, around the gateway, is dropped by the network layer" \
+    --to-ip "$ip" --to-port "$port" -- "$(url "$ip" "$port" "$proto")" -k -A "$UA-direct"
 done
 if [ "$ROLE" = egress ]; then
   sleep 60   # past the peer log's batching (above), so an arrival would show
@@ -229,13 +239,18 @@ for t in ${DIRECT_TARGETS:-}; do
   sel=$(k -n "$tns" get svc "$svc" -o json | jq -r '.spec.selector | to_entries | map("\(.key)=\(.value)") | join(",")')
   pods=$(k -n "$tns" get pod -l "$sel" -o jsonpath='{.items[*].metadata.name}')
   for p in $pods; do denial_lines "$tns" "$p" | wc -l; done >"$WORK/before.$svc"
-  out=$(send route-backend "$(url "$svc.$tns.svc.cluster.local" "$port" "$proto")" -k -A "$UA-direct")
+  tport=$(k -n "$tns" get svc "$svc" -o json | jq -r --argjson p "$port" '.spec.ports[] | select(.port == $p) | .targetPort')
+  filt=(); for p in $pods; do filt+=(--to-pod "$tns/$p"); done
+  [[ $tport =~ ^[0-9]+$ ]] && filt+=(--to-port "$tport")
+  # The mesh refusal is read first: a 403 is not a network drop.
+  out=$(send route-backend "$(url "$svc.$tns.svc.cluster.local" "$port" "$proto")" -k -A "$UA-direct-mesh-check")
   case $out in
     403*) sleep 3; caller="spiffe://$TD/ns/$NS/sa/backend"; deny=""
           i=0; for p in $pods; do i=$((i+1)); n=$(sed -n "${i}p" "$WORK/before.$svc")
             deny=$(denial_lines "$tns" "$p" | tail -n +"$((n + 1))" | grep -F "$caller" | head -1); [ -n "$deny" ] && break; done
           [ -n "$deny" ]; check $? "the caller cannot reach $t directly (refused by the destination's proxy)" "outcome: $out; denial: ${deny:-none}";;
-    *) denied_by_network route-backend "$out" "$tns/" "the caller cannot reach $t directly (dropped by the network layer)";;
+    *) probe_drop route-backend "the caller cannot reach $t directly (dropped by the network layer)" "${filt[@]}" \
+         -- "$(url "$svc.$tns.svc.cluster.local" "$port" "$proto")" -k -A "$UA-direct";;
   esac
 done
 
@@ -254,31 +269,51 @@ for cl in c["static_resources"]["clusters"]:
     for le in e["lb_endpoints"]: a=le["endpoint"]["address"]["socket_address"]; print("cluster", cl["name"], a["address"], a["port_value"])' <<<"$cfg" 2>/dev/null)
   [ "$(grep -c '^cluster ' <<<"$routes")" = 1 ]
   check $? "the entry $ENTRY_NAMESPACE/$ENTRY_NAME forwards every request to one upstream" "$(paste -sd';' - <<<"$routes")"
-  exposed=$(k get svc -A -o json | jq -r '.items[] | select(.spec.type == "LoadBalancer" or .spec.type == "NodePort") | "\(.metadata.namespace)/\(.metadata.name)"' | sort)
-  extra=$(comm -23 <(printf '%s\n' "$exposed") <(printf '%s\n' "$ENTRY_NAMESPACE/$ENTRY_NAME" ${DECLARED_ENTRIES:-} | sort))
-  [ -z "$extra" ] && grep -qx "$ENTRY_NAMESPACE/$ENTRY_NAME" <<<"$exposed"
-  check $? "every Service exposed outside the cluster is the entry or a declared bypass" "exposed: $(paste -sd' ' - <<<"$exposed"); undeclared: ${extra:-none}"
-  # A declared entry is held to its declared scope, probed from outside the cluster (this host).
-  for e in ${DECLARED_ENTRIES:-}; do
+  # Every (namespace/Service, port, protocol) exposed outside the cluster must be the entry's or declared:
+  # an extra port on a declared Service fails as an undeclared entry would.
+  exposed=$(k get svc -A -o json | jq -r '.items[] | select(.spec.type == "LoadBalancer" or .spec.type == "NodePort")
+    | "\(.metadata.namespace)/\(.metadata.name)" as $s | .spec.ports[] | "\($s):\(.port)/\(.protocol)"' | sort)
+  declared=$( { for t in ${ENTRY_PORTS:-443/TCP}; do echo "$ENTRY_NAMESPACE/$ENTRY_NAME:$t"; done
+                [ -n "${DECLARED_FILE:-}" ] && sed -n 's/^entry  *//p' "$DECLARED_FILE"; } | sort)
+  extra=$(comm -23 <(printf '%s\n' "$exposed") <(printf '%s\n' "$declared"))
+  missing=$(comm -13 <(printf '%s\n' "$exposed") <(printf '%s\n' "$declared"))
+  [ -z "$extra" ] && [ -z "$missing" ]
+  check $? "every port exposed outside the cluster is the entry's or a declared bypass's, and every declared one is exposed" \
+    "exposed: $(paste -sd' ' - <<<"$exposed"); undeclared: $(paste -sd' ' - <<<"${extra:-none}"); declared but absent: $(paste -sd' ' - <<<"${missing:-none}")"
+  # A declared entry is held to every assertion of its declared scope (DECLARED_FILE), probed from outside
+  # the cluster (this host).
+  for e in $(sed -n 's/^entry  *\([^:]*\):.*/\1/p' "${DECLARED_FILE:-/dev/null}" | sort -u); do
     lb=$(k -n "${e%%/*}" get svc "${e#*/}" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
-    n=0
+    n=0; bad=0
     while IFS='|' read -r who kind arg want; do
       [ "$who" = "$e" ] || continue; n=$((n+1))
       case $kind in
-        https) read -r m host path <<<"$arg"
-               got=$(curl -sk --resolve "$host:443:$lb" -o /dev/null -w '%{http_code}' -X "$m" -m 10 "https://$host$path")
-               case $want in '!2xx') [[ $got != 2* && $got != 000 ]];; *) [ "$got" = "$want" ];; esac
-               check $? "declared entry $e: $m $path answers $want" "answered $got";;
+        https) read -r m host path body <<<"$arg"
+               got=$(curl -sk --resolve "$host:443:$lb" -o /dev/null -w '%{http_code}' -X "$m" ${body:+-H 'Content-Type: application/json' --data "$body"} -m 10 "https://$host$path")
+               case $want in '404/405') [[ $got == 404 || $got == 405 ]];; *) [ "$got" = "$want" ];; esac
+               check $? "declared entry $e: $m $path${body:+ (with a body)} answers $want" "answered $got" || true;;
         tls12) curl -sk --resolve "$arg:443:$lb" --tls-max 1.2 -o /dev/null -m 10 "https://$arg/"; rc=$?
                [ "$rc" = 35 ]; check $? "declared entry $e: a TLS 1.2 handshake is refused" "curl exit $rc";;
         dns)   read -r q t <<<"$arg"
                u=$(dig @"$lb" "$q" "$t" +noall +comments +time=5 2>/dev/null | sed -n 's/.*status: \([A-Z]*\).*/\1/p')
                c=$(dig @"$lb" "$q" "$t" +tcp +noall +comments +time=5 2>/dev/null | sed -n 's/.*status: \([A-Z]*\).*/\1/p')
                [ "$u" = "$want" ] && [ "$c" = "$want" ]; check $? "declared entry $e: $q $t answers $want over UDP and TCP" "UDP ${u:-none}, TCP ${c:-none}";;
+        trustlist) # the published trust list and its signed VC, read through the entry (TSPA_FRAMEWORK names the list)
+               fw=${TSPA_FRAMEWORK:-}
+               if [ -z "$fw" ]; then check 1 "declared entry $e: the published trust list and its VC are served" "TSPA_FRAMEWORK unset: no published trust framework named"; continue; fi
+               base="https://$arg/tspa-service/tspa/v1/$fw"
+               ct=$(curl -sk --resolve "$arg:443:$lb" -o "$WORK/tl" -w '%{http_code} %{content_type}' -m 10 "$base/trust-list")
+               [[ $ct == "200 application/json"* || $ct == "200 application/xml"* ]]
+               check $? "declared entry $e: GET the trust list of $fw answers 200 with a JSON or XML body" "answered $ct"
+               ct=$(curl -sk --resolve "$arg:443:$lb" -o "$WORK/vc" -w '%{http_code} %{content_type}' -m 10 "$base/vc/trust-list")
+               v=$(jq -r 'def t(x): (x // "") ; [t(.validFrom // .issuanceDate), t(.validUntil // .expirationDate)] | @tsv' "$WORK/vc" 2>/dev/null)
+               from=${v%%$'\t'*}; until=${v##*$'\t'}; now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+               [[ $ct == "200 "* && -n $from && -n $until && $from < $now && $now < $until ]]
+               check $? "declared entry $e: GET the VC of $fw's trust list answers 200 with a credential valid now" "answered $ct; valid from ${from:-none} until ${until:-none}";;
         *)     check 1 "declared entry $e: unknown probe kind $kind";;
       esac
-    done <<<"${DECLARED_PROBES:-}"
-    [ "$n" -gt 0 ]; check $? "declared entry $e is held to a declared scope" "$n scope assertion(s)"
+    done < <(sed -n 's/^probe  *//p' "$DECLARED_FILE")
+    [ "$n" -gt 0 ]; check $? "declared entry $e is held to its declared scope" "$n assertion(s), all required"
   done
 fi
 

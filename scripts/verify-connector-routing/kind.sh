@@ -150,17 +150,22 @@ grep -q '^200$' <<<"$codes" && ! grep -qv '^200$' <<<"$codes"; rcheck $? "a roll
 
 # 4 the routing proof on both roles. The caller's service account exists before the proof (as a zone's
 # participant backend's would): the proof must use it and leave it in place.
-k -n "$NS" create serviceaccount backend >/dev/null 2>&1; k -n "$NS" label serviceaccount backend pre-existing=true --overwrite >/dev/null
+created_sa=0
+if ! k -n "$NS" get serviceaccount backend >/dev/null 2>&1; then
+  k -n "$NS" create serviceaccount backend >/dev/null || die "the caller's service account"
+  created_sa=1
+fi
+SA_UID=$(k -n "$NS" get serviceaccount backend -o jsonpath='{.metadata.uid}')
 ZTD_EVIDENCE_DIR=$EVID/verify-egress KUBE_CONTEXT=$CONTEXT ROLE=egress ROUTE_EXPECT="peer-entry zone-b" \
   PEER_LOG_CMD="cat '$EVID/peer/access.log'" ./verify.sh
 rc_e=$?
 ZTD_EVIDENCE_DIR=$EVID/verify-ingress KUBE_CONTEXT=$CONTEXT ROLE=ingress \
-  DIRECT_EXTERNAL="$PIP:8443/https" DIRECT_TARGETS="$M3/ztd-participant:8080/http $M3/ztd-edge:443/https" \
+  DIRECT_EXTERNAL="$PIP:8443/https" DIRECT_TARGETS="$M3/ztd-participant:8080/http $M3/ztd-edge:443/https" ENTRY_PORTS=443/TCP \
   ENTRY_NAMESPACE=$M3 ENTRY_NAME=ztd-edge ./verify.sh
 rc_i=$?
-[ "$(k -n "$NS" get serviceaccount backend -o jsonpath='{.metadata.labels.pre-existing}' 2>/dev/null)" = true ]
-rcheck $? "the pre-existing service account backend is still in place after both proofs"
-k -n "$NS" delete serviceaccount backend >/dev/null 2>&1
+[ "$(k -n "$NS" get serviceaccount backend -o jsonpath='{.metadata.uid}' 2>/dev/null)" = "$SA_UID" ]
+rcheck $? "the service account backend, there before the proofs, is the same object after both (uid $SA_UID)"
+[ "$created_sa" = 1 ] && k -n "$NS" delete serviceaccount backend >/dev/null 2>&1   # only when this rehearsal created it
 rc=$(( rc_e >= 125 || rc_i >= 125 ? 125 : rc_e + rc_i ))
 note "" "verify.sh exit $rc; rehearsal failures $fail; records in $EVID"
 total=$((rc + fail)); [ "$rc" -ge 125 ] && total=$rc
