@@ -19,7 +19,7 @@ folder). What ran, what it proves and what it does not: `scripts/verify-guard-ca
 
 ## One correlation id across the chain
 
-The allowed request `37feab6ea3cb67fbcb6d62c2e8e2cdf1`: the guard's v2 decision event (`allowed`,
+The allowed request `e29234a01b9060c7f07bf213fc41c1a0`: the guard's v2 decision event (`allowed`,
 caller SPIFFE id, token subject, resource, rule `m3-report-summary`, bundle `kind-catalogue-1`),
 the policy evaluator's event under the same id, the resource's request record
 (`requestId`/`correlationId`), and both events on the feed bridge's streams.
