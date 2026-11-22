@@ -64,7 +64,7 @@ subjects:
 apiVersion: security.istio.io/v1
 kind: PeerAuthentication
 metadata:
-  name: tenant-data-strict
+  name: tenant-data-mtls
   namespace: {{ $ns }}
   labels: {{ toJson $labels }}
 spec:
