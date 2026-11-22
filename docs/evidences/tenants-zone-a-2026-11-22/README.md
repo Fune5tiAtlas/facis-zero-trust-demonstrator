@@ -40,3 +40,15 @@ from this branch; none is published, so they were not deployed here. That layer 
     helm uninstall ztd-tenant-tenant-b -n tenant-b
     helm uninstall ztd-tenant-tenant-a -n tenant-a
     helm rollback ztd 4 -n ztd-system --wait     # removes tenant-a and tenant-b with their policies
+
+## Zone-file deployment: held
+
+`zone-file-vs-live.txt`: installing the umbrella from the zone file instead of the live values would
+add, besides nothing for the tenants (already identical), the `ztd-otel-node` namespace, the
+observability scrape openings (spire-system ingress, ztd-mgmt egress) with a new Service
+`spire-server-metrics` beside the running SPIRE server, and the connector and token-store openings
+to OpenBao. These open lanes to running components that belong to other tracks (telemetry, OpenBao
+auth), so the zone-file deployment was not applied; it waits for confirmation that they are meant for
+zone A. Admission: `admission-preflight.txt` (read-only) shows the tenant namespaces' images in the
+trusted repository except the injected Istio proxy, which zone A's trust policy does not allow-list
+yet, as for `ztd-data`; zone A keeps `admission.enforceDataPlane` off.
