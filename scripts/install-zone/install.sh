@@ -40,6 +40,10 @@
 #                                and data service (deployment/helm/tenant), from tenants.values, each
 #                                tenant's Participant opened to the other tenants' guards; the
 #                                namespace is the zone file's planes.extra entry of that name
+#     ztd-guard-<name>   <name>  after each, when the zone file also sets tenants.guard.install: the
+#                                tenant's guard and policy evaluator (deployment/helm/guard, tenant
+#                                mode) from tenants.guard.values: target tenant <name>, its policy's
+#                                member that tenant's Participant, the other tenants' denied by policy
 #  12 gatekeeper   gatekeeper-system  only when the zone file sets admission.install (either role, after
 #                                its last release): the admission release of the umbrella chart -
 #                                Gatekeeper, the image-verification provider, the admission policy and
@@ -242,6 +246,9 @@ print(" ".join(fact(zone_doc(), "tenants.names") or []))
 PY
     ); do
       STEPS+=("ztd-tenant-$tenant|$tenant|tenant|tenant:$tenant|trustDomain=zone.trustDomain|")
+      if [ "$(zone_fact tenants.guard.install)" = true ]; then
+        STEPS+=("ztd-guard-$tenant|$tenant|guard|tenant-guard:$tenant|trustDomain=zone.trustDomain|")
+      fi
     done
   fi
   # The admission release, when the zone file opts in (either role); "admission" as values file means
@@ -542,6 +549,21 @@ merged_values() {
 yaml.safe_dump(fact(zone_doc(), "guard.values") or {}, open(ARGS[0], "w"), sort_keys=False)
 PY
     merged_values "$1" "$work/$1.guard-values.yaml" "$3" "$4"
+    return
+  fi
+  if [[ $2 == tenant-guard:* ]]; then
+    # The tenant's guard: tenants.guard.values in tenant mode, its route, its scope routes and the
+    # resource from the tenant's name, the other tenants as the callers its policy denies.
+    zone_py "$work/$1.tenant-guard-values.yaml" "${2#tenant-guard:}" <<'PY'
+doc, t = zone_doc(), ARGS[1]
+values = dict(fact(doc, "tenants.guard.values") or {})
+values["config"] = dict(values.get("config") or {}, published_base_url=f"http://ztd-guard.{t}:8080",
+                        scope_tenants={"report:read": f"{t}-read", "report:summary": f"{t}-summary"})
+values["resourceName"] = "tenant-data"
+values["tenant"] = {"enabled": True, "callerNamespaces": [o for o in fact(doc, "tenants.names") or [] if o != t]}
+yaml.safe_dump(values, open(ARGS[0], "w"), sort_keys=False)
+PY
+    merged_values "$1" "$work/$1.tenant-guard-values.yaml" "$3" "$4"
     return
   fi
   if [[ $2 == tenant:* ]]; then

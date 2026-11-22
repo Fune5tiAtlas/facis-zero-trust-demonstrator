@@ -156,8 +156,10 @@ guard:
 # The two tenants (FZTD-82), each a planes.extra namespace above with its own release of
 # deployment/helm/tenant (ztd-tenant-<name>): its identities, credentials, policy ownership and data
 # service, installed by scripts/install-zone/install.sh. The data service runs zone B's Envoy
-# runtime by digest. A tenant's guard (deployment/helm/guard, tenant mode) needs the guard and policy
-# evaluator builds that carry target_tenant and tenant_members, which are not published yet.
+# runtime by digest. Each tenant's guard and policy evaluator (ztd-guard-<name>, deployment/helm/guard
+# in tenant mode, from tenants.guard.values) stay off (guard.install false) until the signed candidate
+# build carrying target_tenant and tenant_members is published: the digests below are the guard
+# instance's above, which refuse those keys. Replace them with that build's before turning it on.
 tenants:
   install: true
   names: [tenant-a, tenant-b]
@@ -165,3 +167,20 @@ tenants:
     data:
       image: {repository: ghcr.io/fune5tiatlas/facis-zero-trust-demonstrator/envoy-runtime, digest: "sha256:0cd70a69172bb144ba70ed7cad61f3f5172f971c5e130ef48116e60e5fa815c1"}
     podAnnotations: {sidecar.istio.io/nativeSidecar: "true"}
+  guard:
+    install: false
+    values:
+      zone: a
+      images:
+        guard: {repository: ghcr.io/fune5tiatlas/facis-zero-trust-demonstrator/guard, digest: "sha256:a885b46565ff082d50c4dadc887496aaaa2d941a06d8038171c67af6f58c809a"}
+        policy: {repository: ghcr.io/fune5tiatlas/facis-zero-trust-demonstrator/policy-evaluator, digest: "sha256:5f77bbe83e9a74fe6818a03fefe28c59578f36b47f7b811786407e8501088e98"}
+        envoy: {repository: ghcr.io/fune5tiatlas/facis-zero-trust-demonstrator/envoy-runtime, digest: "sha256:0cd70a69172bb144ba70ed7cad61f3f5172f971c5e130ef48116e60e5fa815c1"}
+      config:
+        issuer: https://connector.zone-a.invalid
+        jwks_url: http://ztd-connector:8080/.well-known/jwks.json
+        inbound_audience: https://guard.facis.invalid
+        upstream_audience: https://resource.facis.invalid
+        peer_zone: zone-b
+      policyRevision: zone-a-tenants-v1
+      networkPolicy: {istiod: {enabled: true}}
+      podAnnotations: {sidecar.istio.io/nativeSidecar: "true"}

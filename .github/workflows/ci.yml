@@ -456,6 +456,11 @@ jobs:
             grep -q 'a tenant entry' "$RUNNER_TEMP/err" || { echo "tenant entry $entry refused for another reason:" >&2; cat "$RUNNER_TEMP/err" >&2; exit 1; }
           done
 
+      # The tenant releases of zone A as the zone installer renders them (FZTD-82): each tenant's
+      # ztd-tenant release and, with tenants.guard.install, its guard in tenant mode.
+      - name: Render zone A's tenant releases
+        run: scripts/install-zone/tenants_test.sh
+
       # The umbrella's admission release, rendered the way the zone installer installs it: the kind
       # zone with admission.install and the provider settings of ci/admission-values.yaml. Release
       # gatekeeper must carry Gatekeeper with both webhooks scoped by the ztd-webhook-scope
