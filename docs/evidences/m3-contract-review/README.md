@@ -124,3 +124,29 @@ helm template guard deployment/helm/guard -n ztd-data -f deployment/helm/guard/c
 bash scripts/ci/check-policy-addresses.sh --manifest components guard.yaml ...
 kubectl get authorizationpolicies.security.istio.io,peerauthentications.security.istio.io -A
 ```
+
+## Follow-up on the close-out branch
+
+The findings as the branch now stands; nothing here was re-run on a zone.
+
+- **F1**: the charts declare the callers. The connector chart's `callers` render
+  `ztd-connector-callers`, the token store's `runtime.callers` render `ztd-token-store-callers`
+  (the guard, `POST /internal/substitute` and `/internal/replay-check`), its `database.mesh` renders
+  `ztd-token-store-database` (the store's two accounts and the listed callers, the connector, on the
+  database port), and the application-service chart's `callers` render `<name>-callers` (the
+  Participant's entry). Empty lists render nothing, so a zone that sets none stays closed. Zone B's
+  hand-applied rules are unchanged until its releases are upgraded with these values; the
+  `ztd-connector-schema` account of zone B is created by no chart and is not declared.
+- **F2**: `callers.keySet` (the guard, the protected resource) reaches `GET /.well-known/jwks.json`
+  only; `callers.oauth` (the Participant, the token store) `/oauth2/*` and the key set.
+- **F3**: `pdp-adapter-to-tsa` admits `ztd-policy-evaluator` (the guard chart's PDP adapter);
+  `backend-to-verification-service` is `token-store-to-verification-service` (the token store's
+  presentation hook, port 8080). The two `atls-gateway` rows stay as reserved lanes: they hold the
+  ZT-55 roles Attestation and TRAIN (resolution) in the plane-separation design, and IF-07 is not
+  frozen. The architecture's interface table no longer says "not yet declared" for the pairs the
+  charts now declare.
+- **F4**: live, unchanged.
+- **F5**: `tenant-data-members` admits the tenant chart's `members` (default `ztd-participant`); the
+  tenant's guard reaches its data service through the guard chart's own `tenant-data-caller`.
+- **F6**: `scripts/ci/check-policy-addresses.sh` also renders and scans every other chart with its
+  `ci/values.yaml` and each `ci/<variant>-values.yaml`.
