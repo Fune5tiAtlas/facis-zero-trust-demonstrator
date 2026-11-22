@@ -105,3 +105,14 @@ disjoint from `config.scope_tenants`). Insufficient scope is its own rule, `m3-s
 `guard.install: true`, into `guard.namespace`, with `guard.values` as this chart's values and
 `trustDomain` from `zone.trustDomain`; `install.sh render ztd-guard` renders it the same way, and
 the policy checks (`scripts/ci/render-zones.sh`) render it for every shipped zone file that sets it.
+
+## Tenant mode (FZTD-82)
+
+`tenant.enabled` makes the release a tenant's guard, installed into the tenant's namespace (one
+release per tenant, with `deployment/helm/tenant` there). The guard's `target_tenant` is the release
+namespace, so the tenant of a decision comes from where the guard is installed, never from the
+request; the policy evaluator's `tenant_members` lists that namespace's Participant only.
+`tenant.callerNamespaces` names the other tenants whose Participant may reach this guard (its
+AuthorizationPolicy and ingress NetworkPolicy, the guard's `allowed_callers` and the evaluator's
+`participant_callers`): their requests reach policy and are denied there with `m3-tenant-membership`,
+recorded with the tenant on both v2 events. Nothing else of the namespace opens to them.
