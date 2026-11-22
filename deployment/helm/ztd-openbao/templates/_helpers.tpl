@@ -244,6 +244,29 @@ if [ "$state" = initialized ]; then
   [ "$(bao GET auth/token/lookup-self)" = 200 ] || die "the verification token does not work"
   [ "$(bao GET secret/data/ztd-fixture/canary)" = 200 ] || die "the verification token cannot read the fixture"
   rm -f "$W/bbody"
+  if [ -n "$AUTH_HASH" ]; then
+    use_token "$root"
+    code=$(bao GET sys/auth)
+    [ "$code" = 200 ] || die "listing the auth methods: HTTP $code"
+    if ! tr -d '\n ' < "$W/bbody" | grep -q '"kubernetes/":{'; then
+      printf '{"type":"kubernetes"}' > "$W/req"
+      code=$(bao POST sys/auth/kubernetes "$W/req"); rm -f "$W/req"
+      [ "$code" = 204 ] || die "enabling the Kubernetes auth method at auth/kubernetes/: HTTP $code"
+    fi
+    code=$(bao POST auth/kubernetes/config /auth/config.json)
+    [ "$code" = 204 ] || die "configuring auth/kubernetes/: HTTP $code"
+    for f in /auth/role-*.json; do
+      n=${f#/auth/role-}; n=${n%.json}
+      code=$(bao PUT "sys/policies/acl/$n" "/auth/policy-$n.json")
+      [ "$code" = 204 ] || die "policy $n: HTTP $code"
+      code=$(bao POST "auth/kubernetes/role/$n" "$f")
+      [ "$code" = 204 ] || die "Kubernetes auth role $n: HTTP $code"
+      say "Kubernetes auth role $n"
+    done
+    rm -f "$W/bbody"
+    patch_secret "{\"stringData\":{\"kubernetes-auth\":\"$AUTH_HASH\"}}"
+    say "Kubernetes auth at auth/kubernetes/"
+  fi
   patch_secret '{"stringData":{"state":"configured"}}'
   say "configured"
   read_secret
@@ -251,6 +274,9 @@ if [ "$state" = initialized ]; then
 fi
 
 [ "$state" = configured ] || die "unknown state '$state' in Secret $SECRET"
+if [ -n "$AUTH_HASH" ] && [ "$(field kubernetes-auth)" != "$AUTH_HASH" ]; then
+  die "the Kubernetes auth configuration is not applied to this store (Secret key kubernetes-auth: '$(field kubernetes-auth)', rendered: $AUTH_HASH): the bootstrap configures it only before it revokes the root token. An administrator applies it and records the hash (docs/secrets.md#kubernetes-auth)"
+fi
 root=$(field root-token)
 if [ -n "$root" ]; then
   use_token "$root"

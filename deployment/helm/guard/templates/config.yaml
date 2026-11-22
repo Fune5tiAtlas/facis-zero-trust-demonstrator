@@ -85,4 +85,5 @@ data:
 {{- $policy := dict "revision" .Values.policyRevision "audience" .Values.config.inbound_audience "host" (urlParse .Values.config.published_base_url).host "guard_callers" (list (printf "spiffe://%s/ns/%s/sa/ztd-guard" .Values.trustDomain .Release.Namespace)) "participant_callers" (list (printf "spiffe://%s/ns/%s/sa/%s" .Values.trustDomain .Release.Namespace .Values.participantServiceAccount)) "scope_tenants" .Values.config.scope_tenants "event_source" (printf "policy-%s" .Values.zone) }}
 {{- with .Values.policyRules.blockedClients }}{{- $_ := set $policy "blocked_clients" . }}{{- end }}
 {{- if .Values.policyRules.presentation.scopes }}{{- $_ := set $policy "presentation" (dict "scopes" .Values.policyRules.presentation.scopes "oid4vp_link" .Values.policyRules.presentation.oid4vpLink) }}{{- end }}
+{{- if .Values.tsa.evaluationURL }}{{- $_ := set $policy "tsa" (dict "evaluation_url" .Values.tsa.evaluationURL "timeout_ms" (int .Values.tsa.timeoutMS)) }}{{- end }}
   config.json: {{ toJson $policy | quote }}

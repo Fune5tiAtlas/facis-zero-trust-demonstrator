@@ -36,6 +36,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if not (regexMatch "^https?://[A-Za-z0-9.-]+(:[0-9]+)?/?$" .Values.openbao.address) -}}
 {{- fail "openbao.address must be a base URL without credentials" -}}
 {{- end -}}
+{{- if and (eq .Values.openbao.auth.method "kubernetes") (not .Values.openbao.auth.role) -}}
+{{- fail "openbao.auth.method kubernetes needs openbao.auth.role" -}}
+{{- end -}}
 {{- if not (regexMatch "^[A-Za-z0-9_-]+$" .Values.openbao.signingKey) -}}{{ fail "openbao.signingKey is required" }}{{- end -}}
 {{- if lt (int .Values.openbao.signingKeyVersion) 1 -}}{{ fail "openbao.signingKeyVersion must be positive" }}{{- end -}}
 {{- if not .Values.serviceAccount.name -}}{{ fail "serviceAccount.name is required" }}{{- end -}}
