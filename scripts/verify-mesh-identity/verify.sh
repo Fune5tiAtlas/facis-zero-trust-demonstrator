@@ -474,7 +474,7 @@ code "$bao_log"
 aps=$(k get authorizationpolicy -A -o json 2>/dev/null | jq -r '.items[] | "\(.metadata.namespace)/\(.metadata.name)"' | sort)
 grep -qx "$ISTIO_NS/default-deny" <<<"$aps" && grep -qx "$MGMT/allow-ztd-openbao-bootstrap-to-server" <<<"$aps" && grep -qx "$MGMT/allow-ztd-verify-openbao-to-server" <<<"$aps" \
   && grep -q '^step 8/[0-9]*: ztd-openbao deployed' "$work/install1.log" && grep -q '^step 8/[0-9]*: ztd-openbao deployed' "$work/install2.log"
-check $? "ztd-openbao installs under the mesh default deny: its --wait-for-jobs succeeded in both runs with $ISTIO_NS/default-deny in place, its bootstrap Job and verification hook admitted to the server by the release's own pairs" "$(paste -sd' ' <<<"${aps:-no AuthorizationPolicy}")"
+check $? "ztd-openbao installs under the mesh default deny: its --wait-for-jobs succeeded in both runs with $ISTIO_NS/default-deny in place, its bootstrap Job and verification hook admitted to the server by the release's own pairs" "$(paste -sd' ' - <<<"${aps:-no AuthorizationPolicy}")"
 images_spire=$(k -n "$SPIRE_NS" get pods -o jsonpath='{.items[*].spec.containers[*].image} {.items[*].spec.initContainers[*].image}' | tr ' ' '\n' | grep . | sort -u | paste -sd, -)
 images_istio=$(k -n "$ISTIO_NS" get pods -o jsonpath='{.items[*].spec.containers[*].image} {.items[*].spec.initContainers[*].image}' | tr ' ' '\n' | grep . | sort -u | paste -sd, -)
 unpinned=$(tr ',' '\n' <<<"$images_spire,$images_istio" | grep -v '@sha256:[0-9a-f]\{64\}$' || true)
@@ -535,7 +535,7 @@ sed -e "s/__DATA__/$DATA/g" -e "s/__MGMT__/$MGMT/g" fixtures/stand-ins.yaml >"$w
 # scheduler placed each. The server pod must be among them, so the check cannot pass on no pod.
 bao_pods=$(k -n "$MGMT" get pods -o json | jq -r '.items[] | select((.metadata.labels["app.kubernetes.io/name"] // "") as $n | ["openbao","ztd-openbao-bootstrap","ztd-verify-openbao"] | index($n)) | "\(.metadata.name)=\(.spec.nodeName // "none")\(if (.spec.affinity.nodeAffinity // null) != null or ((.spec.nodeSelector // {}) | length) > 0 then "(held)" else "" end)"')
 bao_held=$(grep -F '(held)' <<<"$bao_pods" || true)
-grep -q '^ztd-openbao-0=' <<<"$bao_pods" && [ -z "$bao_held" ]; check $? "ztd-openbao: no pod of the release carries a node affinity or a node selector (the server and its job pods, placed by the scheduler)" "$(paste -sd' ' <<<"${bao_pods:-no pod}")"
+grep -q '^ztd-openbao-0=' <<<"$bao_pods" && [ -z "$bao_held" ]; check $? "ztd-openbao: no pod of the release carries a node affinity or a node selector (the server and its job pods, placed by the scheduler)" "$(paste -sd' ' - <<<"${bao_pods:-no pod}")"
 # The stand-ins that opt out of injection go apart: the capture rule refuses them (below).
 # Their refusal is asked with a server dry-run create of a copy under other names (suffix
 # -capture-check): a create of a name that exists would still reach admission, but kubectl apply of

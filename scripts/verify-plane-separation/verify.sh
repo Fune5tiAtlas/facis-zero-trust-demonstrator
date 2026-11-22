@@ -254,7 +254,7 @@ capture_start_check
 left=$(k get pods,services,serviceaccounts,networkpolicies -A -l "$PART_OF" -o name 2>&1) \
   || { echo "$PROOF_NAME: cannot list the objects of an earlier run: $(head -1 <<<"$left")" >&2; exit 125; }
 if [ -n "$left" ]; then
-  echo "$PROOF_NAME: refusing to start: objects labelled $PART_OF remain from an earlier run: $(paste -sd' ' <<<"$left")" >&2
+  echo "$PROOF_NAME: refusing to start: objects labelled $PART_OF remain from an earlier run: $(paste -sd' ' - <<<"$left")" >&2
   exit 125
 fi
 
@@ -286,7 +286,7 @@ on_exit() {
   if [ "$created" = 1 ] && [ "$was" != 1 ]; then
     left=$(k --request-timeout=60s get pods,services,serviceaccounts,networkpolicies -A -l "$PART_OF" -o name 2>&1) \
       || left="(they could not be listed: $(head -1 <<<"$left"))"
-    [ -z "$left" ] || echo "$PROOF_NAME: objects of the run remain: $(paste -sd' ' <<<"$left")" >&2
+    [ -z "$left" ] || echo "$PROOF_NAME: objects of the run remain: $(paste -sd' ' - <<<"$left")" >&2
     [ "$(policy_snapshot)" = "$(cat "$work/snapshot-before" 2>/dev/null)" ] \
       || echo "$PROOF_NAME: the zone's policies differ from the snapshot taken at the start" >&2
   fi
@@ -403,7 +403,7 @@ if [ "$routing_ok" != 1 ]; then
 fi
 if [ "$routing_ok" = 1 ]; then
 AGENT_NODES=$(agent_nodes)
-[ -n "$AGENT_NODES" ]; check $? "the SPIRE agent runs on at least one node, where the stand-ins are placed" "$(paste -sd' ' <<<"${AGENT_NODES:-none}")"
+[ -n "$AGENT_NODES" ]; check $? "the SPIRE agent runs on at least one node, where the stand-ins are placed" "$(paste -sd' ' - <<<"${AGENT_NODES:-none}")"
 code "$(k get nodes -o wide | sed 's/  */ /g')"
 
 # --------------------------------------------------------------------------------------------
