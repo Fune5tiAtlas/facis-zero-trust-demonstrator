@@ -1,0 +1,7 @@
+NAME: ztd-guard
+LAST DEPLOYED: Sun Nov 22 01:18:14 2026
+NAMESPACE: tenant-a
+STATUS: deployed
+REVISION: 1
+DESCRIPTION: Install complete
+TEST SUITE: None

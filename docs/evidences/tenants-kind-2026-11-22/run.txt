@@ -1,0 +1,6 @@
+mode: kind
+context: kind-ztd-tenants
+trust domain: kind.facis-ztd.local
+probe run: 30a15cdb
+started: 2026-11-22T02:18:32Z
+finished: 2026-11-22T02:20:29Z

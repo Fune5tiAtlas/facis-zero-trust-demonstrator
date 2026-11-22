@@ -1,0 +1,162 @@
+[
+  {
+    "kind": "AuthorizationPolicy",
+    "name": "allow-atls-gateway-to-cmcd",
+    "resourceVersion": "1613"
+  },
+  {
+    "kind": "AuthorizationPolicy",
+    "name": "allow-atls-gateway-to-tcr",
+    "resourceVersion": "1610"
+  },
+  {
+    "kind": "AuthorizationPolicy",
+    "name": "allow-backend-to-verification-service",
+    "resourceVersion": "1612"
+  },
+  {
+    "kind": "AuthorizationPolicy",
+    "name": "allow-pdp-adapter-to-tsa",
+    "resourceVersion": "1608"
+  },
+  {
+    "kind": "AuthorizationPolicy",
+    "name": "allow-workloads-to-otel-collector",
+    "resourceVersion": "1609"
+  },
+  {
+    "kind": "AuthorizationPolicy",
+    "name": "allow-ztd-openbao-bootstrap-to-server",
+    "resourceVersion": "1774"
+  },
+  {
+    "kind": "AuthorizationPolicy",
+    "name": "allow-ztd-verify-openbao-to-server",
+    "resourceVersion": "1773"
+  },
+  {
+    "kind": "ConfigMap",
+    "name": "istio-ca-crl",
+    "resourceVersion": "1514"
+  },
+  {
+    "kind": "ConfigMap",
+    "name": "istio-ca-root-cert",
+    "resourceVersion": "1513"
+  },
+  {
+    "kind": "ConfigMap",
+    "name": "kube-root-ca.crt",
+    "resourceVersion": "735"
+  },
+  {
+    "kind": "ConfigMap",
+    "name": "ztd-openbao-config",
+    "resourceVersion": "1757"
+  },
+  {
+    "kind": "NetworkPolicy",
+    "name": "allow-atls-gateway-to-cmcd-ingress",
+    "resourceVersion": "761"
+  },
+  {
+    "kind": "NetworkPolicy",
+    "name": "allow-atls-gateway-to-tcr-ingress",
+    "resourceVersion": "760"
+  },
+  {
+    "kind": "NetworkPolicy",
+    "name": "allow-backend-to-verification-service-ingress",
+    "resourceVersion": "744"
+  },
+  {
+    "kind": "NetworkPolicy",
+    "name": "allow-dns-egress",
+    "resourceVersion": "758"
+  },
+  {
+    "kind": "NetworkPolicy",
+    "name": "allow-intra-plane",
+    "resourceVersion": "765"
+  },
+  {
+    "kind": "NetworkPolicy",
+    "name": "allow-mesh-control-plane-egress",
+    "resourceVersion": "745"
+  },
+  {
+    "kind": "NetworkPolicy",
+    "name": "allow-observability-scrape-egress",
+    "resourceVersion": "769"
+  },
+  {
+    "kind": "NetworkPolicy",
+    "name": "allow-pdp-adapter-to-tsa-ingress",
+    "resourceVersion": "739"
+  },
+  {
+    "kind": "NetworkPolicy",
+    "name": "allow-telemetry-export-egress",
+    "resourceVersion": "740"
+  },
+  {
+    "kind": "NetworkPolicy",
+    "name": "allow-workloads-to-otel-collector-ingress",
+    "resourceVersion": "767"
+  },
+  {
+    "kind": "NetworkPolicy",
+    "name": "default-deny",
+    "resourceVersion": "732"
+  },
+  {
+    "kind": "Role",
+    "name": "ztd-openbao-bootstrap",
+    "resourceVersion": "1758"
+  },
+  {
+    "kind": "RoleBinding",
+    "name": "ztd-openbao-bootstrap",
+    "resourceVersion": "1759"
+  },
+  {
+    "kind": "Secret",
+    "name": "sh.helm.release.v1.ztd-openbao.v1",
+    "resourceVersion": "2105"
+  },
+  {
+    "kind": "Secret",
+    "name": "ztd-openbao-bootstrap",
+    "resourceVersion": "1993"
+  },
+  {
+    "kind": "Service",
+    "name": "ztd-openbao",
+    "resourceVersion": "1762"
+  },
+  {
+    "kind": "Service",
+    "name": "ztd-openbao-internal",
+    "resourceVersion": "1760"
+  },
+  {
+    "kind": "ServiceAccount",
+    "name": "default",
+    "resourceVersion": "733"
+  },
+  {
+    "kind": "ServiceAccount",
+    "name": "ztd-openbao",
+    "resourceVersion": "1755"
+  },
+  {
+    "kind": "ServiceAccount",
+    "name": "ztd-openbao-bootstrap",
+    "resourceVersion": "1756"
+  },
+  {
+    "kind": "ServiceAccount",
+    "name": "ztd-verify-openbao",
+    "resourceVersion": "2027"
+  }
+]

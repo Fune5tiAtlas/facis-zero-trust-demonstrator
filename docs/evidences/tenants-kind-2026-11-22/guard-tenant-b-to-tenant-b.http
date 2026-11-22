@@ -1,0 +1,10 @@
+HTTP/1.1 200 OK
+content-type: application/json
+content-length: 22
+date: Sun, 22 Nov 2026 02:20:23 GMT
+server: envoy
+x-envoy-upstream-service-time: 35
+
+{"tenant":"tenant-b"}
+
+HTTP_CODE=200

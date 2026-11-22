@@ -1,0 +1,65 @@
+zone:
+  name: kind
+  kubernetesVersion: v1.35.8
+  storageClass: standard
+  loadBalancer:
+    type: none
+  trustDomain: kind.facis-ztd.local
+mesh:
+  mode: sidecar
+cni:
+  cilium:
+    enabled: true
+    version: 1.20.2
+planes:
+  extra:
+  - name: spire-system
+    plane: management
+    mesh: false
+  - name: istio-system
+    plane: management
+    mesh: false
+  - name: ztd-otel-node
+    plane: management
+    mesh: false
+  - name: tenant-a
+    plane: data
+  - name: tenant-b
+    plane: data
+networkPolicy:
+  kubeApi:
+    enabled: true
+    cidrs:
+    - 172.18.0.0/16
+    ports:
+    - 6443
+  meshControlPlane:
+    enabled: true
+  controlPlaneWebhooks:
+    enabled: true
+  identityServer:
+    enabled: true
+  observabilityScrape:
+    enabled: true
+telemetryExport:
+  entry:
+    port: 4317
+    transport: in-cluster
+    inCluster:
+      namespace: ztd-observability
+      podSelector:
+        app.kubernetes.io/name: otel-entry
+      host: otel-entry.ztd-observability.svc.cluster.local
+  revocationStatusListUrl: http://status-list.ztd-mgmt.svc.cluster.local:8080/status/1
+tenants:
+  install: true
+  names:
+  - tenant-a
+  - tenant-b
+  values:
+    data:
+      image:
+        repository: docker.io/envoyproxy/envoy
+        digest: sha256:3a76238cdf52c7a3e33951f44c02d694108e6481feffe6663bf9319f55ec1394
+    podAnnotations:
+      sidecar.istio.io/nativeSidecar: 'true'
