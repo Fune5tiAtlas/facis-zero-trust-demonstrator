@@ -680,7 +680,7 @@ jobs:
           yaml.safe_dump(zone, open(sys.argv[2], "w"), sort_keys=False)
           PY
           ZONE_VALUES="$copy/zone.yaml" RENDER_DIR="$RUNNER_TEMP/render-planted" scripts/install-zone/install.sh render zone-policy \
-            | grep 'pairs coupling: 6 allow rules' || { echo "install-zone did not render the planted pair" >&2; exit 1; }
+            | grep 'pairs coupling: 8 allow rules' || { echo "install-zone did not render the planted pair" >&2; exit 1; }
           if ZONE_VALUES="$copy/zone.yaml" RENDER_DIR="$copy/out" "$copy/scripts/install-zone/install.sh" render zone-policy 2>"$copy.err"; then
             echo "install-zone rendered a zone-policy without the rule of a declared pair" >&2; exit 1
           fi
