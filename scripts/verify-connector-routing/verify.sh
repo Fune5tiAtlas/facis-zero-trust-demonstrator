@@ -16,7 +16,10 @@
 #            gateway's own label under another identity gets no lane out (Hubble's policy drop).
 #   ingress  the entry ENTRY_NAME in ENTRY_NAMESPACE. entry: it forwards every request to one upstream,
 #            and every Service of type LoadBalancer or NodePort in the cluster is the entry or one of
-#            DECLARED_ENTRIES (namespace/name). DIRECT_TARGETS and DIRECT_EXTERNAL are required.
+#            DECLARED_ENTRIES (namespace/name); every declared entry needs at least one DECLARED_PROBES
+#            line, sent from the proof host (outside the cluster) to the Service's load-balancer address, so
+#            a declared entry is held to its scope, never passed silently. DIRECT_TARGETS and
+#            DIRECT_EXTERNAL are required.
 # Both roles: direct-path, the caller's attempt at the peer entry (egress), at every DIRECT_EXTERNAL and
 # every DIRECT_TARGETS is denied, with evidence: a network denial counts only with the policy drop Hubble
 # recorded for the flow (no Hubble on the node fails the check), a mesh denial only with the destination
@@ -40,6 +43,10 @@
 #   DIRECT_EXTERNAL    space-separated <IPv4>:<port>/<http|https> outside the cluster the caller must not reach
 #   DIRECT_TARGETS     space-separated <namespace>/<service>:<port>/<http|https> inside the zone
 #   ENTRY_NAMESPACE, ENTRY_NAME, DECLARED_ENTRIES   the entry section (see above)
+#   DECLARED_PROBES    one line per scope assertion of a declared entry, fields separated by |:
+#                        <ns>/<svc>|https|<METHOD> <host> <path>|<code, or !2xx>
+#                        <ns>/<svc>|tls12|<host>|refused        (TLS 1.2 handshake refused)
+#                        <ns>/<svc>|dns|<qname> <type>|<rcode>  (UDP and TCP)
 #   ZTD_EVIDENCE_DIR   the run directory (default: a new one under ~/.local/state/ztd/verify-connector-routing)
 # shellcheck disable=SC2016,SC1091,SC2319,SC2329,SC2086
 set -uo pipefail
@@ -251,6 +258,28 @@ for cl in c["static_resources"]["clusters"]:
   extra=$(comm -23 <(printf '%s\n' "$exposed") <(printf '%s\n' "$ENTRY_NAMESPACE/$ENTRY_NAME" ${DECLARED_ENTRIES:-} | sort))
   [ -z "$extra" ] && grep -qx "$ENTRY_NAMESPACE/$ENTRY_NAME" <<<"$exposed"
   check $? "every Service exposed outside the cluster is the entry or a declared bypass" "exposed: $(paste -sd' ' - <<<"$exposed"); undeclared: ${extra:-none}"
+  # A declared entry is held to its declared scope, probed from outside the cluster (this host).
+  for e in ${DECLARED_ENTRIES:-}; do
+    lb=$(k -n "${e%%/*}" get svc "${e#*/}" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+    n=0
+    while IFS='|' read -r who kind arg want; do
+      [ "$who" = "$e" ] || continue; n=$((n+1))
+      case $kind in
+        https) read -r m host path <<<"$arg"
+               got=$(curl -sk --resolve "$host:443:$lb" -o /dev/null -w '%{http_code}' -X "$m" -m 10 "https://$host$path")
+               case $want in '!2xx') [[ $got != 2* && $got != 000 ]];; *) [ "$got" = "$want" ];; esac
+               check $? "declared entry $e: $m $path answers $want" "answered $got";;
+        tls12) curl -sk --resolve "$arg:443:$lb" --tls-max 1.2 -o /dev/null -m 10 "https://$arg/"; rc=$?
+               [ "$rc" = 35 ]; check $? "declared entry $e: a TLS 1.2 handshake is refused" "curl exit $rc";;
+        dns)   read -r q t <<<"$arg"
+               u=$(dig @"$lb" "$q" "$t" +noall +comments +time=5 2>/dev/null | sed -n 's/.*status: \([A-Z]*\).*/\1/p')
+               c=$(dig @"$lb" "$q" "$t" +tcp +noall +comments +time=5 2>/dev/null | sed -n 's/.*status: \([A-Z]*\).*/\1/p')
+               [ "$u" = "$want" ] && [ "$c" = "$want" ]; check $? "declared entry $e: $q $t answers $want over UDP and TCP" "UDP ${u:-none}, TCP ${c:-none}";;
+        *)     check 1 "declared entry $e: unknown probe kind $kind";;
+      esac
+    done <<<"${DECLARED_PROBES:-}"
+    [ "$n" -gt 0 ]; check $? "declared entry $e is held to a declared scope" "$n scope assertion(s)"
+  done
 fi
 
 section exemptions

@@ -11,9 +11,9 @@ cites Hubble's policy drop when the node's Cilium agent answers `hubble observe`
 
 | Section | Runs when | Passes when |
 |---|---|---|
-| egress-route | the gateway `GATEWAY` exists in `ROUTE_NAMESPACE` | its NetworkPolicy has one egress lane; the caller's request through it is served by the peer; the gateway's access log records it with the peer as upstream; the peer's log (`PEER_LOG_CMD`) records its arrival; an impostor with the caller's labels is refused by the gateway's proxy (403 and a denial line naming it) |
-| direct-path | always | the caller's direct attempt at the peer entry and at each `DIRECT_EXTERNAL` is dropped (and absent from the peer's log); each `DIRECT_TARGETS` Service is unreachable |
-| entry | `ENTRY_NAMESPACE`, `ENTRY_NAME` | the entry forwards to one upstream; every `LoadBalancer`/`NodePort` Service of the cluster is the entry or in `DECLARED_ENTRIES` |
+| egress-route | `ROLE=egress` (the gateway `GATEWAY` must exist in `ROUTE_NAMESPACE`) | its NetworkPolicy has one egress lane; the caller's request through it is served by the peer; the gateway's access log records it with the peer as upstream; the peer's log (`PEER_LOG_CMD`) records its arrival; an impostor with the caller's labels is refused by the gateway's proxy (403 and a denial line naming it) |
+| direct-path | both roles (a denial counts only with Hubble's policy drop or the destination's denial line) | the caller's direct attempt at the peer entry and at each `DIRECT_EXTERNAL` is dropped (and absent from the peer's log); each `DIRECT_TARGETS` Service is unreachable |
+| entry | `ROLE=ingress` | the entry forwards to one upstream; every `LoadBalancer`/`NodePort` Service of the cluster is the entry or in `DECLARED_ENTRIES`, and each declared one passes its `DECLARED_PROBES`, sent from outside the cluster |
 | exemptions | always | the caller resolves cluster names; it reaches the collector (or a stand-in with the export row's labels and identity) on 4318 |
 
 On a participant cluster the context guard of `scripts/lib/proof.sh` applies (`ZTD_CONFIRM_CLUSTER`), and
@@ -27,8 +27,11 @@ scripts/verify-connector-routing/verify.sh
 ```
 
 Zone B (ingress role; no gateway): `ENTRY_NAMESPACE=ztd-m3-b ENTRY_NAME=ztd-edge
-DECLARED_ENTRIES=ztd-train/train-zone-manager-dns DIRECT_TARGETS='ztd-m3-b/ztd-protected-resource:8080
-ztd-m3-b/ztd-guard:8080 ztd-m3-b/ztd-participant:8080' DIRECT_EXTERNAL=<an address outside the zone>:443`.
+DECLARED_ENTRIES='ztd-train/train-zone-manager-dns ztd-train/tspa-public'`, `DECLARED_PROBES` asserting
+each declared entry's scope (the TSPA entry: the DID document served, writes 404, TLS 1.2 refused; the DNS
+listener: its zone answered, another refused), `DIRECT_TARGETS` (each `<ns>/<svc>:<port>/<http|https>`)
+and `DIRECT_EXTERNAL` (`<IPv4>:<port>/<proto>`); the exact invocation is in the zone B record under
+`docs/evidences/connector-routing/`.
 
 `kind.sh` rehearses both roles on a kind zone (`scripts/dev/kind-cilium-up.sh`, then
 `scripts/install-zone/install.sh install ztd spire-crds spire istio-base istiod istio-cni zone-policy`):
