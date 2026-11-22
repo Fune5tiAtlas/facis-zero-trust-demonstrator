@@ -382,7 +382,7 @@ spec:
             --registrar-id=registrar, --registrar-secret-file=/run/c/registrar-secret, --registrar-scopes=connector:client_registration,
             "--registrar-audiences=$register_url,$inbound,$upstream", "--registrar-delegable-scopes=report:summary,other:read,report:full",
             --vp-trusted-issuers-file=/etc/connector/issuers.json, --vp-scope-map-file=/etc/connector/scopes.json,
-            --access-token-lifespan=${lifespan}s, --drain-delay=0s]
+            --access-token-lifespan=${lifespan}s, --drain-delay=0s, --zone=b]
           env:
             - {name: CONNECTOR_DATABASE_URL, valueFrom: {secretKeyRef: {name: connector-credentials, key: database-url}}}
             - {name: CONNECTOR_OPENBAO_URL, value: http://openbao:8200}

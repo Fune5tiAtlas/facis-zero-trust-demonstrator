@@ -658,6 +658,7 @@ spec:
             - --vp-scope-map-file=/etc/connector/scopes.json
             - --access-token-lifespan=$token_lifespan
             - --drain-delay=0s
+            - --zone=b
           env:
             - name: CONNECTOR_DATABASE_URL
               valueFrom: {secretKeyRef: {name: connector-database, key: url}}
