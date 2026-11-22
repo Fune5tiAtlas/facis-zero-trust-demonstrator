@@ -49,7 +49,7 @@ PASS  transit refuses to sign with the retired version and signs with the active
 PASS  kubernetes auth: the service token is revoked; only the login can serve the store
 PASS  kubernetes auth: the pod mounts one projected token for audience openbao (600 s, rotated by the kubelet) and no API token
 PASS  kubernetes auth: /readyz 200 with signing_key ok through the login alone
-PASS  kubernetes auth: ready throughout 75 s of 30 s tokens, with 6 logins (re-login before each expiry)
+PASS  kubernetes auth: ready throughout 75 s of 30 s tokens, with 7 logins (re-login before each expiry)
 PASS  kubernetes auth: with the login refused (role rebound to another namespace) readiness fails closed once the token expires: 503, signing_key unreachable, openbao ok
 PASS  kubernetes auth: with the role restored the same pod is Ready again
 PASS  kubernetes auth: no restart through re-logins, the refusal and the recovery
