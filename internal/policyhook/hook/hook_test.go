@@ -501,3 +501,27 @@ func TestFixtureCasesReproduceTheContractFixtures(t *testing.T) {
 		t.Error("an empty directory was accepted")
 	}
 }
+
+// TestSubstitutionRefusalKeepsTheEvaluatedRule: a refusal after policy allowed the request records
+// the rule and bundle that allowed it, not an empty rule.
+func TestSubstitutionRefusalKeepsTheEvaluatedRule(t *testing.T) {
+	allowed := allowSubst
+	allowed.RuleID = "data.guard.allow_read"
+	for name, err := range map[string]error{
+		"store refusal":     &hook.RefusalError{ReasonCode: hook.ReasonTokenNoUpstream},
+		"store unavailable": errors.New("connection refused"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(allowed, presentToken)
+			f.subst.err = err
+			out := f.guard.Evaluate(context.Background(), callerRequest())
+			if out.Allowed || len(f.sink.payloads) != 1 {
+				t.Fatalf("outcome %+v, events %d", out, len(f.sink.payloads))
+			}
+			p := f.sink.payloads[0]
+			if p.State != "denied" || p.RuleID != "data.guard.allow_read" || p.BundleRevision != "v1" {
+				t.Fatalf("event %+v lost the evaluated rule or bundle", p)
+			}
+		})
+	}
+}
