@@ -44,8 +44,8 @@ planes:
     - { name: ztd-otel-node, plane: management, mesh: false }   # the node collectors: host network, no sidecar
     # The two tenants (FZTD-82): data-plane namespaces under the baseline (default deny, DNS,
     # intra-namespace lane, mesh label, SPIFFE identities), their content from tenants below.
-    - { name: tenant-a, plane: data }
-    - { name: tenant-b, plane: data }
+    - { name: tenant-a, plane: data, tenant: true }
+    - { name: tenant-b, plane: data, tenant: true }
   # The provider's webhook kubernetes-service-host.resources.gardener.cloud (kubectl get
   # mutatingwebhookconfiguration gardener-resource-manager-shoot) sets KUBERNETES_SERVICE_HOST in
   # every new pod to the API server's public name, which Cilium sees as world, not as the

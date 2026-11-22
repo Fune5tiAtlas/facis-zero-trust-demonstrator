@@ -409,23 +409,23 @@ jobs:
           done
 
       # The data-plane admission opt-in: off, no namespace carries the admission label; on, the
-      # data-plane namespace and nothing else does - not the management plane, an extra data-plane
-      # namespace, or gatekeeper-system, istio-system, spire-system or kube-system (listed here as
+      # data-plane namespace and the tenant entries (tenant: true) and nothing else do - not the
+      # management plane, an extra data-plane namespace, or gatekeeper-system, istio-system, spire-system or kube-system (listed here as
       # extra plane namespaces so the render would show them if they were labelled). The label set
       # through planes.namespaceLabels is refused.
       - name: Render the data-plane admission opt-in
         run: |
           python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user pyyaml
-          extra='planes.extra=[{"name":"spire-system","plane":"management","mesh":false},{"name":"istio-system","plane":"management","mesh":false},{"name":"gatekeeper-system","plane":"management","mesh":false},{"name":"kube-system","plane":"management","mesh":false},{"name":"ztd-data-2","plane":"data"}]'
+          extra='planes.extra=[{"name":"spire-system","plane":"management","mesh":false},{"name":"istio-system","plane":"management","mesh":false},{"name":"gatekeeper-system","plane":"management","mesh":false},{"name":"kube-system","plane":"management","mesh":false},{"name":"ztd-data-2","plane":"data"},{"name":"tenant-a","plane":"data","tenant":true},{"name":"tenant-b","plane":"data","tenant":true}]'
           for enforce in false true; do
             helm lint deployment/helm/ztd -f deployment/helm/ztd/ci/values.yaml --set-json "$extra" --set admission.enforceDataPlane=$enforce
             helm template deployment/helm/ztd -f deployment/helm/ztd/ci/values.yaml --set-json "$extra" --set admission.enforceDataPlane=$enforce |
               python3 -c '
           import sys, yaml
-          want = ["ztd-data"] if sys.argv[1] == "true" else []
+          want = ["tenant-a", "tenant-b", "ztd-data"] if sys.argv[1] == "true" else []
           ns = [d for d in yaml.safe_load_all(sys.stdin) if d and d.get("kind") == "Namespace"]
           names = sorted(d["metadata"]["name"] for d in ns)
-          for n in ["ztd-mgmt", "ztd-data", "ztd-data-2", "spire-system", "istio-system", "gatekeeper-system", "kube-system"]:
+          for n in ["ztd-mgmt", "ztd-data", "ztd-data-2", "tenant-a", "tenant-b", "spire-system", "istio-system", "gatekeeper-system", "kube-system"]:
               assert n in names, f"namespace {n} not rendered: {names}"
           got = sorted(d["metadata"]["name"] for d in ns if (d["metadata"].get("labels") or {}).get("facis.ztd/admission-proof") == "true")
           assert got == want, f"enforceDataPlane={sys.argv[1]}: admission label on {got}, want {want}"
@@ -444,6 +444,16 @@ jobs:
             fi
             grep -q 'admission.enforceDataPlane: planes.data.namespace' "$RUNNER_TEMP/err" ||
               { echo "planes.data.namespace=$data refused for another reason:" >&2; cat "$RUNNER_TEMP/err" >&2; exit 1; }
+          done
+          # A tenant entry is a meshed data-plane namespace other than a system, the management or the
+          # data-plane namespace; anything else is refused before anything renders.
+          for entry in '{"name":"ztd-mgmt","plane":"data","tenant":true}' '{"name":"kube-system","plane":"data","tenant":true}' \
+              '{"name":"ztd-data","plane":"data","tenant":true}' '{"name":"tenant-c","plane":"management","tenant":true}' \
+              '{"name":"tenant-c","plane":"data","mesh":false,"tenant":true}'; do
+            if helm template deployment/helm/ztd -f deployment/helm/ztd/ci/values.yaml --set-json "planes.extra=[$entry]" >/dev/null 2>"$RUNNER_TEMP/err"; then
+              echo "tenant entry $entry rendered" >&2; exit 1
+            fi
+            grep -q 'a tenant entry' "$RUNNER_TEMP/err" || { echo "tenant entry $entry refused for another reason:" >&2; cat "$RUNNER_TEMP/err" >&2; exit 1; }
           done
 
       # The umbrella's admission release, rendered the way the zone installer installs it: the kind

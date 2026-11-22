@@ -57,8 +57,9 @@ planes:
 
 # --------------------------------------------------------------------------------------------
 # Admission (ZT-02, ZT-36; deployment/admission). true labels the data-plane namespace
-# (planes.data.namespace) - that one namespace only, never the management plane, an extra plane
-# namespace or a control-plane namespace - with facis.ztd/admission-proof=true, which puts its
+# (planes.data.namespace) and every tenant entry of planes.extra (tenant: true, FZTD-82) - never the
+# management plane, another extra plane namespace or a control-plane namespace - with
+# facis.ztd/admission-proof=true, which puts its
 # workloads under the Gatekeeper image policy: digest references, allowed repositories or the digest
 # allow-list, signature and attestations, naming. Gatekeeper and the provider must be installed and
 # the injected Istio proxy digest allow-listed first (admissionProvider.trust.allowedDigests, or

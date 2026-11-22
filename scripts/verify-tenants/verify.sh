@@ -141,7 +141,7 @@ EOF
   python3 - deployment/helm/ztd/ci/values.yaml "$work/zone.yaml" "$ENVOY_IMAGE" <<'PY'
 import sys, yaml
 zone = yaml.safe_load(open(sys.argv[1]))
-zone["planes"]["extra"] += [{"name": "tenant-a", "plane": "data"}, {"name": "tenant-b", "plane": "data"}]
+zone["planes"]["extra"] += [{"name": "tenant-a", "plane": "data", "tenant": True}, {"name": "tenant-b", "plane": "data", "tenant": True}]
 repo, digest = sys.argv[3].split("@")
 zone["tenants"] = {"install": True, "names": ["tenant-a", "tenant-b"],
                    "values": {"data": {"image": {"repository": repo.split(":")[0], "digest": digest}},
