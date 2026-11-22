@@ -1,4 +1,4 @@
-# Connector registration endpoint over SPIRE mTLS on zone B (FZTD-99)
+# Connector registration endpoint over SPIRE mTLS on zone B
 
 Read on zone B (context `zerotrust-b`, namespace `ztd-m3-b`) on 2026-11-22 between 02:31 and
 02:40 UTC, read only: `kubectl get`, `kubectl logs`, the sidecar's admin endpoint through

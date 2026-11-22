@@ -1,4 +1,4 @@
-# Identity policy set reviewed against the interface contracts (FZTD-79)
+# Identity policy set reviewed against the interface contracts
 
 Review of 2026-11-22. It covers every mesh allow rule (Istio `AuthorizationPolicy`) the repository
 renders for a zone, the rules running on zone A and zone B that day, and the rules of the three
