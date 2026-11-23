@@ -85,14 +85,16 @@ naming a path, a method, a host or an address:
 - **The denial log.** `mesh-default`, a `Telemetry` in the mesh root namespace, enables the
   access-log provider `denialLog.provider` (`denial-log`, defined by the `istiod` release in
   `deployment/helm/values/istiod.yaml`) with the filter
-  `response.code_details.startsWith("rbac_access_denied") || connection.termination_details.startsWith("rbac_access_denied")`:
-  only the requests (HTTP) and connections (TCP) the proxy's authorization refused. The filter is
+  `response.code_details.startsWith("rbac_access_denied") || connection.termination_details.startsWith("rbac_access_denied") || response.code_details == "filter_chain_not_found"`:
+  only the requests (HTTP) and connections (TCP) the proxy's authorization refused, and the
+  connections without mutual TLS a STRICT listener closed. The filter is
   on the authorization decision, not on the status code, so an application's own `403` and every
   served request leave no line. The destination's proxy writes one JSON line to its stdout with the
   caller's SPIFFE ID (`source`), its own (`destination`), the authority, the code and the decision
   detail (`rbac_access_denied_matched_policy[none]`); read it with
-  `kubectl logs <pod> -c istio-proxy`. A workload refused during the mutual TLS handshake (no
-  SPIRE entry) presents no identity, so it leaves no such line.
+  `kubectl logs <pod> -c istio-proxy`. A workload outside the mesh (no proxy, or no
+  SPIRE entry) presents no identity, so no line names it: the listener logs its closed connection
+  with an empty `source`, the detail `filter_chain_not_found` and the caller's `address`.
 
 The pairs come from three places, rendered by one template here or by the release that owns them:
 

@@ -190,7 +190,30 @@ func check(root, chart string) error {
 	patches := list(at(find(mesh, "EnvoyFilter", "xfcc-sanitize-set"), "spec", "configPatches"))
 	sanitized := len(patches) == 1 && at(patches[0], "match", "context") == "SIDECAR_INBOUND" &&
 		at(patches[0], "patch", "value", "typed_config", "forward_client_cert_details") == "SANITIZE_SET"
-	return need(sanitized, "the mesh must sanitize caller identity on every inbound sidecar (zone-policy EnvoyFilter xfcc-sanitize-set)")
+	if err := need(sanitized, "the mesh must sanitize caller identity on every inbound sidecar (zone-policy EnvoyFilter xfcc-sanitize-set)"); err != nil {
+		return err
+	}
+	return checkDenialLog(mesh)
+}
+
+// checkDenialLog holds the mesh-wide Telemetry to the refusals it must log: the authorization's (HTTP and
+// TCP) and the STRICT listener's, which closes a connection without mutual TLS (filter_chain_not_found).
+func checkDenialLog(mesh []object) error {
+	logging := list(at(find(mesh, "Telemetry", "mesh-default"), "spec", "accessLogging"))
+	filter := ""
+	if len(logging) == 1 {
+		filter, _ = at(logging[0], "filter", "expression").(string)
+	}
+	for _, clause := range []string{
+		`response.code_details.startsWith("rbac_access_denied")`,
+		`connection.termination_details.startsWith("rbac_access_denied")`,
+		`response.code_details == "filter_chain_not_found"`,
+	} {
+		if !strings.Contains(filter, clause) {
+			return errors.New("the mesh must log refusals only, and every kind of them (zone-policy Telemetry mesh-default): its filter lacks " + clause)
+		}
+	}
+	return need(len(strings.Split(filter, "||")) == 3, "the mesh denial log must hold refusals only (zone-policy Telemetry mesh-default): its filter has another clause")
 }
 func main() {
 	if len(os.Args) != 3 {

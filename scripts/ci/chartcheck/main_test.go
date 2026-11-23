@@ -47,3 +47,36 @@ func TestTSAGateRefusesABundleBoundPod(t *testing.T) {
 		})
 	}
 }
+
+// The denial log check passes on the chart's Telemetry and fails once a refusal is no longer logged or
+// something else is.
+func TestDenialLogFilter(t *testing.T) {
+	telemetry := func(expression string) []object {
+		return []object{{"kind": "Telemetry", "metadata": object{"name": "mesh-default"},
+			"spec": object{"accessLogging": []any{object{"filter": object{"expression": expression}}}}}}
+	}
+	if _, err := exec.LookPath("helm"); err == nil {
+		root, _ := filepath.Abs("../../..")
+		mesh, err := render(filepath.Join(root, "deployment/helm/zone-policy"), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := checkDenialLog(mesh); err != nil {
+			t.Fatalf("chart refused: %v", err)
+		}
+	}
+	rbac := `response.code_details.startsWith("rbac_access_denied") || connection.termination_details.startsWith("rbac_access_denied")`
+	plain := ` || response.code_details == "filter_chain_not_found"`
+	if err := checkDenialLog(telemetry(rbac + plain)); err != nil {
+		t.Fatalf("the full filter refused: %v", err)
+	}
+	for name, mesh := range map[string][]object{
+		"no plaintext clause": telemetry(rbac),
+		"an extra clause":     telemetry(rbac + plain + ` || response.code == 403`),
+		"no Telemetry":        nil,
+	} {
+		if err := checkDenialLog(mesh); err == nil {
+			t.Errorf("%s passed the gate", name)
+		}
+	}
+}
