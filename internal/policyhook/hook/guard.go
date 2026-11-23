@@ -207,9 +207,13 @@ func (g *Guard) refuse(id string, r Refusal, detail string, seen EventPayload) O
 		seen.RuleID = r.RuleID
 	}
 	g.emit(id, seen)
+	headers := []Header{{"Content-Type", ContentTypeJSON}, {HeaderReasonCode, r.ReasonCode}, {HeaderRequestID, id}}
+	if r.OID4VPLink != "" {
+		headers = append(headers, Header{HeaderOID4VPLink, r.OID4VPLink})
+	}
 	return Outcome{
 		Allowed: false, CorrelationID: id, Status: StatusFor(r.ReasonCode), ReasonCode: r.ReasonCode, RuleID: r.RuleID,
-		SetHeaders: sortHeaders([]Header{{"Content-Type", ContentTypeJSON}, {HeaderReasonCode, r.ReasonCode}, {HeaderRequestID, id}}),
+		SetHeaders: sortHeaders(headers),
 		Body:       body,
 	}
 }
