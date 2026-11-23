@@ -204,6 +204,71 @@ lists the managers `helm` and `validatingadmissionpolicy-status` only, and the p
 the one read before the run (the generation rose by 2 on each zone: the lift and the restore). No probe pod
 remains, and the release revisions are unchanged.
 
+## Third rerun (evidence polling) (23 Nov 2026, 17:57-18:36Z)
+
+After the second rerun the plane-separation verifier was changed to read its evidence until it appears
+instead of once after a fixed delay (commits `a973ab85`, `e9e25363`): the denial line of a mesh probe and of
+an impostor, and Hubble's drop of a dropped flow, are each read up to five times, 3 s apart. The five rows
+were run again at `e9e25363` with the same inputs, environment and command; the zones were not changed (same
+release revisions as above). The runs above stay as history.
+
+| Target | kube-system UID | BDD run id | Plane-separation run | Routing run |
+|---|---|---|---|---|
+| `zerotrust-a` | `3fbf9fda-5cd2-459a-87f0-769126697d9a` | `mesh-a-20261123-r5` (17:57-18:36Z) | `r29d0e965`: 120 pass, 1 fail, 14 n/a, 3 declared | `20261123T183331Z-19583`: 0 failed |
+| `zerotrust-b` | `a39ae8ea-ac02-4aec-9c13-cda127b17e2d` | `mesh-b-20261123-r5` (17:57-18:15Z) | `r514b3622`: 41 pass, 0 fail, 6 n/a, 1 declared | `20261123T181016Z-7406`: 2 failed |
+
+| Row | zone A | zone B |
+|---|---|---|
+| ZT-23 | failed | **passed** |
+| ZT-25 | failed | **passed** |
+| ZT-61 | failed | **passed** |
+| ZT-62 | failed | **passed** |
+| ZT-26 | **passed** | failed |
+
+### What the polling settled
+
+- **Zone B: the four plane-separation rows pass.** The verifier's run has no failed line. The unlabelled
+  caller of `token-store-to-verification-service`, whose drop was not read in the second rerun, cites it:
+  `Hubble drop: Nov 23 18:03:07.022: ztd-data/token-store-to-verification-service-unlabelled:49706 (ID:28798) <> ztd-mgmt/verification-service:8080 (ID:50883) Policy denied DROPPED (TCP Flags: SYN)`.
+- **ZT-26 on zone B**: unchanged and expected. `declared entry ztd-train/tspa-public: GET the trust list of
+  trust.facis.cloud answers 200 with a JSON or XML body` and `GET the VC of trust.facis.cloud's trust list
+  answers 200 with a credential valid now` were each answered `404 application/json`; `Result: 2 failed
+  check(s).` The other 23 entry checks, the 6 direct paths (each with Hubble's drop) and both exemptions
+  passed. Nothing was published to TRAIN.
+
+### Why the rows still fail on zone A
+
+The same single line as in the second rerun failed, and it fails the four rows on the plane-separation
+verifier:
+
+`"management-to-data","any data-plane workload (from the management plane)","ztd-mgmt","behind a probe-scoped opening","mesh-prober-0","ztd-data/ztd-policy-evaluator","8080","refused by the destination's proxy, a denial line with both SPIFFE IDs, the opening removed","403 RBAC: access denied","mesh","no denial line naming the prober in any of the 1 pod(s) the Service selects; opening removed: yes","real","fail"`
+
+The polling rules out a late read: the line was not written at all. The log of the destination's proxy
+(`ztd-data/ztd-policy-evaluator-9cfd75b4d-cmq48`, container `istio-proxy`, the pod not restarted in 41 h), read
+after the run, holds exactly two denial lines naming `spiffe://zone-a.trust.invalid/ns/ztd-mgmt/sa/mesh-prober`,
+stamped `13:55:26.155Z` and `17:04:00.313Z`: the two runs in which this line passed (`mesh-a-20261123-r2` and
+`-r3`). It holds none for the first run, for `-r4` or for this run, whose probe fell between 18:29:40Z and
+18:32:21Z (the probes before and after it in the record). In the same window the proxy did write its other denial lines (`filter_chain_not_found` for the
+three plain-text probes of this run, at 18:25:27, 18:27:44 and 18:32:36Z), and the proxies of the gateway, the
+guard and the two tenant data services wrote theirs for the same prober (the other five lines of this probe
+pass).
+
+So the prober is answered `403 RBAC: access denied` on this destination in every run, the opening is removed,
+and the destination's proxy records the refusal in two runs out of five. The refusal holds; its record is
+missing, and the row asserts on the record. Why the proxy writes no line in some runs is not established:
+the same prober (`mesh-prober-0`), destination pod and `Telemetry` filter
+(`response.code_details.startsWith("rbac_access_denied") || ...`) are in place in the passing and the failing
+runs, and Hubble's flow buffer on the destination's node no longer held the probe's flows when it was read
+after the run (oldest flow 18:35:06Z), so which proxy produced the `403` could not be read back. A further
+read in the verifier would not change the result. Nothing was changed in the harness or on the zone.
+
+### State of the zones after the rerun
+
+On both zones `kubectl get validatingadmissionpolicy proxy-takes-spire-socket -o json --show-managed-fields`
+lists the managers `helm` and `validatingadmissionpolicy-status` only, and the policy's spec is identical to
+the one read before the run (the generation rose by 2 on each zone, 17 to 19 on zone A and 15 to 17 on zone
+B: the lift and the restore). No probe pod remains, and the release revisions are unchanged.
+
 ## Rows left pending
 
 - **ZT-01 Secure Service Mesh**: needs "a workload outside the mesh attempts the same call" as an in-mesh pair.
