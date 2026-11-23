@@ -38,7 +38,7 @@ Feature: Authorization surface
     When they request functions with different privilege requirements
     Then each receives only the minimum permitted access and any privileged entitlement is time-bound/explicitly approved AND requests beyond the granted privilege are denied.
 
-  @ZT-73 @BDD-ZT-073 @pending
+  @ZT-73 @BDD-ZT-073 @cluster
   Scenario: Authorized Upstreaming over the Zero Trust Connector
     Given a registered participant backend with valid authorization and an available protected resource
     When the backend calls through the Zero Trust Connector
