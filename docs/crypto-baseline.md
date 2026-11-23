@@ -47,7 +47,7 @@ decides it and `Setting` is the text in that file that does.
 | Connector, Token store | signing and DPoP keys held in OpenBao transit | signature | `ECDSA P-256` | `internal/transit/http.go` | `const keyType = "ecdsa-p256"` |
 | Connector | opaque access tokens and registration tokens (secret of 32 bytes or more; the hash is the OAuth2 library's) | hash or MAC | `HMAC-SHA-512/256` | `services/connector/serve.go` | `const minSecret = 32` |
 | Guard, Protected Resource | token and DPoP proof verification | signature | `ECDSA P-256` | `internal/tokenverify/keyset.go` | `alg != jose.AlgES256` |
-| Participant | DPoP proof key | signature | `ECDSA P-256` | `services/participant/connector.go` | `ecdsa.GenerateKey(elliptic.P256(), rand.Reader)` |
+| Participant, Connector registrar | DPoP proof key | signature | `ECDSA P-256` | `internal/dpopproof/processkey.go` | `ecdsa.GenerateKey(elliptic.P256(), rand.Reader)` |
 | Admission provider | cosign image signatures it accepts | signature | `ECDSA P-256` | `internal/cosignverify/cosignverify.go` | `key.Curve != elliptic.P256()` |
 | Admission provider | its CA and server certificate | signature | `ECDSA P-256` | `deployment/helm/admission/templates/tls.yaml` | `genSignedCertWithKey (index $dns 2) nil $dns (int .Values.tls.validityDays) $genCA (genPrivateKey "ecdsa")` |
 | Public ingress (Traefik) | the hosts the controller terminates through a router that names no TLSOption of its own, once the manifest is applied to the cluster as its only `default` TLSOption | transport | `TLS 1.3` | `deployment/ingress/traefik-tls-options.yaml` | `minVersion: VersionTLS13` |

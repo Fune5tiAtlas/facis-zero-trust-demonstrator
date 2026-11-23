@@ -42,6 +42,7 @@ func required(over map[string]string) func(string) string {
 		"CONNECTOR_REGISTRAR_SECRET_FILE":    "/run/registrar-secret",
 		"CONNECTOR_REGISTRAR_SCOPES":         "connector:client_registration, resource.read",
 		"CONNECTOR_REGISTRAR_AUDIENCES":      "https://connector.example/oauth2/register,https://resource.example",
+		"CONNECTOR_ZONE":                     "b",
 	}
 	for k, v := range over {
 		if v == "" {
@@ -117,6 +118,8 @@ func TestParseServe(t *testing.T) {
 		{name: "lifespan over 15 minutes", args: []string{"--access-token-lifespan", "15m1s"}, env: required(nil), wantErr: "re-validation interval"},
 		{name: "lifespan over 15 minutes from the environment", env: required(map[string]string{"CONNECTOR_ACCESS_TOKEN_LIFESPAN": "1h"}), wantErr: "re-validation interval"},
 		{name: "negative drain delay", args: []string{"--drain-delay", "-1s"}, env: required(nil), wantErr: "drain delay"},
+		{name: "no zone", env: required(map[string]string{"CONNECTOR_ZONE": ""}), wantErr: "--zone"},
+		{name: "zone c", args: []string{"--zone", "c"}, env: required(nil), wantErr: "a or b"},
 		{name: "bad bool in the environment", env: required(map[string]string{"CONNECTOR_DPOP_ENFORCE": "maybe"}), wantErr: "CONNECTOR_DPOP_ENFORCE"},
 		{name: "bad version in the environment", env: required(map[string]string{"CONNECTOR_SIGNING_KEY_VERSION": "v1"}), wantErr: "CONNECTOR_SIGNING_KEY_VERSION"},
 		{name: "bad level", args: []string{"--log-level", "loud"}, env: required(nil), wantErr: "--log-level"},
@@ -214,7 +217,7 @@ func baseArgs(t *testing.T, database, openbao string) []string {
 		"--registrar-id", "registrar", "--registrar-secret-file", writeFile(t, "registrar-secret", canaryRegistrarSecret),
 		"--registrar-scopes", "connector:client_registration,resource.read",
 		"--registrar-audiences", registrationEndpoint + "," + resourceAudience,
-		"--drain-delay", "300ms", "--shutdown-timeout", "2s"}
+		"--zone", "b", "--drain-delay", "300ms", "--shutdown-timeout", "2s"}
 }
 
 func TestServeRefusesMissingOrShortSecrets(t *testing.T) {
