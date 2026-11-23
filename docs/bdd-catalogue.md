@@ -13,7 +13,7 @@ reported is described in [BDD acceptance](bdd.md).
   This page is built from the repository, not from a run: each cluster run publishes its own
   copy of the catalogue with the basis filled in.
 
-94 rows: 24 implemented, 70 pending.
+94 rows: 25 implemented, 69 pending.
 
 | Row | Requirement | Gate | Status | Runner |
 |---|---|---|---|---|
@@ -36,7 +36,7 @@ reported is described in [BDD acceptance](bdd.md).
 | [ZT-17](#zt-17) | Demonstrator Usage | G2 | pending | Cucumber.js |
 | [ZT-18](#zt-18) | TRAIN Allow List | G3 | implemented | godog |
 | [ZT-19](#zt-19) | Upstream / Downstream Proxy Functionality | G3 | pending | godog |
-| [ZT-20](#zt-20) | Guarding Functionality | G3 | pending | godog |
+| [ZT-20](#zt-20) | Guarding Functionality | G3 | implemented | godog |
 | [ZT-21](#zt-21) | OAuth2 Server | G3 | implemented | godog |
 | [ZT-22](#zt-22) | Token Storage | G3 | implemented | godog |
 | [ZT-23](#zt-23) | Service Mesh Implementation | G3 | implemented | godog |
@@ -541,8 +541,8 @@ Then the request reaches the counter side over that protected channel with requi
 | Test type | BDD / integration |
 | Gate | G3 - Protected-service vertical slice |
 | Evidence | `evidence/bdd-zt-020/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/authorization.feature` |
 

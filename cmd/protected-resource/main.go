@@ -21,7 +21,8 @@ func main() {
 	}
 
 	logger := newLogger(config.LogLevel)
-	server := protectedresource.NewServer(config, logger).HTTPServer()
+	resource := protectedresource.NewServer(config, logger)
+	server := resource.HTTPServer()
 
 	shutdownSignal, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -36,6 +37,16 @@ func main() {
 	}()
 
 	logger.Info("protected resource starting", "address", config.Address, "mode", config.ServingMode())
+	if grpcServer := resource.GRPCServer(); grpcServer != nil {
+		logger.Info("protected resource gRPC starting", "address", config.GRPCAddress, "method", protectedresource.GRPCMethod)
+		go func() {
+			// Not drained on shutdown: the process exits with the REST server.
+			if err := grpcServer.ListenAndServe(); err != nil {
+				logger.Error("protected resource gRPC server failed", "error", err)
+				os.Exit(1)
+			}
+		}()
+	}
 	serveErr := server.ListenAndServe()
 	if errors.Is(serveErr, http.ErrServerClosed) {
 		if shutdownErr := <-shutdownDone; shutdownErr != nil {

@@ -47,6 +47,9 @@ type Config struct {
 	// allowed only for a member of the target tenant the guard's route names. Configured, a request
 	// without a target tenant is denied; unconfigured, so is one with a target tenant.
 	TenantMembers map[string][]string `json:"tenant_members,omitempty"`
+	// GRPCMethods are the gRPC methods the rule set covers besides the REST route, as full method
+	// paths; the guard is configured with the same list.
+	GRPCMethods []string `json:"grpc_methods,omitempty"`
 }
 
 // tenantName is a tenant as the contracts name it: a Kubernetes namespace name.
@@ -55,6 +58,18 @@ var tenantName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
 type Presentation struct {
 	Scopes     []string `json:"scopes"`
 	OID4VPLink string   `json:"oid4vp_link"`
+}
+
+// routed reports whether the request is for a route the rule set covers: the REST route, or a
+// configured gRPC method whose service the guard named. The decision that follows is the same.
+func (p *Policy) routed(r hook.RequestInfo) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	if r.GRPCService == "" {
+		return r.Path == "/demo"
+	}
+	return slices.Contains(p.cfg.GRPCMethods, r.Path) && strings.HasPrefix(r.Path, "/"+r.GRPCService+"/")
 }
 
 type Policy struct {
@@ -104,7 +119,7 @@ func (p *Policy) deny(rule string) hook.Decision {
 // Decide answers one input. The checks run from the request's shape to the caller's entitlement,
 // so insufficient scope (RuleScopeRequired) is never reported for a request a rule refuses anyway.
 func (p *Policy) Decide(in hook.Input) hook.Decision {
-	if !slices.Contains(p.cfg.ParticipantCallers, in.Source.SPIFFEID) || in.Request.Method != http.MethodPost || in.Request.Path != "/demo" || in.Request.Host != p.cfg.Host || !in.Token.Present || !in.Token.ProofValid || in.Token.Aud != p.cfg.Audience || in.Token.Sub == "" || in.Token.ClientID == "" || in.Token.JKT == "" {
+	if !slices.Contains(p.cfg.ParticipantCallers, in.Source.SPIFFEID) || !p.routed(in.Request) || in.Request.Host != p.cfg.Host || !in.Token.Present || !in.Token.ProofValid || in.Token.Aud != p.cfg.Audience || in.Token.Sub == "" || in.Token.ClientID == "" || in.Token.JKT == "" {
 		return p.deny(RuleDefaultDeny)
 	}
 	// Membership of the target tenant is decided here, from this policy's configuration: the guard
@@ -185,7 +200,7 @@ func recordDecision(events hook.EventSink, host string, in hook.Input, d hook.De
 		host = in.Request.Host
 	}
 	e.Resource = "UNKNOWN " + host + "/"
-	if slices.Contains([]string{http.MethodPost, http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch}, in.Request.Method) && in.Request.Host == host && in.Request.Path == "/demo" {
+	if slices.Contains([]string{http.MethodPost, http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch}, in.Request.Method) && in.Request.Host == host && (in.Request.Path == "/demo" || in.Request.GRPCService != "" && grpcMethod.MatchString(in.Request.Path)) {
 		e.Resource = in.Request.Method + " " + host + in.Request.Path
 	}
 	if host == "" {
@@ -197,6 +212,9 @@ func recordDecision(events hook.EventSink, host string, in hook.Input, d hook.De
 	}
 	events.Emit(id, e)
 }
+
+// grpcMethod is a full gRPC method path, the form the guard accepts in its configuration.
+var grpcMethod = regexp.MustCompile(`^/[A-Za-z_][A-Za-z0-9_.]*/[A-Za-z_][A-Za-z0-9_]*$`)
 
 // spiffeID is the v2 event schema's pattern for caller_spiffe_id.
 var spiffeID = regexp.MustCompile(`^spiffe://[a-z0-9._-]+(/[A-Za-z0-9._~%!$&'()*+,;=:@-]+)+$`)

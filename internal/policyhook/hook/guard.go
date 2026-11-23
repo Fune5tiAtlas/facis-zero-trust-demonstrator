@@ -69,6 +69,9 @@ type Request struct {
 	// PeerCertificate is the caller's TLS certificate as the proxy forwards it (URL-encoded PEM),
 	// when the filter is configured to include it, else empty.
 	PeerCertificate string
+	// GRPCService is the service of a gRPC call ("package.Service"), set by a caller that has
+	// matched the path against its configured gRPC methods; empty for any other request.
+	GRPCService string
 }
 
 // Config is what the guard knows about its zone.
@@ -138,7 +141,7 @@ func (g *Guard) Evaluate(ctx context.Context, req Request) Outcome {
 		Tenant:        g.cfg.Tenant,
 		TargetTenant:  g.cfg.TargetTenant,
 		Source:        Source{SPIFFEID: source},
-		Request:       RequestInfo{Method: method, Path: path, Host: req.Host},
+		Request:       RequestInfo{Method: method, Path: path, Host: req.Host, GRPCService: req.GRPCService},
 		Token:         g.auth.Authenticate(req.Headers.Get("Authorization"), req.Headers.Get("DPoP")),
 	}
 
@@ -207,9 +210,13 @@ func (g *Guard) refuse(id string, r Refusal, detail string, seen EventPayload) O
 		seen.RuleID = r.RuleID
 	}
 	g.emit(id, seen)
+	headers := []Header{{"Content-Type", ContentTypeJSON}, {HeaderReasonCode, r.ReasonCode}, {HeaderRequestID, id}}
+	if r.OID4VPLink != "" {
+		headers = append(headers, Header{HeaderOID4VPLink, r.OID4VPLink})
+	}
 	return Outcome{
 		Allowed: false, CorrelationID: id, Status: StatusFor(r.ReasonCode), ReasonCode: r.ReasonCode, RuleID: r.RuleID,
-		SetHeaders: sortHeaders([]Header{{"Content-Type", ContentTypeJSON}, {HeaderReasonCode, r.ReasonCode}, {HeaderRequestID, id}}),
+		SetHeaders: sortHeaders(headers),
 		Body:       body,
 	}
 }

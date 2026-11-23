@@ -70,6 +70,7 @@ Token mode only; each is required there except the entitlement, and none is read
 | `PROTECTED_RESOURCE_REQUEST_TIMEOUT` | `5s` | Positive duration bounding each resource request. |
 | `PROTECTED_RESOURCE_SLOW_DELAY` | `2s` | Positive simulated delay; must be shorter than the Resource request timeout. |
 | `PROTECTED_RESOURCE_MODE` | `sample` | `sample`, or `token` for [token mode](#token-mode). |
+| `PROTECTED_RESOURCE_GRPC_ADDRESS` | unset | Token mode only: a second listener (cleartext HTTP/2) serving the gRPC sample method `/grpc.health.v1.Health/Check` behind the same token and proof verification as `/demo`; the proof names the public base URL plus the method path. |
 | `PROTECTED_RESOURCE_ADAPTER_MODE` | `sample` | `sample` or `sample-alternative`; both are deterministic sample data. |
 | `PROTECTED_RESOURCE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 

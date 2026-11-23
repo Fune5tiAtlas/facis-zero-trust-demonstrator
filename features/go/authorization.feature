@@ -8,7 +8,7 @@ Feature: Authorization surface
     When a replacement API is docked in place of the supplied mock
     Then it serves the demonstrator flow with no change to Connector, policy or trust configuration AND an API that does not satisfy the documented interface is rejected at configuration time.
 
-  @ZT-20 @BDD-ZT-020 @pending
+  @ZT-20 @BDD-ZT-020 @cluster
   Scenario: Guarding Functionality
     Given a protected resource behind the Connector guard
     When a request with matching authorization and a request without matching authorization are executed

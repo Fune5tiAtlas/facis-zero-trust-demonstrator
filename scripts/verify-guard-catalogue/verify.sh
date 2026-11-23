@@ -13,6 +13,15 @@
 #   scripts/verify-guard-catalogue/verify.sh [--out DIR]   default .dev/guard-catalogue (git-ignored)
 #   BIN=<dir with kind and kubectl> ...                      default .tools/bin
 #
+# --tsa runs the guarding proof instead of the catalogue, on the same chain: the guard's decisions
+# are taken by the Rego bundle in the XFSC TSA policy service (deployment/helm/tsa-policy, meshed, a
+# bundle published and signed for the run), the policy rules of the guard chart are not set, and
+# the guard serves a gRPC method of the resource beside the REST route. For each protocol: an
+# entitled request passes, an unentitled one is denied and one that needs a presentation is
+# answered with the OID4VP link, each with the guard's and the policy's decision event under the
+# bundle's revision, and no denied request in the resource's record. Records: cases.jsonl.
+# It needs a linux cosign in BIN (scripts/tools/install.sh <dir> cosign).
+#
 # Needs docker, go, helm, kind, kubectl, curl, jq, openssl. KEEP=1 leaves the cluster running.
 set -euo pipefail
 
@@ -23,9 +32,11 @@ cd "$root"
 if [ -d "${BIN:-.tools/bin}" ]; then PATH="$(cd "${BIN:-.tools/bin}" && pwd):$PATH"; export PATH; fi
 
 out=.dev/guard-catalogue
+tsa=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) out="$2"; shift 2 ;;
+    --tsa) tsa=true; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -37,7 +48,7 @@ out="$(cd "$out" && pwd)"
 rm -rf "${out:?}"/*
 
 cluster=${GUARD_CATALOGUE_KIND_CLUSTER:-ztd-guard-catalogue}
-reg_name=kind-registry-guard-catalogue
+reg_name=${GUARD_CATALOGUE_REGISTRY_NAME:-kind-registry-guard-catalogue}
 reg="$reg_name:5000"
 host_reg=${GUARD_CATALOGUE_HOST_REGISTRY:-127.0.0.1:5004}
 istio_version=1.31.1   # scripts/install-zone/install.sh: ISTIO_VERSION, ISTIO_ARCHIVE_SHA256
@@ -58,6 +69,18 @@ oid4vp='openid4vp://authorize?client_id=verifier.verify.invalid&request_uri=http
 lifespan=90          # seconds; the expired case waits it out plus the verifier's 30 s skew; the store's
                      # renewer (every 15 s, at 75 %) keeps the upstream token valid in between
 samples=${GUARD_CATALOGUE_SAMPLES:-100}
+# --tsa: the TSA's namespace, the bundle's revision, the guarded gRPC method and the resource's port for it.
+tsa_ns=ztd-tsa
+revision=kind-guarding-1
+grpc_method=/grpc.health.v1.Health/Check
+grpc_port=9090
+toolbox=golang:1.27@sha256:f24164268fc1e741bbdc0066dbadcf1c8426c5a8489f0729c02c3905a53032fd   # as scripts/verify-tsa-policy
+images=(connector token-store guard policy-evaluator protected-resource feed-bridge)
+if [ "$tsa" = true ]; then
+  images+=(tsa-bundle tsa-git)
+  [ -x "${BIN:-.tools/bin}/cosign" ] || { echo "--tsa needs a linux cosign in BIN" >&2; exit 2; }
+  bin="$(cd "${BIN:-.tools/bin}" && pwd)"
+fi
 work="$(mktemp -d)"
 export KUBECONFIG="$work/kubeconfig"
 cluster_owned=false
@@ -72,6 +95,8 @@ cleanup() {
   if [ -n "${KEEP:-}" ]; then echo "kept: cluster $cluster, KUBECONFIG=$KUBECONFIG"; return; fi
   if [ "$cluster_owned" = true ]; then kind delete cluster --name "$cluster" >/dev/null 2>&1 || true; fi
   if [ "$registry_owned" = true ]; then docker rm -f "$reg_name" >/dev/null 2>&1 || true; fi
+  # The publishing container wrote its keys and bundle as root.
+  if [ "$tsa" = true ]; then docker run --rm -v "$work:/w" "$toolbox" chown -R "$(id -u):$(id -g)" /w >/dev/null 2>&1 || true; fi
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -148,7 +173,7 @@ wait_until() {
 }
 
 step "Images from the working tree"
-for image in connector token-store guard policy-evaluator protected-resource feed-bridge; do
+for image in "${images[@]}"; do
   docker build -q -f "deployment/docker/$image/Dockerfile" -t "$host_reg/$image:verify" . >/dev/null
 done
 
@@ -173,7 +198,7 @@ for node in $(kind get nodes --name "$cluster"); do
 done
 wait_until 20 curl -sf -o /dev/null "http://$host_reg/v2/"
 declare -A digest
-for image in connector token-store guard policy-evaluator protected-resource feed-bridge; do
+for image in "${images[@]}"; do
   docker push -q "$host_reg/$image:verify" >/dev/null
   digest[$image]=$(docker image inspect --format '{{index .RepoDigests 0}}' "$host_reg/$image:verify" | sed 's/.*@//')
 done
@@ -214,6 +239,47 @@ spec:
       ports: [{port: 15012, protocol: TCP}]
 YAML
 pass "kind with Istio $istio_version (istiod CA, trust domain $td), XFCC sanitized mesh-wide, namespace $ns STRICT"
+
+if [ "$tsa" = true ]; then
+  step "The TSA policy service with the run's signed Rego bundle"
+  # The zone's data for this cluster: the guard's audience and host, the Participant, the guarded gRPC
+  # method and the scope that needs a presentation. Nothing of it is in the guard chart's values.
+  jq --arg aud "$inbound" --arg host "${published#http://}" --arg p "spiffe://$td/ns/$ns/sa/ztd-participant" --arg m "$grpc_method" --arg link "$oid4vp" \
+    '.config += {audience: $aud, host: $host, participant_callers: [$p], grpc_methods: [$m], presentation: {scopes: ["report:full"], oid4vp_link: $link}}' \
+    policies/tsa/facis/guard/1.0/data.json > "$work/zone-data.json"
+  cp "$work/zone-data.json" "$out/bundle-data.json"
+  case "$(docker exec "$cluster-control-plane" uname -m)" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; *) echo "unsupported node" >&2; exit 1 ;; esac
+  GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -o "$work/tsa-bundle" ./cmd/tsa-bundle
+  # shellcheck disable=SC2016 # expanded in the toolbox
+  cat > "$work/publish.sh" <<'EOF'
+set -euo pipefail
+cd /src
+export COSIGN_PASSWORD= COSIGN=/tools/cosign TSA_BUNDLE=/w/tsa-bundle COSIGN_ALLOW_HTTP_REGISTRY=true
+mkdir -p /w/trusted
+(cd /w/trusted && /tools/cosign generate-key-pair >/dev/null 2>&1)
+COSIGN_KEY=/w/trusted/cosign.key bash scripts/supplychain/publish-tsa-bundle.sh policies/tsa/facis/guard/1.0 "$REVISION" \
+  "$REG/tsa-bundles" /w/trusted/cosign.pub /w/zone-data.json 2>/dev/null > /w/bundle-ref
+EOF
+  docker run --rm --network kind -e REG="$reg" -e REVISION="$revision" -v "$work:/w" -v "$bin:/tools:ro" -v "$root:/src:ro" "$toolbox" bash /w/publish.sh
+  bundle_ref=$(cat "$work/bundle-ref")
+  reg_ip=$(docker inspect -f '{{(index .NetworkSettings.Networks "kind").IPAddress}}' "$reg_name")
+  kubectl create namespace "$tsa_ns" >/dev/null
+  kubectl label namespace "$tsa_ns" istio-injection=enabled >/dev/null
+  if helm install tsa deployment/helm/tsa-policy -n "$tsa_ns" \
+    --set images.tsa.repository="${TSA_POLICY_IMAGE%%:*}" --set images.nats.repository="${NATS_IMAGE%%:*}" \
+    --set images.git.repository="$reg/tsa-git" --set images.git.digest="${digest[tsa-git]}" \
+    --set images.bundle.repository="$reg/tsa-bundle" --set images.bundle.digest="${digest[tsa-bundle]}" \
+    --set bundle.repository="$reg/tsa-bundles" --set-json "bundle.plainHTTPRegistries=[\"$reg\"]" --set bundle.pollSeconds=2 \
+    --set bundle.ref="$bundle_ref" --set bundle.revision="$revision" --set-file trustRoot="$work/trusted/cosign.pub" \
+    --set trustDomain=$td --set-json "callers=[{\"namespace\":\"$ns\",\"name\":\"ztd-policy-evaluator\"}]" \
+    --set networkPolicy.istiod.enabled=true --set-json 'podAnnotations={"sidecar.istio.io/nativeSidecar":"true"}' \
+    --set-json "networkPolicy.egress=[{\"to\":[{\"ipBlock\":{\"cidr\":\"$reg_ip/32\"}}],\"ports\":[{\"protocol\":\"TCP\",\"port\":5000}]}]" \
+    --wait --timeout 8m > "$out/tsa-install.txt" 2>&1; then
+    pass "the TSA policy service is ready in the mesh: bundle $revision ($bundle_ref) verified and active"
+  else
+    fail "tsa install: $(tail -3 "$out/tsa-install.txt")"
+  fi
+fi
 
 step "PostgreSQL, OpenBao, the connector and the token store"
 curl_image=$(sed -n 's/^ *image: *\(docker\.io\/curlimages\/curl:[^ ]*\).*/\1/p' deployment/helm/ztd/values.yaml | head -1)
@@ -428,7 +494,7 @@ kubectl -n "$ns" create secret generic ztd-token-store-credentials --from-litera
 kubectl -n "$ns" create secret generic token-store-database \
   --from-literal=url="postgres://postgres:verify@postgres:5432/tokenstore?sslmode=disable" >/dev/null
 jq -n --arg iss "$vp_issuer" --arg kid "$vp_kid" --arg aud "$upstream" --arg url "$connector_url" --arg cid "$route_id" \
-  --arg guard "$guard_id" --arg prefix "$published/demo" '{signing_key: "ztd-token-store", kv_prefix: "ztd/token-store/upstream",
+  --arg guard "$guard_id" --arg prefix "$published/$([ "$tsa" = true ] || echo demo)" '{signing_key: "ztd-token-store", kv_prefix: "ztd/token-store/upstream",
   trusted_issuers: [{issuer: $iss, kid: $kid, public_key_file: "/etc/token-store/issuer.pem"}],
   routes: [{name: "report-summary", peer_zone: "zone-b", audience: $aud, tenant: "report-summary", connector_url: $url, client_id: $cid,
     client_secret_file: "/var/run/token-store/credentials/client-secret", callers: [$guard], methods: ["POST"], target_prefix: $prefix,
@@ -465,7 +531,9 @@ networkPolicy:
   ingressFrom: []
   egress: [{to: [{podSelector: {matchLabels: {app.kubernetes.io/name: ztd-connector}}}], ports: [{port: 8080, protocol: TCP}]}]
 EOF
-if helm install ztd-resource deployment/helm/application-service -n "$ns" -f "$work/resource-values.yaml" --wait --timeout 5m \
+resource_grpc=()
+if [ "$tsa" = true ]; then resource_grpc=(--set "grpcPort=$grpc_port" --set "env.PROTECTED_RESOURCE_GRPC_ADDRESS=:$grpc_port"); fi
+if helm install ztd-resource deployment/helm/application-service -n "$ns" -f "$work/resource-values.yaml" ${resource_grpc[@]+"${resource_grpc[@]}"} --wait --timeout 5m \
   > "$out/resource-install.txt" 2>&1; then
   pass "the protected resource is ready in token mode"
 else
@@ -489,12 +557,27 @@ config:
   published_base_url: $published
   peer_zone: zone-b
 policyRevision: kind-catalogue-1
+podAnnotations: {sidecar.istio.io/nativeSidecar: "true"}
+EOF
+if [ "$tsa" = true ]; then
+  # No policy rules in the chart: every decision is the bundle's.
+  cat >> "$work/guard-values.yaml" <<EOF
+tsa: {evaluationURL: "http://tsa-policy-engine.$tsa_ns:8080/policy/policies/facis/guard/1.0/evaluation"}
+grpc: {methods: ["$grpc_method"], resourcePort: $grpc_port}
+networkPolicy:
+  istiod: {enabled: true}
+  egress:
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: $tsa_ns}}, podSelector: {matchLabels: {app.kubernetes.io/name: tsa-policy-engine}}}]
+      ports: [{protocol: TCP, port: 8080}]
+EOF
+else
+  cat >> "$work/guard-values.yaml" <<EOF
 policyRules:
   blockedClients: ["$blocked_id"]
   presentation: {scopes: ["report:full"], oid4vpLink: "$oid4vp"}
 networkPolicy: {istiod: {enabled: true}}
-podAnnotations: {sidecar.istio.io/nativeSidecar: "true"}
 EOF
+fi
 if helm install ztd-guard deployment/helm/guard -n "$ns" -f "$work/guard-values.yaml" --wait --timeout 5m > "$out/guard-install.txt" 2>&1; then
   pass "the guard and the policy evaluator are ready from the chart with values only"
 else
@@ -529,6 +612,31 @@ unrelated_token=$(login "$unrelated_id" "$unrelated_secret" unrelated "$work/unr
 full_token=$(login "$full_id" "$full_secret" full "$work/full.pem")
 pass "four participant tokens for the guard's audience, each bound to its own key"
 
+# environment: the run's record of what it ran on.
+environment() {
+  {
+    echo "{"
+    echo "  \"commit\": \"$(git rev-parse HEAD)\","
+    echo "  \"tree\": \"$(if [ -n "$(git status --porcelain)" ]; then echo dirty; else echo clean; fi)\","
+    echo "  \"date\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\","
+    echo "  \"host\": \"$(uname -sm)\","
+    echo "  \"kube_system_uid\": \"$(kubectl get namespace kube-system -o jsonpath='{.metadata.uid}')\","
+    echo "  \"kind_node_image\": \"$KIND_NODE_IMAGE\","
+    echo "  \"istio\": \"$istio_version (istiod CA, trust domain $td)\","
+    echo "  \"envoy_image\": \"$ENVOY_IMAGE\","
+    echo "  \"postgres_image\": \"$POSTGRES_IMAGE\","
+    echo "  \"openbao_image\": \"$OPENBAO_IMAGE\","
+    if [ "$tsa" = true ]; then
+      echo "  \"tsa_policy_image\": \"$TSA_POLICY_IMAGE\","
+      echo "  \"bundle_revision\": \"$revision\","
+      echo "  \"bundle_ref\": \"$bundle_ref\","
+      echo "  \"grpc_method\": \"$grpc_method\","
+    fi
+    echo "  \"access_token_lifespan_seconds\": $lifespan"
+    echo "}"
+  } > "$out/environment.json"
+}
+
 step "The catalogue"
 printf 'case\tstatus\treason_code\trule_id\tcorrelation_id\tguard_event\tpolicy_event\texpected\tverdict\n' > "$out/catalogue.tsv"
 # guarded POD NAME TOKEN KEY [PROOF-KEY] [HEADERS...]: one POST /demo through the guard; writes NAME.http.
@@ -558,6 +666,15 @@ expect() {
     "$status $code ${rule:--}" "$ok" >> "$out/catalogue.tsv"
   if [ "$ok" = yes ]; then pass "$name: $got $code${rule:+ ($rule)}, guard event${pe:+ and policy event} under $id"; else fail "$name: got $got ${reason:-} ${got_rule:-}, events: ${ge:-none} / ${pe:-none}"; fi
 }
+
+if [ "$tsa" = true ]; then
+  # shellcheck source=scripts/verify-guard-catalogue/guarding.sh disable=SC1091
+  . scripts/verify-guard-catalogue/guarding.sh
+  environment
+  echo
+  echo "verdict: $([ "$failures" = 0 ] && echo PASS || echo "FAIL ($failures)")" | tee -a "$out/verdict.txt"
+  exit "$failures"
+fi
 
 # The allowed request first: one correlation id across the guard, the policy, the resource and the feed.
 code=$(guarded participant allowed "$viewer_token" "$work/viewer.pem")
@@ -675,20 +792,7 @@ if [ "$code" = 403 ] && grep -q 'RBAC: access denied' "$out/feed-participant.htt
 code=$(ccurl intruder "$out/feed-intruder-ingest.http" -X POST --data-binary '{}' "$bridge/ingest")
 if [ "$code" = 403 ] && grep -q 'RBAC: access denied' "$out/feed-intruder-ingest.http"; then pass "an identity that is not a producer cannot ingest: 403 RBAC"; else fail "a non-producer ingested: $code"; fi
 
-{
-  echo "{"
-  echo "  \"commit\": \"$(git rev-parse HEAD)\","
-  echo "  \"tree\": \"$(if [ -n "$(git status --porcelain)" ]; then echo dirty; else echo clean; fi)\","
-  echo "  \"date\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\","
-  echo "  \"host\": \"$(uname -sm)\","
-  echo "  \"kind_node_image\": \"$KIND_NODE_IMAGE\","
-  echo "  \"istio\": \"$istio_version (istiod CA, trust domain $td)\","
-  echo "  \"envoy_image\": \"$ENVOY_IMAGE\","
-  echo "  \"postgres_image\": \"$POSTGRES_IMAGE\","
-  echo "  \"openbao_image\": \"$OPENBAO_IMAGE\","
-  echo "  \"access_token_lifespan_seconds\": $lifespan"
-  echo "}"
-} > "$out/environment.json"
+environment
 echo
 echo "verdict: $([ "$failures" = 0 ] && echo PASS || echo "FAIL ($failures)")" | tee -a "$out/verdict.txt"
 exit "$failures"

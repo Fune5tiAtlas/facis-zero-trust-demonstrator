@@ -20,10 +20,25 @@ selected := "report:read" if {
 	"report:summary" in scopes
 }
 
+# The routes the rule set covers, as the built-in evaluator's: the REST route, or a gRPC method the
+# zone's data lists (data.config.grpc_methods, full method paths) whose service the guard named.
+grpc_service := object.get(input.request, "grpc_service", "")
+
+route_ok if {
+	grpc_service == ""
+	input.request.path == "/demo"
+}
+
+route_ok if {
+	grpc_service != ""
+	input.request.path in object.get(data.config, "grpc_methods", [])
+	startswith(input.request.path, concat("", ["/", grpc_service, "/"]))
+}
+
 shape_ok if {
 	input.source.spiffe_id in data.config.participant_callers
 	input.request.method == "POST"
-	input.request.path == "/demo"
+	route_ok
 	input.request.host == data.config.host
 	input.token.present == true
 	input.token.proof_valid == true
@@ -50,6 +65,15 @@ member_ok if {
 	input.source.spiffe_id in object.get(tenant_members, target_tenant, [])
 }
 
+# A scope that needs a credential presentation first (data.config.presentation: its scopes and the
+# OID4VP link the caller is answered with), as the built-in evaluator's m3-presentation-required.
+presentation := object.get(data.config, "presentation", {"scopes": [], "oid4vp_link": ""})
+
+presentation_required if {
+	some scope in scopes
+	scope in presentation.scopes
+}
+
 request_ok if {
 	shape_ok
 	member_ok
@@ -65,6 +89,15 @@ decision := {
 } if {
 	shape_ok
 	not member_ok
+} else := {
+	"allow": false,
+	"reason_code": "POL-PRESENTATION-REQUIRED",
+	"rule_id": "m3-presentation-required",
+	"bundle_revision": revision,
+	"deny_body": {"error": "presentation_required", "oid4vp_link": presentation.oid4vp_link},
+} if {
+	shape_ok
+	presentation_required
 } else := {
 	"allow": false,
 	"reason_code": "POL-RULE-DENY",

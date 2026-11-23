@@ -11,6 +11,8 @@ scripts/verify-guard-catalogue/verify.sh [--out DIR]     # default .dev/guard-ca
 ```
 
 Needs docker, go, helm, kind, kubectl, curl, jq and openssl. `KEEP=1` leaves the cluster running.
+`GUARD_CATALOGUE_KIND_CLUSTER`, `GUARD_CATALOGUE_REGISTRY_NAME` and `GUARD_CATALOGUE_HOST_REGISTRY`
+rename the cluster, the registry container and its host port; the script keeps its own kubeconfig.
 
 ## What it proves
 
@@ -43,6 +45,33 @@ The run also records the latency of the presentation-required decision through t
 whole chain, denied at policy, 401) against a mesh round trip from the same pod to another service
 without the guard (the connector's key set, 200), `GUARD_CATALOGUE_SAMPLES` (100) of each,
 sequential, measured by curl inside the participant's pod.
+
+## Guarding through the TSA: `--tsa`
+
+```sh
+BIN=<dir with a linux cosign> scripts/verify-guard-catalogue/verify.sh --tsa [--out DIR]
+```
+
+The same chain, with three differences: the policy evaluator decides through the XFSC TSA policy
+service (`deployment/helm/tsa-policy`, in the mesh, its own namespace) and a Rego bundle packed from
+`policies/tsa/facis/guard/1.0`, signed and published for the run; the guard chart's own policy rules
+are not set, so the rule, the revision and the OID4VP link of every decision can only be the
+bundle's; and the guard serves a gRPC method of the Protected Resource
+(`/grpc.health.v1.Health/Check`, the resource's `PROTECTED_RESOURCE_GRPC_ADDRESS`) beside `/demo`.
+It runs the guarding cases instead of the catalogue, the feed and the latency, each over REST
+(curl) and over gRPC (curl, HTTP/2 prior knowledge, one framed request) from the Participant's pod:
+
+| Case | REST | gRPC | Decision events (IF-01 v2), bundle revision `kind-guarding-1` |
+|---|---|---|---|
+| authorized | 200 from the resource | `grpc-status: 0`, `SERVING` from the resource | guard and policy `allowed`, rule `m3-report-summary`; the same id in the resource's record |
+| unauthorized (a token whose scope the policy has no rule for) | 403 `POL-RULE-DENY` | `grpc-status: 7`, `x-facis-reason-code: POL-RULE-DENY` | guard and policy `denied`, rule `m3-default-deny`; the id is not in the resource's record |
+| presentation required | 401 `POL-PRESENTATION-REQUIRED`, the OID4VP link in the body and in `x-facis-oid4vp-link` | `grpc-status: 16`, the link in `x-facis-oid4vp-link` | guard and policy `denied`, rule `m3-presentation-required`; not in the resource's record |
+
+The record is `cases.jsonl` (one line per case: the answer, the correlation id, both events,
+whether the resource's log holds the id, the verdict), each answer (`<case>.http`), the events, the
+resource's log, the bundle sidecar's log (`bundle activated`), the bundle's data
+(`bundle-data.json`), the namespace's objects as installed and `environment.json`. The row ZT-20
+of the BDD pack runs this and decides from `cases.jsonl`.
 
 ## Not proven here
 

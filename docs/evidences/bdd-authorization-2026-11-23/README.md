@@ -51,7 +51,7 @@ A missing input fails the scenario and is named; the cluster dry run lists the f
 
 | Row | Missing |
 |---|---|
-| ZT-20 Guarding Functionality | no guarded gRPC resource (the guard fronts HTTP only; gRPC is only its ext_authz hook); no run where the guard's decisions come from Rego in the TSA Policy Engine (the guard runs use the evaluator's chart rules, the TSA proof has no guard) |
+| ZT-20 Guarding Functionality | implemented separately on kind through the TSA Rego bundle over REST and gRPC: [record](../bdd-guarding-2026-11-23/README.md) |
 | ZT-73 Authorized Upstreaming | implemented separately on zone B through the mesh-protected guarded path: [record](../bdd-upstreaming-2026-11-23/README.md) |
 | ZT-74 Participant Backend Mock | the Participant publishes no registration, request or status events to the visualization feed |
 | ZT-75 Protected Resource Mock | role-appropriate responses exist (`TestTokenModeScopeTable`, `TestTokenPathEndToEnd`) but the resource's answers are not published to the feed and no run shows them visualized |

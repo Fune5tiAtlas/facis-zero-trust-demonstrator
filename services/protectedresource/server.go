@@ -165,6 +165,13 @@ func (r *statusRecorder) WriteHeader(status int) {
 	r.ResponseWriter.WriteHeader(status)
 }
 
+// Flush passes on to the wrapped writer: the gRPC method's handler needs an http.Flusher.
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func (s *Server) handleDemo(w http.ResponseWriter, r *http.Request) {
 	if mark, ok := r.Context().Value(accessKey{}).(*accessMark); ok {
 		mark.reached = true

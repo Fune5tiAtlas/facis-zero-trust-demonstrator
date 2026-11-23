@@ -231,6 +231,9 @@ type Refusal struct {
 const (
 	HeaderReasonCode = "x-facis-reason-code"
 	HeaderRequestID  = "x-request-id"
+	// HeaderOID4VPLink carries a presentation-required refusal's OID4VP link, beside the body's
+	// oid4vp_link: a gRPC caller is answered in headers only and never sees the body.
+	HeaderOID4VPLink = "x-facis-oid4vp-link"
 	ContentTypeJSON  = "application/json"
 )
 
