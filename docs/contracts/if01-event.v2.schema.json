@@ -300,7 +300,7 @@
       "anyOf": [
         {
           "type": "string",
-          "pattern": "^(guard|gateway|connector|token-store|policy)-(a|b)$"
+          "pattern": "^(guard|gateway|connector|token-store|policy|participant|protected-resource)-(a|b)$"
         },
         {
           "enum": [

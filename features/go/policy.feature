@@ -14,7 +14,7 @@ Feature: Policy decision
     When it is called with access tokens carrying different roles
     Then each role receives its configured response AND a token carrying no permitted role receives no protected content.
 
-  @ZT-75 @BDD-ZT-075 @pending
+  @ZT-75 @BDD-ZT-075 @cluster
   Scenario: Protected Resource Mock
     Given the protected-resource mock exposes responses for different access roles
     When requests with different authorized and unauthorized roles are executed

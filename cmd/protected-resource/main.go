@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/appevents"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/services/protectedresource"
 )
 
@@ -17,6 +18,16 @@ func main() {
 	config, err := protectedresource.LoadConfig()
 	if err != nil {
 		slog.Error("protected resource configuration rejected", "error", err)
+		os.Exit(1)
+	}
+
+	source := os.Getenv("IF01_SOURCE")
+	if source == "" {
+		source = "protected-resource-b"
+	}
+	config.Events, err = appevents.New(os.Stdout, source)
+	if err != nil {
+		slog.Error("application event configuration rejected")
 		os.Exit(1)
 	}
 

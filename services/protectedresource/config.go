@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/appevents"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/replay"
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/tokenverify"
 )
@@ -22,6 +23,8 @@ const (
 )
 
 type Config struct {
+	// Events is the IF-01 log sink; the executable always wires it to stdout.
+	Events         *appevents.Sink
 	Address        string
 	RequestTimeout time.Duration
 	SlowDelay      time.Duration
