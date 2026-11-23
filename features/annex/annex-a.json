@@ -431,8 +431,8 @@
       "then": "SPIRE is deployed in every cluster, all mesh services obtain SPIRE-backed identities and the service mesh uses those identities AND a workload that cannot attest does not receive an identity.",
       "family": "workload-identity",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-25",
@@ -1031,8 +1031,8 @@
       "then": "each relevant microservice has access to a SPIRE Agent on its node and can request workload identity.",
       "family": "workload-identity",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-58",
@@ -1067,8 +1067,8 @@
       "then": "SPIRE attests the workload successfully and issues the expected identity, which is then usable by the mesh.",
       "family": "workload-identity",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-60",
@@ -1085,8 +1085,8 @@
       "then": "no identity is issued and all service communication is denied.",
       "family": "workload-identity",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-61",

@@ -13,7 +13,7 @@ reported is described in [BDD acceptance](bdd.md).
   This page is built from the repository, not from a run: each cluster run publishes its own
   copy of the catalogue with the basis filled in.
 
-94 rows: 9 implemented, 85 pending.
+94 rows: 13 implemented, 81 pending.
 
 | Row | Requirement | Gate | Status | Runner |
 |---|---|---|---|---|
@@ -40,7 +40,7 @@ reported is described in [BDD acceptance](bdd.md).
 | [ZT-21](#zt-21) | OAuth2 Server | G3 | pending | godog |
 | [ZT-22](#zt-22) | Token Storage | G3 | pending | godog |
 | [ZT-23](#zt-23) | Service Mesh Implementation | G3 | pending | godog |
-| [ZT-24](#zt-24) | SPIFFE/SPIRE Deployment | G3 | pending | godog |
+| [ZT-24](#zt-24) | SPIFFE/SPIRE Deployment | G3 | implemented | godog |
 | [ZT-25](#zt-25) | Routing Policies | G3 | pending | godog |
 | [ZT-26](#zt-26) | Ingress and Egress | G3 | pending | godog |
 | [ZT-27](#zt-27) | Observability | G3 | pending | godog |
@@ -73,10 +73,10 @@ reported is described in [BDD acceptance](bdd.md).
 | [ZT-54](#zt-54) | Software Bill of Materials (SBOM) | G6 | pending | godog |
 | [ZT-55](#zt-55) | Management Plane / Data Plane Separation | G6 | implemented | godog |
 | [ZT-56](#zt-56) | CI/CD Pipeline Security (Zero Trust for the Pipeline) | G6 | pending | godog |
-| [ZT-57](#zt-57) | SPIFFE/SPIRE Setup | G3 | pending | godog |
+| [ZT-57](#zt-57) | SPIFFE/SPIRE Setup | G3 | implemented | godog |
 | [ZT-58](#zt-58) | Service Mesh Setup | G3 | pending | godog |
-| [ZT-59](#zt-59) | Successful Identification | G3 | pending | godog |
-| [ZT-60](#zt-60) | Unsuccessful Identification | G3 | pending | godog |
+| [ZT-59](#zt-59) | Successful Identification | G3 | implemented | godog |
+| [ZT-60](#zt-60) | Unsuccessful Identification | G3 | implemented | godog |
 | [ZT-61](#zt-61) | Traffic routed via Service Mesh | G3 | pending | godog |
 | [ZT-62](#zt-62) | Limited Communication within Mesh | G3 | pending | godog |
 | [ZT-63](#zt-63) | TEE Mock Setup | G4 | pending | godog |
@@ -629,8 +629,8 @@ Then the mesh is present in every cluster and service traffic is routed through 
 | Test type | BDD / integration |
 | Gate | G3 - Protected-service vertical slice |
 | Evidence | `evidence/bdd-zt-024/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/workload-identity.feature` |
 
@@ -1355,8 +1355,8 @@ Then all third-party actions are pinned to commit SHAs, the run holds only the m
 | Test type | BDD / integration |
 | Gate | G3 - Protected-service vertical slice |
 | Evidence | `evidence/bdd-zt-057/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/workload-identity.feature` |
 
@@ -1399,8 +1399,8 @@ Then service traffic is captured on each node and protected with workload-certif
 | Test type | BDD / integration |
 | Gate | G3 - Protected-service vertical slice |
 | Evidence | `evidence/bdd-zt-059/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/workload-identity.feature` |
 
@@ -1421,8 +1421,8 @@ Then SPIRE attests the workload successfully and issues the expected identity, w
 | Test type | Negative-path BDD |
 | Gate | G3 - Protected-service vertical slice |
 | Evidence | `evidence/bdd-zt-060/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/workload-identity.feature` |
 
