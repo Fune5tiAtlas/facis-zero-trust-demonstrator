@@ -13,10 +13,19 @@
 {{- if not $p.name -}}{{ fail "egress.peer.name is required" }}{{- end -}}
 {{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}$" $p.address) -}}{{ fail "egress.peer.address must be the peer entry's IPv4 address" }}{{- end -}}
 {{- if not (contains "BEGIN CERTIFICATE" $p.caCert) -}}{{ fail "egress.peer.caCert must hold the PEM CA certificate of the peer entry" }}{{- end -}}
+{{- include "gateway.port" (list "egress.peer.port" $p.port) -}}
 {{- end -}}
 {{- if $v.ingress.enabled -}}
 {{- if or (not $v.ingress.tlsSecret) (not $v.ingress.upstream.name) (empty $v.ingress.sourceRanges) -}}{{ fail "ingress.tlsSecret, ingress.upstream.name and ingress.sourceRanges are required" }}{{- end -}}
+{{- include "gateway.port" (list "ingress.port" $v.ingress.port) -}}
 {{- end -}}
+{{- end -}}
+
+{{/* A policy port is one TCP port, 1-65535: a zero, empty or absent port would open every port. */}}
+{{- define "gateway.port" -}}
+{{- $name := index . 0 -}}{{- $p := toString (index . 1) -}}
+{{- if not (regexMatch "^[1-9][0-9]{0,4}$" $p) -}}{{ fail (printf "%s must be one TCP port, 1-65535" $name) }}{{- end -}}
+{{- if gt (atoi $p) 65535 -}}{{ fail (printf "%s must be one TCP port, 1-65535" $name) }}{{- end -}}
 {{- end -}}
 
 {{/* The subject alternative name checked on the peer entry's certificate. */}}

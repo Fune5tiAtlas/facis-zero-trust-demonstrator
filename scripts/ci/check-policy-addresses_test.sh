@@ -153,6 +153,29 @@ expect "a peer hop that also admits ingress fails" 1 'FAIL planted: edge-ingress
 edge "$work/edge-kind.yaml" outside-to-entry CiliumNetworkPolicy "$peer" ingress
 expect "an entry hop of another kind fails" 1 'FAIL planted: edge-kind CiliumNetworkPolicy ztd-data/edge: key toCIDR' \
   --edge-manifest planted "$work/edge-kind.yaml"
+for bad in 0 '""' null; do
+  edge "$work/edge-port.yaml" gateway-to-peer CiliumNetworkPolicy "  endpointSelector: {matchLabels: {io.cilium.k8s.policy.serviceaccount: ztd-connector-gateway}}
+  egress: [{toCIDR: [\"192.0.2.10/32\"], toPorts: [{ports: [{port: $bad, protocol: TCP}]}]}]" egress
+  expect "a peer hop on port $bad (every port) fails" 1 'FAIL planted: edge-port CiliumNetworkPolicy ztd-data/edge: key toCIDR' \
+    --edge-manifest planted "$work/edge-port.yaml"
+done
+edge "$work/edge-null.yaml" outside-to-entry NetworkPolicy '  podSelector: {matchLabels: {app: gw}}
+  policyTypes: [Ingress]
+  ingress: [{from: [{ipBlock: {cidr: 0.0.0.0/0}}], ports: [{protocol: TCP, port: null}]}]' ingress
+expect "an entry hop without a port fails" 1 'FAIL planted: edge-null NetworkPolicy ztd-data/edge: key ipBlock' \
+  --edge-manifest planted "$work/edge-null.yaml"
+gw=$root/deployment/helm/connector-gateway
+for bad in 0 70000 '""'; do
+  if helm template g "$gw" -f "$gw/ci/values.yaml" --set-string "egress.peer.port=$bad" >/dev/null 2>"$work/gw.err"; then
+    fail "the gateway chart refuses egress.peer.port=$bad" "it rendered"
+  elif ! grep -q 'egress.peer.port must be one TCP port' "$work/gw.err"; then
+    fail "the gateway chart refuses egress.peer.port=$bad" "$(head -1 "$work/gw.err")"
+  else echo "ok    the gateway chart refuses egress.peer.port=$bad"; fi
+done
+if helm template g "$gw" -f "$gw/ci/values.yaml" -f "$gw/ci/ingress-values.yaml" --set-string ingress.port=0 >/dev/null 2>"$work/gw.err" \
+  || ! grep -q 'ingress.port must be one TCP port' "$work/gw.err"; then
+  fail "the gateway chart refuses ingress.port=0" "$(head -1 "$work/gw.err")"
+else echo "ok    the gateway chart refuses ingress.port=0"; fi
 python3 - "$work/ztd.yaml" "$work/annotated.yaml" <<'PY'
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]

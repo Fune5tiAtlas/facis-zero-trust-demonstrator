@@ -117,9 +117,11 @@ def edge_fields(d):
     spec, hop = d.get("spec") or {}, hop_of(d)
     if not ann.get("ztd.facis.io/connector-route"):
         return set()
+    def one_port(p):  # one TCP port, 1-65535: zero, null or empty opens every port
+        return isinstance(p, (int, str)) and not isinstance(p, bool) and re.fullmatch(r"[1-9][0-9]{0,4}", str(p)) and int(p) <= 65535
     def tcp_ports(ports):
         return isinstance(ports, list) and ports and all(
-            isinstance(p, dict) and set(p) == {"port", "protocol"} and p["protocol"] == "TCP" for p in ports)
+            isinstance(p, dict) and set(p) == {"port", "protocol"} and p["protocol"] == "TCP" and one_port(p["port"]) for p in ports)
     if hop == "gateway-to-peer" and d.get("kind") == "CiliumNetworkPolicy" and set(spec) == {"endpointSelector", "egress"}:
         sel, eg = spec["endpointSelector"], spec["egress"]
         if not (sel == {"matchLabels": {"io.cilium.k8s.policy.serviceaccount": (sel.get("matchLabels") or {}).get("io.cilium.k8s.policy.serviceaccount")}}
@@ -175,11 +177,12 @@ sys.exit(1 if bad else 0)
 PY
 }
 
-if [ "${1:-}" = --edge-manifest ]; then shift; set -- --manifest "$@"; export EDGE_HOPS=1; fi
+edge_hops=
+if [ "${1:-}" = --edge-manifest ]; then shift; set -- --manifest "$@"; edge_hops=1; fi
 if [ "${1:-}" = --manifest ]; then
   [ $# -ge 3 ] || { echo "usage: $0 --manifest <label> <rendered-file>..." >&2; exit 2; }
   label=$2; shift 2
-  out=$(scan "$label" "$@"); rc=$?
+  out=$(EDGE_HOPS=$edge_hops scan "$label" "$@"); rc=$?
   grep -E '^(FAIL|EDGE)' <<<"$out"
   [ $rc -eq 0 ] && echo "$label: $(tail -1 <<<"$out"), no undeclared address"
   exit $rc
@@ -197,7 +200,7 @@ for zone in "${zones[@]}"; do
     echo "FAIL $label: $render_error"
     failures=$((failures + 1)); continue
   fi
-  out=$(scan "$label" "${render_files[@]}"); rc=$?
+  out=$(EDGE_HOPS= scan "$label" "${render_files[@]}"); rc=$?
   grep -E '^(FAIL|EDGE)' <<<"$out"
   if [ $rc -eq 0 ]; then
     echo "$label (mesh.mode $render_mode): $(tail -1 <<<"$out") rendered by $render_releases, no undeclared address"
