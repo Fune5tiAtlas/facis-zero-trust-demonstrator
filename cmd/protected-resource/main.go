@@ -21,7 +21,11 @@ func main() {
 	}
 
 	logger := newLogger(config.LogLevel)
-	server := protectedresource.NewServer(config, logger).HTTPServer()
+	adapter := protectedresource.NewResourceAdapter(config)
+	if err := protectedresource.CheckInterface(context.Background(), config, adapter, logger); err != nil {
+		os.Exit(1)
+	}
+	server := protectedresource.NewServerWithAdapter(config, logger, adapter).HTTPServer()
 
 	shutdownSignal, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
