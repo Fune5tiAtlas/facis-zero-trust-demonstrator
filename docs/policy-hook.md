@@ -64,7 +64,8 @@ proof confirms.
    status (`TOK-NO-UPSTREAM` 409, for example); a store that cannot be reached is
    `TOK-STORE-UNAVAILABLE` 503. The request is then not forwarded.
 6. **Deny.** The caller receives the status of the reason code, `Content-Type: application/json`,
-   `x-facis-reason-code` with the code, `x-request-id`, and a body:
+   `x-facis-reason-code` with the code, `x-request-id`, for a presentation-required denial
+   `x-facis-oid4vp-link` with the link (a gRPC caller is answered in headers only), and a body:
 
    ```json
    {"error": "insufficient_entitlement", "reason_code": "POL-RULE-DENY", "rule_id": "data.facis.guard.deny_no_entitlement"}
@@ -215,9 +216,10 @@ substitutes the upstream credential as for REST. `TestGuardedGRPCThroughEnvoy` i
 with the chart's rendered `envoy.yaml`, to the guard's runtime and the policy evaluator's rule
 set: the right credential reaches the resource with the substituted one; no credential, a proof
 made for another path, a token without a rule and a caller the guard does not admit are each
-refused before the resource is called. ZT-20 stays open: its row also asks for Rego policies
-evaluated through the TSA policy engine and an OID4VP link on refusal, and the mesh in front of
-the guard is not in this test.
+refused before the resource is called. The mesh in front of the guard, the decisions taken by the
+Rego bundle in the TSA policy engine and the OID4VP link on a refusal, for the REST route and a gRPC
+method alike, are the guarding proof on kind
+(`scripts/verify-guard-catalogue/verify.sh --tsa`, the proof of ZT-20).
 
 This deployment applies ADR-0008's ext_authz choice using a dedicated namespace
 Envoy. It does not claim native mesh CUSTOM attachment or deployed evidence.
