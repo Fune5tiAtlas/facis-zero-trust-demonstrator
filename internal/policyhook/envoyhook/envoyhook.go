@@ -20,23 +20,33 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 
-	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/cmd/policy-hook-probe/internal/hook"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hook"
 )
 
+// Evaluator decides an authenticated request; implementations must fail closed.
+type Evaluator interface {
+	Evaluate(context.Context, hook.Request) hook.Outcome
+}
+
 // Register adds both services, deciding with g, to a gRPC server.
-func Register(r grpc.ServiceRegistrar, g *hook.Guard) {
-	authv3.RegisterAuthorizationServer(r, &AuthzServer{guard: g})
+func Register(r grpc.ServiceRegistrar, g Evaluator) {
+	RegisterAuthz(r, g)
 	extprocv3.RegisterExternalProcessorServer(r, &ProcServer{guard: g})
+}
+
+// RegisterAuthz adds only ext_authz for the deployable runtime.
+func RegisterAuthz(r grpc.ServiceRegistrar, g Evaluator) {
+	authv3.RegisterAuthorizationServer(r, &AuthzServer{guard: g})
 }
 
 // AuthzServer implements the Authorization service over a guard.
 type AuthzServer struct {
 	authv3.UnimplementedAuthorizationServer
-	guard *hook.Guard
+	guard Evaluator
 }
 
 // NewAuthzServer returns the ext_authz service deciding with g.
-func NewAuthzServer(g *hook.Guard) *AuthzServer { return &AuthzServer{guard: g} }
+func NewAuthzServer(g Evaluator) *AuthzServer { return &AuthzServer{guard: g} }
 
 // Check implements the Authorization service.
 func (s *AuthzServer) Check(ctx context.Context, req *authv3.CheckRequest) (*authv3.CheckResponse, error) {
@@ -90,11 +100,11 @@ func grpcCode(httpStatus int) codes.Code {
 // ProcServer implements the ExternalProcessor service over a guard.
 type ProcServer struct {
 	extprocv3.UnimplementedExternalProcessorServer
-	guard *hook.Guard
+	guard Evaluator
 }
 
 // NewProcServer returns the ext_proc service deciding with g.
-func NewProcServer(g *hook.Guard) *ProcServer { return &ProcServer{guard: g} }
+func NewProcServer(g Evaluator) *ProcServer { return &ProcServer{guard: g} }
 
 // Process implements the ExternalProcessor service: one stream per request, one message per
 // phase Envoy is configured to send.

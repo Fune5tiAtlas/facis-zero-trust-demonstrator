@@ -16,8 +16,9 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
-	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/cmd/policy-hook-probe/internal/contractpath"
-	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/cmd/policy-hook-probe/internal/hook"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/contractpath"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hook"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/policyhook/hookfixture"
 )
 
 const (
@@ -441,7 +442,7 @@ func fileJSON(t *testing.T, path string) any {
 
 func TestFixtureCasesReproduceTheContractFixtures(t *testing.T) {
 	dir := contractpath.Fixtures(t)
-	fx, err := hook.LoadFixtures(dir)
+	fx, err := hookfixture.LoadFixtures(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,12 +467,12 @@ func TestFixtureCasesReproduceTheContractFixtures(t *testing.T) {
 			t.Errorf("%s: Decide gave %+v (%v)", c.Name, dec, err)
 		}
 	}
-	for _, auth := range []string{"Bearer " + hook.FixtureTokenRead, "DPoP unknown", ""} {
+	for _, auth := range []string{"Bearer " + hookfixture.FixtureTokenRead, "DPoP unknown", ""} {
 		if fx.Authenticate(auth, "").Present {
 			t.Errorf("%q authenticated", auth)
 		}
 	}
-	if _, err := hook.LoadFixtures(t.TempDir()); err == nil {
+	if _, err := hookfixture.LoadFixtures(t.TempDir()); err == nil {
 		t.Error("an empty directory was accepted")
 	}
 }

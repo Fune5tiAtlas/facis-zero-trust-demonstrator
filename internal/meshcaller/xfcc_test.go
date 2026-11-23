@@ -1,4 +1,4 @@
-package caller
+package meshcaller
 
 import (
 	"errors"

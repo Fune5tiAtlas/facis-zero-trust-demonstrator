@@ -56,15 +56,6 @@ type RefusalError struct {
 
 func (e *RefusalError) Error() string { return "substitution refused: " + e.ReasonCode }
 
-// StaticSubstituter answers every substitution with the same values; it stands in for the token
-// store in the verification.
-type StaticSubstituter Substitution
-
-// Substitute implements Substituter.
-func (s StaticSubstituter) Substitute(context.Context, SubstituteRequest) (Substitution, error) {
-	return Substitution(s), nil
-}
-
 // Request is one request as a filter hands it to the guard.
 type Request struct {
 	Method string
@@ -87,6 +78,8 @@ type Config struct {
 	Audience string
 	// SourceID is the caller identity used when the transport authenticated none.
 	SourceID string
+	// Tenant is the configured upstream route partition, never copied from a request header.
+	Tenant *string
 	// DecisionTimeout bounds one policy decision; zero means unbounded.
 	DecisionTimeout time.Duration
 }
@@ -136,6 +129,7 @@ func (g *Guard) Evaluate(ctx context.Context, req Request) Outcome {
 	}
 	in := Input{
 		CorrelationID: id,
+		Tenant:        g.cfg.Tenant,
 		Source:        Source{SPIFFEID: source},
 		Request:       RequestInfo{Method: method, Path: path, Host: req.Host},
 		Token:         g.auth.Authenticate(req.Headers.Get("Authorization"), req.Headers.Get("DPoP")),
@@ -166,7 +160,7 @@ func (g *Guard) Evaluate(ctx context.Context, req Request) Outcome {
 	}
 	if dec.Substitutes() {
 		sub, err := g.subst.Substitute(ctx, SubstituteRequest{
-			PeerZone: g.cfg.PeerZone, Audience: g.cfg.Audience, Method: method,
+			PeerZone: g.cfg.PeerZone, Audience: g.cfg.Audience, Tenant: g.cfg.Tenant, Method: method,
 			TargetURI: g.cfg.PublishedBaseURL + path, CorrelationID: id,
 		})
 		if err != nil {
