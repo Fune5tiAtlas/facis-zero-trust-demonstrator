@@ -1,9 +1,3 @@
-{{- if not (regexMatch "^https://[^/?#@]+/realms/facis-ztd$" .Values.identity.issuer) }}
-{{- fail "identity.issuer must be an HTTPS facis-ztd realm URL" }}
-{{- end }}
-{{- if not (regexMatch "^https://[^/?#@]+$" .Values.identity.uiOrigin) }}
-{{- fail "identity.uiOrigin must be an HTTPS origin without a path" }}
-{{- end }}
 {{- include "orce.validate" . -}}
 # ORCE itself: one replica, non-root, all capabilities dropped, RuntimeDefault seccomp.
 apiVersion: apps/v1
@@ -43,10 +37,6 @@ spec:
             - secretRef:
                 name: {{ .Values.credentialsSecret | quote }}
           env:
-            - name: FACIS_OIDC_ISSUER
-              value: {{ .Values.identity.issuer | quote }}
-            - name: FACIS_UI_ORIGIN
-              value: {{ .Values.identity.uiOrigin | quote }}
             - name: LIFECYCLE_TIMEOUT
               value: {{ .Values.lifecycleTimeout | quote }}
           ports:

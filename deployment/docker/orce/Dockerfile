@@ -76,13 +76,7 @@ RUN set -eux; \
     [ -z "$(printf '%s\n' "$hits" | grep -v '^/data/node_modules/' || true)" ]
 
 COPY deployment/docker/orce/settings.js /data/settings.js
-COPY deployment/docker/orce/viewer-runtime.cjs /data/viewer-runtime.cjs
-COPY flows/lifecycle.json /opt/ztd/flows/lifecycle.json
-COPY flows/demonstrator/identity_flow.json flows/demonstrator/journey_flow.json /opt/ztd/flows/demonstrator/
-RUN node -e 'require("fs").writeFileSync("/data/lifecycle.json", JSON.stringify(require("/data/viewer-runtime.cjs").buildFlows("/opt/ztd/flows")))'
-COPY ui/demonstrator/src/ /opt/ztd/ui/
-# OIDC uses HTTP commands; it does not need the legacy socket client.
-RUN sed -i '/uibuilder.iife.min.js/d' /opt/ztd/ui/index.html
+COPY flows/lifecycle.json /data/lifecycle.json
 COPY ui/nodes/ztd-lifecycle/ /data/nodes/ztd-lifecycle/
 COPY scripts/lifecycle.sh /opt/ztd/scripts/lifecycle.sh
 COPY features/fixtures/charts/lifecycle-fixture/ /opt/ztd/charts/lifecycle-fixture/

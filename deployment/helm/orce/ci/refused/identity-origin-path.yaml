@@ -1,3 +1,0 @@
-# expect: identity.uiOrigin must be an HTTPS origin without a path
-identity:
-  uiOrigin: https://viewer.example.test/path

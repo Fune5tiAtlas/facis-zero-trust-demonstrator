@@ -24,8 +24,6 @@ installs it from each release; the steps are in
 | `ingress.className` | `ztd-public` | the cluster's Traefik |
 | `ingress.clusterIssuer` | `ztd-public-acme` | cert-manager ClusterIssuer |
 | `ingress.tlsSecretName` | `orce-public-tls` | where cert-manager writes the certificate |
-| `identity.issuer` | `https://keycloak.85.215.131.155.sslip.io/realms/facis-ztd` | the Keycloak realm the viewer routes trust (`FACIS_OIDC_ISSUER`); HTTPS only, refused otherwise |
-| `identity.uiOrigin` | `https://orce.85-215-131-155.sslip.io` | the viewer UI's origin (`FACIS_UI_ORIGIN`); an HTTPS origin without a path |
 | `ingressController.namespace`, `.podLabels` | `ztd-edge`, `app.kubernetes.io/name: traefik` | the only pods outside the namespace that may reach ORCE |
 
 **TLS 1.3.** The Ingress names no TLSOption, so Traefik applies its `default` TLSOption, which
