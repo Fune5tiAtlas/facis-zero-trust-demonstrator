@@ -70,7 +70,7 @@ Token mode only; each is required there except the entitlement, and none is read
 | `PROTECTED_RESOURCE_REQUEST_TIMEOUT` | `5s` | Positive duration bounding each resource request. |
 | `PROTECTED_RESOURCE_SLOW_DELAY` | `2s` | Positive simulated delay; must be shorter than the Resource request timeout. |
 | `PROTECTED_RESOURCE_MODE` | `sample` | `sample`, or `token` for [token mode](#token-mode). |
-| `PROTECTED_RESOURCE_ADAPTER_MODE` | `sample` | `sample` or `sample-alternative`; both are deterministic sample data. |
+| `PROTECTED_RESOURCE_ADAPTER_MODE` | `sample` | `sample` or `sample-alternative`; both are deterministic sample data. `cloud-api` docks a real read-only API in their place, see [API dock](api-dock.md). |
 | `PROTECTED_RESOURCE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 
 Token mode only, all required there:
