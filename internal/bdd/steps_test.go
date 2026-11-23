@@ -215,6 +215,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	registerAuthorizationProofs(ctx, dryRun)
 	registerPolicyProofs(ctx, dryRun)
 	registerWorkloadIdentityProof(ctx, dryRun)
+	registerAttestedGateway(ctx, dryRun)
 	registerPending(ctx)
 }
 

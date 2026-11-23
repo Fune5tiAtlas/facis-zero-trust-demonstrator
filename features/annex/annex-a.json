@@ -341,8 +341,8 @@
       "then": "the request reaches the counter side over that protected channel with required call information preserved AND no unprotected inter-connector path is used.",
       "family": "attested-channel",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-20",
