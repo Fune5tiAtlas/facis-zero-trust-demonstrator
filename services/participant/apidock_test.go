@@ -67,7 +67,7 @@ func cloudStandIn(t *testing.T, token, itemType string) (string, string, *atomic
 					"properties": map[string]any{"name": name, "location": "de/txl", "version": 1}}
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "datacenters", "type": "collection", "href": href,
-				"items": []any{item("15f67991-0f51-4efc-a8ad-ef1fb31a480c", "stand-in one"), item("25f67991-0f51-4efc-a8ad-ef1fb31a480d", "stand-in two")},
+				"items":  []any{item("15f67991-0f51-4efc-a8ad-ef1fb31a480c", "stand-in one"), item("25f67991-0f51-4efc-a8ad-ef1fb31a480d", "stand-in two")},
 				"offset": 0, "limit": 100, "_links": map[string]any{"self": href + "?depth=0&limit=100"}})
 		}
 	}))
