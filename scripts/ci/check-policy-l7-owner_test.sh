@@ -148,7 +148,30 @@ expect "an owner other than sidecar or none fails" 1 \
   "allow-pdp-adapter-to-tsa: allow-matrix policy of pdp-adapter-to-tsa names the L7 owner 'cilium'" \
   --manifest planted "$work/owner/cilium-owner.yaml"
 
-# 5. The clean renderings, and the committed zone files and the CI zone file.
+# 5. The Connector route policies (connector-gateway): an owner contradicting its hop fails, a missing hop
+# fails, the clean renderings of both roles pass.
+gw=$root/deployment/helm/connector-gateway
+helm template connector-gateway "$gw" -n ztd-data -f "$gw/ci/values.yaml" >"$work/gateway.yaml"
+mkdir -p "$work/gateway"
+plant "$work/gateway.yaml" "$work/gateway/swapped.yaml" '
+for d in named("CiliumNetworkPolicy", "ztd-connector-gateway-peer"):
+    d["metadata"]["annotations"]["ztd.facis.io/l7-owner"] = "sidecar"
+    planted = True'
+expect "a gateway-to-peer policy that names the sidecar as owner fails" 1 \
+  "CiliumNetworkPolicy ztd-data/ztd-connector-gateway-peer: Connector route policy of the hop gateway-to-peer names the L7 owner 'sidecar', not none" \
+  --manifest planted "$work/gateway/swapped.yaml"
+plant "$work/gateway.yaml" "$work/gateway/nohop.yaml" '
+for d in named("NetworkPolicy", "ztd-connector-gateway-callers"):
+    d["metadata"]["annotations"].pop("ztd.facis.io/connector-hop")
+    planted = True'
+expect "a Connector route policy without its hop fails" 1 \
+  "NetworkPolicy ztd-data/ztd-connector-gateway-callers: Connector route policy without a known hop" \
+  --manifest planted "$work/gateway/nohop.yaml"
+expect "the clean gateway rendering passes, listing each hop's owner" 0 \
+  'ztd-connector-gateway-peer \(gateway-to-peer\): none' \
+  --manifest clean "$work/gateway.yaml"
+
+# 6. The clean renderings, and the committed zone files and the CI zone file.
 expect "the clean renderings pass, listing each owner" 0 \
   'ztd-mgmt/allow-pdp-adapter-to-tsa \(pdp-adapter-to-tsa\): sidecar' \
   --manifest clean "$work/ztd.yaml" "$work/zone-policy.yaml"

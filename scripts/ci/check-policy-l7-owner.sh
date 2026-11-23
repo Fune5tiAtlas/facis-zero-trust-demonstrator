@@ -15,7 +15,12 @@
 #     Cilium's Envoy proxy; the charts render none);
 #   - a rendered allow-matrix policy (a NetworkPolicy annotated ztd.facis.io/allow-matrix, or an
 #     AuthorizationPolicy annotated ztd.facis.io/pair) without the annotation ztd.facis.io/l7-owner, or with
-#     a value other than sidecar or none.
+#     a value other than sidecar or none;
+#   - a Connector route policy of the connector-gateway chart (annotated ztd.facis.io/connector-route, rendered
+#     with its ci/values.yaml and with each ci/<variant>-values.yaml layered on it) without its hop
+#     (ztd.facis.io/connector-hop) or whose ztd.facis.io/l7-owner is not the hop's owner: caller-to-gateway
+#     and entry-to-upstream sidecar (the destination's sidecar decides), gateway-to-peer and
+#     outside-to-entry none (no proxy of the zone decides; docs/architecture.md, Zero Trust Connector routing).
 # Each finding names the zone file, the release, the policy's kind, namespace and name, and what it found.
 # On success it lists every rendered allow-matrix policy with its owner.
 # The zone's admission rule l7-owner-is-the-mesh (zone-policy) refuses the same fields on the cluster,
@@ -52,6 +57,8 @@ L7 = ("http", "kafka", "l7", "l7proto")
 PROXY = ("listener", "serverNames", "terminatingTLS", "originatingTLS")
 DIRECTIONS = ("ingress", "egress", "ingressDeny", "egressDeny")
 OWNERS = {"sidecar", "none"}
+HOPS = {"caller-to-gateway": "sidecar", "gateway-to-peer": "none", "outside-to-entry": "none",
+        "entry-to-upstream": "sidecar"}
 cilium = matrix = bad = 0
 for f in files:
     release = f.rsplit("/", 1)[-1].removesuffix(".yaml")
@@ -104,6 +111,18 @@ for f in files:
                 bad += 1
             else:
                 print(f"OWNER {label}: {release} {name} ({row}): {owner}")
+        if "ztd.facis.io/connector-route" in annotations:
+            matrix += 1
+            hop = annotations.get("ztd.facis.io/connector-hop")
+            owner = annotations.get("ztd.facis.io/l7-owner")
+            if hop not in HOPS:
+                print(f"FAIL {label}: {release} {name}: Connector route policy without a known hop ({hop!r})")
+                bad += 1
+            elif owner != HOPS[hop]:
+                print(f"FAIL {label}: {release} {name}: Connector route policy of the hop {hop} names the L7 owner {owner!r}, not {HOPS[hop]}")
+                bad += 1
+            else:
+                print(f"OWNER {label}: {release} {name} ({hop}): {owner}")
 print(f"{cilium} Cilium objects, {matrix} allow-matrix policies")
 sys.exit(1 if bad else 0)
 PY
@@ -142,6 +161,16 @@ for zone in "${zones[@]}"; do
     failures=$((failures + 1)); continue
   fi
   report "$label" " (mesh.mode $render_mode, rendered by $render_releases)" "${render_files[@]}" || failures=$((failures + 1))
+done
+# The connector-gateway chart, one rendering per role (its CI values and each variant layered on them).
+gw=$root/deployment/helm/connector-gateway
+for values in "$gw"/ci/values.yaml "$gw"/ci/*-values.yaml; do
+  label=${values#"$root"/}; extra=()
+  [ "$values" = "$gw/ci/values.yaml" ] || extra=(-f "$values")
+  if ! helm template connector-gateway "$gw" -n ztd-data -f "$gw/ci/values.yaml" "${extra[@]}" >"$work/gateway.yaml" 2>"$work/gateway.err"; then
+    echo "FAIL $label: $(head -1 "$work/gateway.err")"; failures=$((failures + 1)); continue
+  fi
+  report "$label" " (connector-gateway)" "$work/gateway.yaml" || failures=$((failures + 1))
 done
 if [ "$failures" -gt 0 ]; then
   echo "$failures zone file(s) render a Cilium object that sends traffic to Cilium's L7 proxy, or an allow-matrix policy without its L7 owner" >&2
