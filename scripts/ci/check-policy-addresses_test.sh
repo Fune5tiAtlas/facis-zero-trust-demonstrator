@@ -117,7 +117,37 @@ cat "$work/names-to.yaml" >>"$work/names.yaml"
 expect "a host name with a port and a SPIFFE principal pass" 0 'planted: 2 policies, no address' \
   --manifest planted "$work/names.yaml"
 
-# 4. The committed zone files, the CI zone file and the component charts.
+# 4. The Connector gateway's edge hops outside the mesh: declared only in the shape the chart renders.
+edge() { # file hop kind spec-yaml [route]
+  { printf 'apiVersion: v1\nkind: %s\nmetadata:\n  name: edge\n  namespace: ztd-data\n  annotations:\n' "$3"
+    printf '    ztd.facis.io/connector-hop: %s\n' "$2"
+    [ -n "${5:-}" ] && printf '    ztd.facis.io/connector-route: %s\n' "$5"
+    printf 'spec:\n%s\n' "$4"; } >"$1"
+}
+peer='  endpointSelector: {matchLabels: {app: gw}}
+  egress: [{toCIDR: ["192.0.2.10/32"], toPorts: [{ports: [{port: "443", protocol: TCP}]}]}]'
+entry='  podSelector: {matchLabels: {app: gw}}
+  policyTypes: [Ingress]
+  ingress: [{from: [{ipBlock: {cidr: 0.0.0.0/0}}], ports: [{protocol: TCP, port: 8443}]}]'
+edge "$work/edge-peer.yaml" gateway-to-peer CiliumNetworkPolicy "$peer" egress
+expect "the gateway's egress to the peer entry is declared, not failed" 0 \
+  'EDGE planted: edge-peer CiliumNetworkPolicy ztd-data/edge: declared Connector edge hop gateway-to-peer' \
+  --manifest planted "$work/edge-peer.yaml"
+edge "$work/edge-entry.yaml" outside-to-entry NetworkPolicy "$entry" ingress
+expect "the entry's public ingress is declared, not failed" 0 'EDGE planted: edge-entry NetworkPolicy' \
+  --manifest planted "$work/edge-entry.yaml"
+edge "$work/edge-noroute.yaml" gateway-to-peer CiliumNetworkPolicy "$peer"
+expect "the hop annotation without a route fails" 1 'FAIL planted: edge-noroute CiliumNetworkPolicy ztd-data/edge: key toCIDR' \
+  --manifest planted "$work/edge-noroute.yaml"
+edge "$work/edge-ingress.yaml" gateway-to-peer CiliumNetworkPolicy "$peer
+  ingress: [{fromCIDR: [\"10.0.0.0/8\"]}]" egress
+expect "a peer hop that also admits ingress fails" 1 'FAIL planted: edge-ingress CiliumNetworkPolicy ztd-data/edge: key fromCIDR' \
+  --manifest planted "$work/edge-ingress.yaml"
+edge "$work/edge-kind.yaml" outside-to-entry CiliumNetworkPolicy "$peer" ingress
+expect "an entry hop of another kind fails" 1 'FAIL planted: edge-kind CiliumNetworkPolicy ztd-data/edge: key toCIDR' \
+  --manifest planted "$work/edge-kind.yaml"
+
+# 5. The committed zone files, the CI zone file and the component charts.
 expect "every committed zone file and component chart passes" 0 'no policy of any zone or component chart names an address'
 
 if [ "$failures" -ne 0 ]; then

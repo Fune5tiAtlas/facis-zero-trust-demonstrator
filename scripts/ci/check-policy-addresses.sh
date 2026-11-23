@@ -10,7 +10,11 @@
 # CiliumClusterwideNetworkPolicy or AuthorizationPolicy document carries a key ipBlock, ipBlocks,
 # notIpBlocks, remoteIpBlocks, notRemoteIpBlocks, toCIDR, toCIDRSet, fromCIDR or fromCIDRSet, or a
 # string holding an IPv4 or IPv6 address (with or without a port: 10.0.0.1:8080, [::1]:8080) or a
-# CIDR, naming the zone file, the release, the policy and what it found. The component charts the
+# CIDR, naming the zone file, the release, the policy and what it found. Two Connector gateway hops
+# outside the mesh are declared, not failed, and listed as EDGE lines: a CiliumNetworkPolicy of
+# egress only annotated ztd.facis.io/connector-hop: gateway-to-peer (the peer zone's entry), and an
+# ingress-only NetworkPolicy annotated outside-to-entry (the entry's public source ranges); both
+# also carry ztd.facis.io/connector-route. The component charts the
 # zone render does not cover (every chart under deployment/helm/ with a ci/values.yaml, except ztd,
 # zone-policy and ztd-openbao) are scanned too, rendered with ci/values.yaml and with each
 # ci/<variant>-values.yaml layered on it, as scripts/ci/check-charts.sh renders them.
@@ -113,6 +117,19 @@ for f in files:
         name = f"{d['kind']} {meta.get('namespace', '<cluster>')}/{meta.get('name')}"
         found = []
         walk(d, "", found)
+        hop = (meta.get("annotations") or {}).get("ztd.facis.io/connector-hop")
+        spec = d.get("spec") or {}
+        # The Connector gateway's two edge hops govern traffic outside the mesh (ZT-25 covers the
+        # mesh): the egress to the peer zone's entry and the entry's public ingress. Each must be
+        # the one shape its chart renders, so the annotation alone admits nothing else.
+        edge = found and (meta.get("annotations") or {}).get("ztd.facis.io/connector-route") and (
+            (hop == "gateway-to-peer" and d["kind"] == "CiliumNetworkPolicy"
+             and set(spec) == {"endpointSelector", "egress"})
+            or (hop == "outside-to-entry" and d["kind"] == "NetworkPolicy"
+                and spec.get("policyTypes") == ["Ingress"] and "egress" not in spec))
+        if edge:
+            print(f"EDGE {label}: {release} {name}: declared Connector edge hop {hop}")
+            continue
         for what in found:
             print(f"FAIL {label}: {release} {name}: {what}")
             bad += 1
@@ -125,7 +142,7 @@ if [ "${1:-}" = --manifest ]; then
   [ $# -ge 3 ] || { echo "usage: $0 --manifest <label> <rendered-file>..." >&2; exit 2; }
   label=$2; shift 2
   out=$(scan "$label" "$@"); rc=$?
-  grep '^FAIL' <<<"$out"
+  grep -E '^(FAIL|EDGE)' <<<"$out"
   [ $rc -eq 0 ] && echo "$label: $(tail -1 <<<"$out"), no address"
   exit $rc
 fi
@@ -143,7 +160,7 @@ for zone in "${zones[@]}"; do
     failures=$((failures + 1)); continue
   fi
   out=$(scan "$label" "${render_files[@]}"); rc=$?
-  grep '^FAIL' <<<"$out"
+  grep -E '^(FAIL|EDGE)' <<<"$out"
   if [ $rc -eq 0 ]; then
     echo "$label (mesh.mode $render_mode): $(tail -1 <<<"$out") rendered by $render_releases, no address"
   else
@@ -165,7 +182,7 @@ if [ $# -eq 0 ]; then
         failures=$((failures + 1)); continue
       fi
       out=$(scan "$label" "$file"); rc=$?
-      grep '^FAIL' <<<"$out"
+      grep -E '^(FAIL|EDGE)' <<<"$out"
       if [ $rc -eq 0 ]; then echo "$label: $(tail -1 <<<"$out"), no address"; else failures=$((failures + 1)); fi
     done
   done
