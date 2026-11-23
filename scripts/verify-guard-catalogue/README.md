@@ -73,6 +73,39 @@ resource's log, the bundle sidecar's log (`bundle activated`), the bundle's data
 (`bundle-data.json`), the namespace's objects as installed and `environment.json`. The row ZT-20
 of the BDD pack runs this and decides from `cases.jsonl`.
 
+## The participant-backend mock: `--participant`
+
+```sh
+scripts/verify-guard-catalogue/verify.sh --participant [--out DIR]
+```
+
+The same chain, with the Participant service itself (`services/participant`, the working tree's
+image) as the caller: installed from `deployment/helm/application-service` in token mode, in the
+mesh under the Participant's service account, configured with the Connector's and the guard's
+addresses, its network policy opening those two and istiod. It runs this instead of the catalogue
+and the latency:
+
+- the Participant bootstraps by itself at the Connector: it checks its registration (the client the
+  Connector registered in this run, mounted as credentials), presents and obtains its DPoP-bound token;
+- the operator's identity asks it for one report, which it fetches through the guard (200, the
+  resource's data), and for one more while the policy evaluator is scaled to zero (503
+  `TOKEN_RESOURCE_UNAVAILABLE`, no data, nothing at the resource);
+- each receiver's sidecar (Connector, guard, resource) is asked for its request counters
+  (`istio_requests_total`, reporter destination): requests answered 200 over `mutual_tls` from the
+  Participant's identity to the Connector and to the guard, and from the guard's to the resource;
+- the feed bridge is installed from its chart and the producer identity posts the Participant's, the
+  resource's, the guard's and the policy's lines to `/ingest` (no log forwarder runs on kind); the UI's
+  identity reads `/v2/events` back and finds, under the Participant's one run id, its registration
+  event and its status events up to `ready`, and under each request's id its request event with the
+  outcome; the served request's id is also on the resource's access event. The guard's Envoy names
+  each request itself, so its two decisions are found by caller and token: one `allowed` and one
+  denied `POL-PDP-UNAVAILABLE` for the Participant's SPIFFE identity with its client's token.
+
+The record is `run.json`, `config.json` (the Deployment's `PARTICIPANT_*` environment), `state.json`,
+`served.http`, `refused.http`, `hops.jsonl`, `feed.jsonl`, `resource.log`, the producers' lines,
+`mesh-policies.json` and `environment.json`. The row ZT-74 of the BDD pack runs this and decides
+from those records.
+
 ## Not proven here
 
 The mesh is Istio's own CA with trust domain `cluster.local`, not the zone's SPIRE chain
