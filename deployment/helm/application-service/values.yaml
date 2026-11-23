@@ -10,6 +10,8 @@ port: 8080
 healthPath: /health
 # Environment of the process, as name: value. No secret values here.
 env: {}
+# IF-01 v2 stdout source; empty uses the executable default. No direct feed egress is needed.
+eventSource: ""
 # Opt-in runtime wiring; existing sample deployments keep their default account.
 serviceAccount:
   create: false

@@ -10,6 +10,7 @@ identity:
   spireManagedIdentity: true
 ingress:
   enabled: false
+eventSource: participant-a
 env:
   PARTICIPANT_ADAPTER_MODE: token
   PARTICIPANT_RESOURCE_URL: http://ztd-guard:8080

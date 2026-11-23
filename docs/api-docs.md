@@ -56,6 +56,7 @@ status.
 | `CRED` | credential verification | 403 | `DENIED-CREDENTIAL` | `CRED-REQUEST-INVALID` 400, `CRED-REQUEST-UNKNOWN` 404 |
 | `CHAN` | attested channel | none (handshake refused) | `CHANNEL-DOWN` | — |
 | `CFG` | configuration governance | 422 | `CHANGE-REJECTED` | `CFG-NOT-AUTHORISED` 403 |
+| `APP` | application mock steps | none (reported step) | `APPLICATION-STATE` | the event state and application HTTP response carry the outcome |
 | `VIS` | display | none (display state) | `UNKNOWN` | — |
 
 The status is what a protected resource — the guard — returns to its caller. Three surfaces keep
@@ -120,7 +121,7 @@ way.
 member the request never reached — the token subject of a request refused before authentication,
 the bundle and rule of one refused before policy, the caller of one whose mesh identity is not
 allowed — is the literal `not_evaluated`, never omitted. v2 adds the sources `policy-a` and
-`policy-b`. v1 stays valid and unchanged; the guard and the policy evaluator write v2
+`policy-b`, `participant-a/b` and `protected-resource-a/b`. v1 stays valid and unchanged; the guard and the policy evaluator write v2
 (`hook.NewLogSinkV2`), the policy-hook verification probe writes v1, and the feed bridge serves
 both.
 
@@ -165,7 +166,7 @@ tenant of the decision.
 The bridge is `cmd/feed-bridge` (`internal/feedbridge`), deployed in the mesh by
 `deployment/helm/feed-bridge`. The client selects the feed version by path:
 [v1](contracts/if01-feed.v1.openapi.yaml) (`/snapshot`, `/events`) stays valid against the v1
-schemas — a v2 event is served in its v1 form and a source v1 does not name (the policy evaluators)
+schemas — a v2 event is served in its v1 form and a source v1 does not name (policy evaluators and application mocks)
 is left out — and [v2](contracts/if01-feed.v2.openapi.yaml) (`/v2/snapshot`, `/v2/events`,
 [snapshot v2](contracts/if01-snapshot.v2.schema.json)) serves every line as written and every v2
 source. Producers post their lines to `/ingest`. Ownership:

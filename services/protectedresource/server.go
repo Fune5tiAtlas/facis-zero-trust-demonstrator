@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -146,6 +147,14 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 		if mark.reached {
 			return
 		}
+		correlationID := cleanIdentifier(r.Header.Get("X-Correlation-ID"))
+		if correlationID == "" {
+			correlationID = cleanIdentifier(r.Header.Get("X-Request-ID"))
+		}
+		if correlationID == "" {
+			correlationID = s.newID()
+		}
+		s.config.Events.Emit(correlationID, "denied", strings.ToUpper(reason), "access role=not_evaluated")
 		s.logger.LogAttrs(r.Context(), slog.LevelWarn, "protected resource request refused",
 			slog.String("requestId", cleanIdentifier(r.Header.Get("X-Request-ID"))),
 			slog.String("correlationId", cleanIdentifier(r.Header.Get("X-Correlation-ID"))),
@@ -323,6 +332,23 @@ func (s *Server) writeInvalidRequest(ctx context.Context, w http.ResponseWriter,
 }
 
 func (s *Server) writeDemoResult(ctx context.Context, w http.ResponseWriter, status int, requestID, correlationID string, result ResourceResult) {
+	role := "sample"
+	if s.config.Verifier != nil {
+		role = "not_evaluated"
+		if identity, ok := tokenverify.FromContext(ctx); ok {
+			role = "unauthorized"
+			read, summary := slices.Contains(identity.Scopes, ScopeReportRead), slices.Contains(identity.Scopes, ScopeReportSummary)
+			switch {
+			case read && summary:
+				role = "reader_and_viewer"
+			case read:
+				role = "reader"
+			case summary:
+				role = "viewer"
+			}
+		}
+	}
+	s.config.Events.Emit(correlationID, string(result.Outcome), result.ReasonCode, "access role="+role)
 	if result.SafeData == nil {
 		result.SafeData = emptySafeData()
 	}
