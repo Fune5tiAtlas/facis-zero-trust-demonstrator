@@ -947,10 +947,33 @@ from=$(node_of "$DATA" unregistered); to=$(node_of "$DATA" peer)
 case $r in denied*) [ -n "$from" ] && [ -n "$to" ] && [ "$from" != "$to" ];; *) false;; esac
 check $? "a call from its network namespace, on another node than the peer's, to the meshed peer is refused in the handshake: the peer accepts mTLS only (STRICT)" "unregistered on ${from:-no node} → peer on ${to:-no node}: $r"
 sleep 3
-hs=$(new_denials "$work/peer-denials-9" "$DATA" peer | jq -r 'select((.source // "") | contains("/sa/unregistered")) | .source')
+new_denials "$work/peer-denials-9" "$DATA" peer >"$work/peer-denials-9-new"
+hs=$(jq -r 'select((.source // "") | contains("/sa/unregistered")) | .source' "$work/peer-denials-9-new")
 [ -z "$hs" ]; check $? "the handshake refusal is the handshake's, not the authorization layer's: the caller presented no identity, so the peer's proxy wrote no denial line naming it" "denial lines naming unregistered: ${hs:-none}"
+# plain_refusal <file of new denial lines> <pod>: the first line the listener wrote for a connection
+# without mutual TLS from that pod's address: no source identity, detail filter_chain_not_found (no
+# filter chain of the STRICT listener takes plain text), which zone-policy's Telemetry logs too
+plain_refusal() {
+  local ip; ip=$(k -n "$DATA" get pod "$2" -o jsonpath='{.status.podIP}' 2>/dev/null)
+  [ -n "$ip" ] && jq -c --arg a "$ip" 'select((.source // "") == "" and .address == $a and .detail == "filter_chain_not_found")' "$1" | head -1
+}
+line=$(plain_refusal "$work/peer-denials-9-new" unregistered)
+[ -n "$line" ]; check $? "the peer's proxy logged the refused connection of the unlabelled pod: a line without a source identity, from that pod's address, detail filter_chain_not_found" "${line:-no such line; new denial lines: $(paste -sd' ' "$work/peer-denials-9-new" | cut -c1-300)}"
+say '' '### out-of-mesh-call-blocked-and-logged' ''
+say "The same call, \`http://peer.$DATA.svc:8080/hostname\`, from two workloads of the same namespace, so the network layer admits both (\`allow-intra-plane\`): the proxy-less stand-in \`probe\` (section 5), a workload outside the mesh with no proxy and no identity, and the labelled, meshed \`caller\`. The peer's listener accepts mutual TLS only, so the first is closed before any request is read, and the peer's proxy writes one line of its denial log for it, without a source identity and with the caller's address; the second is served (and counted as mutual TLS in section 10)." ''
+denial_lines "$DATA" peer >"$work/peer-denials-9"
+r=$(http "$DATA" probe app "http://peer.$DATA.svc:8080/hostname")
+case $r in denied*) true;; *) false;; esac
+check $? "the call of the proxy-less pod probe, a workload outside the mesh, to the meshed peer is refused: the peer accepts mTLS only (STRICT)" "probe → peer: $r"
+sleep 3
+new_denials "$work/peer-denials-9" "$DATA" peer >"$work/peer-denials-9-new"
+line=$(plain_refusal "$work/peer-denials-9-new" probe)
+[ -n "$line" ]; check $? "the peer's proxy logged the refused out-of-mesh call: a line without a source identity, from the proxy-less pod's address, detail filter_chain_not_found" "${line:-no such line; new denial lines: $(paste -sd' ' "$work/peer-denials-9-new" | cut -c1-300)}"
 r=$(http "$DATA" caller app "http://peer.$DATA.svc:8080/hostname")
 [ "${r%% *}" = 200 ]; check $? "the labelled pod's call to the same peer succeeds" "→ $r"
+sleep 3
+served=$(new_denials "$work/peer-denials-9" "$DATA" peer | jq -c --arg s "$SA_ID" 'select(.source == $s)')
+[ -z "$served" ]; check $? "the labelled pod's served call left no line in the peer's denial log" "denial lines naming caller: ${served:-none}"
 
 # --------------------------------------------------------------------------------------------
 section "10. traffic-through-the-proxies"
