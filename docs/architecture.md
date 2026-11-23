@@ -164,8 +164,10 @@ SPIRE and Istio control planes are not meshed
 (`allow-intra-plane`) and the mesh layer decides alone: a same-plane pair between releases is an
 entry of the umbrella's `intraPlanePairs` (none today), and a release whose own pods call one
 another declares those pairs in its own chart (`ztd-openbao`: its bootstrap Job and verification
-hook to its server). No policy at either layer names an address; CI renders every shipped zone and
-fails on one (`scripts/ci/check-policy-addresses.sh`).
+hook to its server). No mesh policy at either layer names an address; CI renders every shipped zone and
+component chart and fails on one (`scripts/ci/check-policy-addresses.sh`). The only addresses are the
+Connector gateway's two hops that leave the mesh, the egress to the peer zone's entry and the entry's
+public ingress, which the check declares in that chart's render and in their exact shape only.
 
 **Mesh authorization** — the default deny, how a pair is declared, the coupling check that keeps
 the two layers' rows equal, and how to read a denial — is described in
