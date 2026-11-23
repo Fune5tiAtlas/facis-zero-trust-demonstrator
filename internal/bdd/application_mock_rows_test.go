@@ -15,7 +15,7 @@ const applicationFeedTest = "TestApplicationFeedEndToEnd"
 
 // ZT-75 uses the local-services cluster target: real Connector/PostgreSQL/OpenBao, participant,
 // token verifier, protected resource and IF-01 bridge. A skipped test cannot satisfy the row.
-// ZT-74 stays pending: its Then needs the trusted channel, which this target does not have.
+// ZT-74 needs the trusted channel, which this target does not have: participant_mock_cluster_test.go.
 func registerApplicationMockProofs(ctx *godog.ScenarioContext, dryRun bool) {
 	p := &servicesProof{}
 	ctx.Before(func(c context.Context, _ *godog.Scenario) (context.Context, error) {
