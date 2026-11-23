@@ -377,15 +377,11 @@ probe_start() { local pods; read -ra pods <<<"$2"; denials_start "$1" "${pods[@]
 # takes to flush its log), the first denial line one of the destination pods' proxies wrote since
 # probe_start, of <source> when one is given (a proxy-less probe has no identity, so then any new line counts)
 probe_denial() {
-  local pods line try; read -ra pods <<<"$2"
-  # Envoy flushes its access log every few seconds: read up to five times, 3 s apart.
-  for try in 1 2 3 4 5; do
-    sleep 3
-    if [ -n "$3" ]; then line=$(denials_new "$1" "${pods[@]}" | jq -c --arg s "$3" 'select(.source == $s)' | head -1)
-    else line=$(denials_new "$1" "${pods[@]}" | head -1); fi
-    [ -n "$line" ] && break
-  done
-  echo "$line"
+  local pods; read -ra pods <<<"$2"
+  # One read: these are network-layer probes, where no line is the expected result.
+  sleep 3
+  if [ -n "$3" ]; then denials_new "$1" "${pods[@]}" | jq -c --arg s "$3" 'select(.source == $s)' | head -1
+  else denials_new "$1" "${pods[@]}" | head -1; fi
 }
 # other_node <node>: an agent node other than <node> (the first in name order), or <node> when none
 other_node() { local n; n=$(grep -vxF -- "$1" <<<"$AGENT_NODES" | head -1); echo "${n:-$1}"; }
