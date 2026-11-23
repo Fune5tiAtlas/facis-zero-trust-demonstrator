@@ -269,6 +269,28 @@ lists the managers `helm` and `validatingadmissionpolicy-status` only, and the p
 the one read before the run (the generation rose by 2 on each zone, 17 to 19 on zone A and 15 to 17 on zone
 B: the lift and the restore). No probe pod remains, and the release revisions are unchanged.
 
+### Cause of the missing record on zone A (23 Nov 2026, 18:50-19:00Z)
+
+The record was not lost: in the failing runs the destination's proxy never received the request. The Service
+`ztd-data/ztd-policy-evaluator` selects `app.kubernetes.io/name: ztd-policy-evaluator` alone, and the verifier's
+stand-in caller and impostor of the row `pdp-adapter-to-tsa` carry exactly that label (the row's), so during a
+run the Service had three ready endpoints, while the probe plan, built before the callers exist, read the one
+real pod's log only. The prober's proxy spread its request over the three, each proxy refused it with
+`403 RBAC: access denied` under the mesh-wide default deny, and the line was written by whichever proxy
+answered: the real one in about one run out of three (two of five observed). The real proxy's counter
+`http.inbound_0.0.0.0_8080;.rbac.denied` stood at 2 after the five runs, the number of its denial lines.
+Reproduced on `zerotrust-a` with a meshed prober of its own (admitted as written, the admission policy not
+lifted: generation 19 before and after) behind a probe-scoped opening: with the real pod alone, 6 of 6 requests
+reached it (the prober's `rq_total` of the endpoint) and each left a line; with one stand-in carrying the label,
+6 of 8 reached the real pod and 2 the stand-in, whose proxy logged those two under its own identity; with the
+same stand-in held out of the Service by a readiness gate (`ready=false` in the EndpointSlice,
+`failed_eds_health` at the prober), 6 of 6 reached the real pod again. The fix is in the verifier: every
+stand-in caller, impostor and unlabelled pod of `fixtures/rows/*.yaml` now holds a readiness gate nothing sets,
+so it runs and is never a Service endpoint, and the verifier waits for `ContainersReady` instead of `Ready`
+(`verify_test.sh` holds the fixtures to it). Before the fix a run also sent two thirds of the guard's decision
+calls to the stand-ins for its length; the evaluator's proxy counted no such call that day. The probe objects
+were removed; the five rows have not been run again on zone A with the fix.
+
 ## Rows left pending
 
 - **ZT-01 Secure Service Mesh**: needs "a workload outside the mesh attempts the same call" as an in-mesh pair.
