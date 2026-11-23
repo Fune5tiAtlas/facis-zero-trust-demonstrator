@@ -290,6 +290,23 @@ PY2
 )
 [ -z "$dl_problems" ] && ok "every Pod of the fixtures stops on its own (activeDeadlineSeconds between 1 h and 4 h)" || ko "every Pod of the fixtures stops on its own" "$dl_problems"
 
+# ---- the stand-in callers are no Service endpoints ----------------------------------------------
+# A stand-in caller carries its row's labels, which a Service of the zone may select: as a ready endpoint it
+# would answer a share of that Service's requests. Every caller, impostor and unlabelled Pod of the fixtures
+# holds a readiness gate nothing sets, so it runs and is never Ready; a stand-in destination holds none.
+rg_problems=$(python3 - "$HERE/fixtures/rows" <<'PY2'
+import glob, os, sys, yaml
+for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.yaml"))):
+    for d in yaml.safe_load_all(open(f)):
+        if not d or d.get("kind") != "Pod": continue
+        role = (d["metadata"].get("annotations") or {}).get("verify-plane-separation/role")
+        gated = bool(d["spec"].get("readinessGates"))
+        if gated != (role != "destination"):
+            print(f"{os.path.basename(f)} {d['metadata']['name']} ({role}): readinessGates {d['spec'].get('readinessGates')}")
+PY2
+)
+[ -z "$rg_problems" ] && ok "every stand-in caller is held out of Services by a readiness gate, no stand-in destination is" || ko "every stand-in caller is held out of Services by a readiness gate, no stand-in destination is" "$rg_problems"
+
 # ---- address redaction ------------------------------------------------------------------------
 # proof_mask (scripts/lib/proof.sh), shared with verify-mesh-identity: every IPv4 and IPv6 address of a
 # participant cluster goes, a dual-stack node or pod address, a bracketed Hubble address, an IPv4-mapped

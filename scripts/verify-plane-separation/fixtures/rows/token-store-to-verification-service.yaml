@@ -61,6 +61,7 @@ metadata:
 spec:
   activeDeadlineSeconds: 7200   # a stand-in left by a killed run stops on its own after 2 h
   terminationGracePeriodSeconds: 2
+  readinessGates: [{ conditionType: verify-plane-separation/never-an-endpoint }]   # never Ready: no Service of the zone selecting the row's labels routes to it
   serviceAccountName: ztd-token-store
   containers:
     - name: app
@@ -85,6 +86,7 @@ metadata:
 spec:
   activeDeadlineSeconds: 7200   # a stand-in left by a killed run stops on its own after 2 h
   terminationGracePeriodSeconds: 2
+  readinessGates: [{ conditionType: verify-plane-separation/never-an-endpoint }]   # never Ready: no Service of the zone selecting the row's labels routes to it
   serviceAccountName: token-store-to-verification-service-impostor
   containers:
     - name: app
@@ -102,6 +104,7 @@ metadata:
 spec:
   activeDeadlineSeconds: 7200   # a stand-in left by a killed run stops on its own after 2 h
   terminationGracePeriodSeconds: 2
+  readinessGates: [{ conditionType: verify-plane-separation/never-an-endpoint }]   # never Ready: no Service of the zone selecting the row's labels routes to it
   serviceAccountName: ztd-token-store
   containers:
     - name: app

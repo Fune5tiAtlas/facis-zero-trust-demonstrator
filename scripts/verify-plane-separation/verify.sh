@@ -666,8 +666,12 @@ check $rc_create "with the capture validation (index ${idx:-none}) lifted, the p
 diff <(jq -S .spec "$work/policy.json") <(k get validatingadmissionpolicy "$POLICY" -o json | jq -S .spec) >/dev/null && [ "$held" -ge 5 ]
 check $? "the admission policy is put back unchanged and refuses the probes again, five times in a row" "refusals held $held of 5"
 for ns in "${PROBENS[@]}"; do
-  k -n "$ns" wait --for=condition=Ready pod -l "$PART_OF" --timeout=300s >/dev/null 2>&1
-  check $? "every caller and prober of the run in $ns is Ready"
+  # ContainersReady, not Ready: a stand-in caller carries its row's labels, which a Service of the zone may
+  # select (the callers of pdp-adapter-to-tsa carry the policy evaluator's), so its fixture holds it out of
+  # every Service with a readiness gate; as an endpoint it would take a share of that Service's requests, the
+  # mesh probe's among them, and the refusal would be logged by its proxy instead of the destination's.
+  k -n "$ns" wait --for=condition=ContainersReady pod -l "$PART_OF" --timeout=300s >/dev/null 2>&1
+  check $? "every caller and prober of the run in $ns runs (its containers are ready)"
 done
 code "$(for ns in $(printf '%s\n' "${PROBENS[@]}" "$MGMT" | sort -u); do k -n "$ns" get pods -l "$PART_OF" -o wide 2>/dev/null | sed 's/  */ /g'; done)"
 

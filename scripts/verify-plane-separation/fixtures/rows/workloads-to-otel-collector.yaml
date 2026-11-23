@@ -68,6 +68,7 @@ metadata:
 spec:
   activeDeadlineSeconds: 7200   # a stand-in left by a killed run stops on its own after 2 h
   terminationGracePeriodSeconds: 2
+  readinessGates: [{ conditionType: verify-plane-separation/never-an-endpoint }]   # never Ready: no Service of the zone selecting the row's labels routes to it
   serviceAccountName: workloads-to-otel-collector-caller
   containers:
     - name: app
