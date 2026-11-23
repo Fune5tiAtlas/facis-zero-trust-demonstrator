@@ -22,6 +22,16 @@ outside-to-entry `none` (`<name>-entry`, `<name>-public`) and entry-to-upstream 
 (`<trust domain>/ns/<namespace>/sa/<name>`) and pods. Mutual TLS is off on the entry's port only
 (`<name>-tls`); `<name>-public` admits that port.
 
+**The TRAIN allow list** (`ingress.peerAllowList`, off by default; ZT-18): the entry demands a client
+certificate issued by `clientCaCert` and asks `connector admit-peers`, a second container of the pod (the
+connector image), before forwarding each request. The peer is admitted only when a subject alternative
+name of its certificate is an active service of the framework's trust list, retrieved from `tspaUrl` and
+verified under `issuerDid`; refused otherwise (403 `CHAN-ZONE-UNKNOWN`, or 503 `CHAN-TRUST-UNREACHABLE`
+while the list cannot be retrieved or verified). `<name>-trust-list` is the pod's lane to the TSPA and the
+DID document's host, given as NetworkPolicy rules in `egress` (selectors, no addresses). The egress role
+presents its certificate with `egress.peer.clientTlsSecret`. See
+[TRAIN allow list of the zone entry](../../../docs/connector.md#train-allow-list-of-the-zone-entry-zt-18).
+
 Both roles log one JSON line per request on stdout (time, method, path, status, upstream, user agent,
 request id; no credential, body or other header). Envoy reads its configuration at start, so the pod
 carries the configuration's digest and a route change rolls it.
@@ -39,5 +49,5 @@ it stops, and its own rollouts lose no call. An uninstall keeps the entry's Serv
 rule `ztd-m3-edge-public` afterwards: `ztd-edge-public` replaces it. `scripts/verify-connector-routing/kind.sh`
 rehearses exactly this.
 
-`ci/values.yaml` (egress) and `ci/ingress-values.yaml` carry documentation addresses for rendering only;
+`ci/values.yaml` (egress), `ci/ingress-values.yaml`, `ci/allowlist-values.yaml` and `ci/client-cert-values.yaml` carry documentation addresses for rendering only;
 `ci/refused/` holds the values the chart refuses.

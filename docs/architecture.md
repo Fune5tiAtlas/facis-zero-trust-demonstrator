@@ -523,7 +523,10 @@ application traffic across the zone boundary; both are releases of the `connecto
   account, not a label another pod could carry): to the peer entry's address and port, nothing else.
 - **ingress, the zone entry** (`ztd-edge`): an Envoy behind the zone's `LoadBalancer` that
   terminates TLS from outside and forwards every request to one upstream in the zone, the
-  Participant backend, which reaches the protected resource only through the guard.
+  Participant backend, which reaches the protected resource only through the guard. With the TRAIN
+  allow list enabled (ZT-18, off by default) it demands the counter-connector's client certificate
+  and forwards only for a peer the trust list names
+  ([TRAIN allow list of the zone entry](connector.md#train-allow-list-of-the-zone-entry-zt-18)).
 
 The other Connector components do not forward: the Connector service (`ztd-connector`) serves the
 OAuth endpoints (registration, challenge, token, JWKS); the guard (`ztd-guard`) is the policy

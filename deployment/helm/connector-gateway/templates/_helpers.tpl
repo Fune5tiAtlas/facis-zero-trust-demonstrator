@@ -18,6 +18,15 @@
 {{- if $v.ingress.enabled -}}
 {{- if or (not $v.ingress.tlsSecret) (not $v.ingress.upstream.name) (empty $v.ingress.sourceRanges) -}}{{ fail "ingress.tlsSecret, ingress.upstream.name and ingress.sourceRanges are required" }}{{- end -}}
 {{- include "gateway.port" (list "ingress.port" $v.ingress.port) -}}
+{{- $a := $v.ingress.peerAllowList -}}
+{{- if $a.enabled -}}
+{{- if not (regexMatch "^sha256:[a-f0-9]{64}$" $a.image.digest) -}}{{ fail "ingress.peerAllowList.image.digest must be a sha256 digest" }}{{- end -}}
+{{- if not (has $a.zone (list "a" "b")) -}}{{ fail "ingress.peerAllowList.zone must be a or b" }}{{- end -}}
+{{- if not (regexMatch "^https?://[^/]+" $a.tspaUrl) -}}{{ fail "ingress.peerAllowList.tspaUrl must be the TSPA's http(s) URL" }}{{- end -}}
+{{- if or (not $a.framework) (not (hasPrefix "did:web:" $a.issuerDid)) -}}{{ fail "ingress.peerAllowList.framework and a did:web issuerDid are required" }}{{- end -}}
+{{- if not (contains "BEGIN CERTIFICATE" $a.clientCaCert) -}}{{ fail "ingress.peerAllowList.clientCaCert must hold the PEM CA certificate of the counter-connectors" }}{{- end -}}
+{{- if empty $a.egress -}}{{ fail "ingress.peerAllowList.egress: the lane to the trust list is required" }}{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 

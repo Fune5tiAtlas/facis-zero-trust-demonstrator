@@ -66,6 +66,9 @@ type Request struct {
 	Headers http.Header
 	// PeerID is the caller's SPIFFE ID when the transport authenticated one, else empty.
 	PeerID string
+	// PeerCertificate is the caller's TLS certificate as the proxy forwards it (URL-encoded PEM),
+	// when the filter is configured to include it, else empty.
+	PeerCertificate string
 }
 
 // Config is what the guard knows about its zone.
