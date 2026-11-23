@@ -359,8 +359,8 @@
       "then": "the authorized request passes the PEP/PDP policy chain AND the unauthorized request is denied before the protected resource returns data.",
       "family": "authorization",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-21",
