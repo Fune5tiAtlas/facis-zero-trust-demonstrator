@@ -107,8 +107,8 @@
       "then": "the authorized request is permitted according to credential/policy evaluation AND the request without matching attributes/authorization is denied and evidenced.",
       "family": "policy",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-07",
@@ -377,8 +377,8 @@
       "then": "it issues the appropriate DPoP-bound access tokens AND an invalid presentation or unregistered/unauthorized client does not receive a usable access token.",
       "family": "authorization",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-22",
@@ -395,8 +395,8 @@
       "then": "the backend token and DPoP proof are validated and the correct counter-side token is used upstream AND an invalid DPoP proof or expired/unrenewable token causes the request to be denied.",
       "family": "authorization",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-23",
@@ -1373,8 +1373,8 @@
       "then": "valid credentials are mapped into the intended JWT/role authorization and return the permitted response AND invalid/revoked credentials do not grant protected access.",
       "family": "authorization",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-77",

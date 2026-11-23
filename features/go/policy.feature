@@ -2,7 +2,7 @@
 Feature: Policy decision
   Annex A rows for Policy decision, worded exactly as in the Annex.
 
-  @ZT-06 @BDD-ZT-006 @pending
+  @ZT-06 @BDD-ZT-006 @cluster
   Scenario: Attribute/Credential Based Access Control
     Given one participant backend with the required credential attributes and one without them
     When both request the same protected resource

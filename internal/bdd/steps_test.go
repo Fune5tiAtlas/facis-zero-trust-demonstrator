@@ -212,6 +212,8 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	registerChartGate(ctx, dryRun)
 	registerSecretsBaseline(ctx, dryRun)
 	registerPlaneSeparationProof(ctx, dryRun)
+	registerAuthorizationProofs(ctx, dryRun)
+	registerPolicyProofs(ctx, dryRun)
 	registerPending(ctx)
 }
 
