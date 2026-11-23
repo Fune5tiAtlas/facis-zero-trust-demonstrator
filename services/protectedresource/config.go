@@ -28,6 +28,9 @@ type Config struct {
 	Mode           string
 	AdapterMode    string
 	LogLevel       string
+	// GRPCAddress, when set, also serves the gRPC sample method (GRPCMethod) there over cleartext
+	// HTTP/2, behind the same Verifier. Token mode only.
+	GRPCAddress string
 	// Verifier, when set, selects token mode. LoadConfig sets it, to a tokenverify.Verifier, only for
 	// PROTECTED_RESOURCE_MODE=token.
 	Verifier tokenverify.RequestVerifier
@@ -57,6 +60,7 @@ func LoadConfig() (Config, error) {
 		Mode:           strings.ToLower(envOrDefault("PROTECTED_RESOURCE_MODE", "sample")),
 		AdapterMode:    strings.ToLower(envOrDefault("PROTECTED_RESOURCE_ADAPTER_MODE", "sample")),
 		LogLevel:       strings.ToLower(envOrDefault("PROTECTED_RESOURCE_LOG_LEVEL", "info")),
+		GRPCAddress:    strings.TrimSpace(os.Getenv("PROTECTED_RESOURCE_GRPC_ADDRESS")),
 	}
 
 	var err error
@@ -77,6 +81,9 @@ func LoadConfig() (Config, error) {
 		}
 	default:
 		return Config{}, fmt.Errorf("PROTECTED_RESOURCE_MODE %q is unavailable; supported modes are sample and token", cfg.Mode)
+	}
+	if cfg.GRPCAddress != "" && cfg.Mode != ModeToken {
+		return Config{}, fmt.Errorf("PROTECTED_RESOURCE_GRPC_ADDRESS needs PROTECTED_RESOURCE_MODE=token: the gRPC method is served to verified callers only")
 	}
 	switch cfg.AdapterMode {
 	case "sample", "sample-alternative":

@@ -67,6 +67,10 @@ spec:
           ports:
             - name: http
               containerPort: {{ .Values.port }}
+            {{- if .Values.grpcPort }}
+            - name: grpc
+              containerPort: {{ .Values.grpcPort }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: {{ .Values.healthPath }}
