@@ -435,7 +435,14 @@ func (m *meshProof) routedThroughTheConnector() error {
 	if m.dryRun {
 		return godog.ErrSkip
 	}
+	// The proof prints its run directory as its last line; on a host without GNU realpath (macOS) it does not
+	// take ZTD_EVIDENCE_DIR and writes under ~/.local/state, so the record is read from there and copied in.
 	record, err := os.ReadFile(filepath.Join(m.routing, "evidence.md"))
+	if printed := strings.TrimSpace(lastLines(m.rOutput, 1)); err != nil && filepath.IsAbs(printed) {
+		if record, err = os.ReadFile(filepath.Join(printed, "evidence.md")); err == nil {
+			err = errors.Join(os.MkdirAll(m.routing, 0o755), os.WriteFile(filepath.Join(m.routing, "evidence.md"), record, 0o644))
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("the Connector routing proof wrote no record (exit %d): %w; %s", m.rExit, err, lastLines(m.rOutput, 3))
 	}
