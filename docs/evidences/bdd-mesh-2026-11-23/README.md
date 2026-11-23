@@ -64,6 +64,74 @@ worktree had no built chart dependencies, so the umbrella did not render, and th
 found (the proof does not take `ZTD_EVIDENCE_DIR` on a host without GNU `realpath`; the scenario now reads the
 run directory the proof prints and copies the record in).
 
+## Rerun after the zone upgrade (23 Nov 2026, 16:31-17:10Z)
+
+Both zones were upgraded earlier the same day from the current zone files (umbrella `ztd` and `zone-policy`:
+zone A `ztd` revision 6 and `zone-policy` revision 10, zone B `ztd` revision 5 and `zone-policy` revision 5).
+The five rows were run again with the same inputs, environment and command as above, at commit `04839b66`.
+The runs above stay as the history of the state before the upgrade.
+
+| Target | kube-system UID | BDD run id | Plane-separation run | Routing run |
+|---|---|---|---|---|
+| `zerotrust-a` | `3fbf9fda-5cd2-459a-87f0-769126697d9a` | `mesh-a-20261123-r3` (16:31-17:10Z) | `r643bac3e`: 119 pass, 2 fail, 14 n/a, 3 declared | `20261123T170721Z-58093`: 0 failed |
+| `zerotrust-b` | `a39ae8ea-ac02-4aec-9c13-cda127b17e2d` | `mesh-b-20261123-r3` (16:31-16:49Z) | `r3ad90096`: 39 pass, 2 fail, 6 n/a, 1 declared | `20261123T164412Z-40857`: 2 failed |
+
+| Row | zone A | zone B |
+|---|---|---|
+| ZT-23 | failed | failed |
+| ZT-25 | failed | failed |
+| ZT-61 | failed | failed |
+| ZT-62 | failed | failed |
+| ZT-26 | **passed** | failed |
+
+### What the upgrade fixed
+
+The four lanes that were dropped at the network before now carry traffic on both zones. `pdp-adapter-to-tsa`
+and `token-store-to-verification-service`: the legitimate caller is served `200` over mTLS and counted to the
+destination's SPIFFE ID, the impostor is refused `403 RBAC` with both SPIFFE IDs, the unlabelled caller is
+dropped with Hubble's policy drop. `connector-to-openbao` and `token-store-to-openbao`: the impostor is
+refused `403 RBAC` by OpenBao's proxy with both SPIFFE IDs, the unlabelled caller is dropped with Hubble's
+policy drop, and the legitimate caller's request reaches OpenBao over mTLS (counted by its proxy to
+`spiffe://zone-<a|b>.trust.invalid/ns/ztd-mgmt/sa/ztd-openbao`). The failed lines went from 8 to 2 per zone.
+
+### Why the rows still fail
+
+- **ZT-23, ZT-61, ZT-62, both zones: the verifier expects `200` from a destination that answers `307`.** The
+  two failing lines per zone are the legitimate callers of `connector-to-openbao` and `token-store-to-openbao`:
+
+  `"connector-to-openbao","Secret store","ztd-data","legitimate caller",...,"8200","200 over mTLS, destination principal spiffe://zone-b.trust.invalid/ns/ztd-mgmt/sa/ztd-openbao","307 <a href=""/ui/"">Temporary Redirect</a>.","control channel","the caller's proxy counted 1 request(s) to destination_principal ...","real","fail"`
+
+  (the same for `token-store-to-openbao`, and on zone A with `zone-a.trust.invalid`). These two rows are the
+  only ALLOW rows probed against a **real** destination (`ztd-mgmt/ztd-openbao-0`); the verifier sends
+  `GET /` and passes the line only on status `200` (`scripts/verify-plane-separation/verify.sh`, the
+  legitimate-caller branch), and OpenBao answers `GET /` with a redirect to `/ui/`. The lane itself holds: the
+  request crossed the network policy, was carried over mTLS and was answered by OpenBao. The defect is in the
+  probe's expectation for a real destination, not in the zone.
+- **ZT-25, both zones: the same two lines, and the address check of the live policies.** Since the earlier
+  runs the address check declares the Connector's two edge hops only in the connector-gateway chart's own
+  render (`--edge-manifest`); the scenario scans the live policies with `--manifest`, so the two hops, which
+  were reported `EDGE` before, now fail:
+
+  `FAIL live-zone-a: live-policies CiliumNetworkPolicy ztd-data/ztd-connector-gateway-peer: key toCIDR at spec.egress.0.toCIDR` and `address <address>/32 at spec.egress.0.toCIDR.0`
+
+  `FAIL live-zone-b: live-policies NetworkPolicy ztd-m3-b/ztd-edge-entry: key ipBlock at spec.ingress.0.from.0.ipBlock` and `address <address>/0 at spec.ingress.0.from.0.ipBlock.cidr`
+
+  Both policies predate the upgrade (created 21 Nov by the gateway releases) and are unchanged; no other live
+  policy and no policy of either zone file's render names an address. Whether the live scan may declare the
+  two hops is a decision on the check, not a change of the zones.
+- **ZT-26 on zone B**: unchanged. The trust list of `trust.facis.cloud` and its VC answer `404 application/json`
+  through `tspa-public` (`valid from none until none`); `Result: 2 failed check(s).` This is the data held by
+  the TRAIN instance (the framework and its list are not published on it), not a routing defect: the other
+  23 entry checks, the 6 direct paths (each with Hubble's drop), DNS and the export lane passed. Nothing was
+  published to TRAIN.
+
+### State of the zones after the rerun
+
+On both zones `kubectl get validatingadmissionpolicy proxy-takes-spire-socket -o json --show-managed-fields`
+lists the managers `helm` and `validatingadmissionpolicy-status` only, and the policy's spec is identical to
+the one read before the run (the generation rose by 2 on each zone: the lift and the restore). No probe pod
+remains, and the release revisions are those listed above.
+
 ## Rows left pending
 
 - **ZT-01 Secure Service Mesh**: needs "a workload outside the mesh attempts the same call" as an in-mesh pair.
