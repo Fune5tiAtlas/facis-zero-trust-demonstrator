@@ -20,7 +20,7 @@ and the guarded path works.
 | 3 | Plan regenerated as for the 21 Nov reissue: `work/status-2026-11-21/openbao-recovery-plan-t6`, ConfigMap resourceVersion 21244340 → 27769872 only, uid and content hash unchanged, enable-patch hash re-recorded; fresh private dir `work/private/m3-zone-b-openbao-20261121-t6` | done | (private) |
 | 4 | `openbao_recover.py run --approved-zone-b-recovery --configure-kubernetes-auth` (recovery branch commit `c9a0d336`, self-test PASS): temporary listener setting, restart and unseal, temporary administrator, `auth/kubernetes/` enabled and configured (`https://kubernetes.default.svc`, server's own CA and token), roles `ztd-m3-connector` (`ztd-connector`) and `ztd-m3-token-store` (`ztd-token-store`), namespace `ztd-m3-b`, audience `openbao`, existing policies, ttl 1 h; real logins with minted ServiceAccount tokens give exactly `default` + the role's policy, wrong audience and the other account refused; administrator revoked and refused; ConfigMap restored, restart and unseal, logins verified again | PASS | `live/recovery/recovery.json` |
 | 5 | Workloads after (still token mode): both ready; guarded path | PASS | `live/route-2-after-auth-config/execution.json` |
-| 6 | Switch token store, then connector, to `openbao.auth.method=kubernetes` | **not done**: no admissible image (above) | |
+| 6 | Switch token store, then connector, to `openbao.auth.method=kubernetes` (23 Nov, images of `candidate/m3-closeout` run 45213438757, signed with the interim key) | done: see below | |
 
 ## To finish (needs the release workflow)
 
@@ -39,3 +39,23 @@ and the guarded path works.
 Rollback of what was done (not needed; the workloads ignore it while in token mode): the recovery
 procedure with a temporary administrator to disable `auth/kubernetes/`, and
 `kubectl delete clusterrolebinding ztd-m3-openbao-auth-delegator`.
+
+## Workload switch, 23 November 2026
+
+Images from the candidate release run 45213438757 (commit `6daec0c3`), signed with the interim key:
+token-store `sha256:123343bb…08fab`, connector `sha256:da4e8d2e…e2ff5`.
+
+| # | Step | Result |
+|---|---|---|
+| 1 | Guarded path before (`POST https://160.44.12.245/demo`) | 200 `RESOURCE_REPORT_RETURNED` |
+| 2 | `ztd-token-store`: server-side dry run, then `helm upgrade --reset-then-reuse-values` with the new digest, `openbao.auth.method=kubernetes`, role `ztd-m3-token-store`, `runtime.credentialKeys={fixture.pem,store-client-secret}`; two rollouts refused with `ADM-PROVIDER-DOWN` (cold cache), the third admitted | revision 7, ready; pod mounts a projected token (audience `openbao`, 600 s), not the scoped token; signing key resolved through transit |
+| 3 | `ztd-connector`: the chart now requires `zone` (`zone=b` added); same switch with role `ztd-m3-connector` | the new pod reported `openbao: ok` but `postgres: schema_behind`: the connector's `issuer` database was at migration 4, the image expects 5 |
+| 4 | Migration 5 on `issuer` (no `signing_key` rows, so only the index is created): one-off Job `ztd-connector-schema-v5`, a copy of the 27 Oct `ztd-connector-schema` Job with the new token-store image | `migration applied version 5`, `schema is current` |
+| 5 | Connector rollout completes; `helm upgrade` re-run so the release records it | revision 5, deployed; old pod gone |
+| 6 | Guarded path after | 200 `RESOURCE_REPORT_RETURNED` |
+
+Rollback for either: `helm rollback` to the previous revision (token mode; the scoped token Secrets were
+kept). The scoped tokens expire about 28 November 17:26 UTC and are no longer used.
+
+Open: the connector's `issuer` schema is migrated by a hand-made Job, as on 27 Oct; no chart owns it.
+
