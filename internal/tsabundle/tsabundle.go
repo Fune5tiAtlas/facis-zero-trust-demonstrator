@@ -216,10 +216,14 @@ func Open(outer []byte, e Expect) error {
 // JWKS is the trust root as the JWK set the TSA fetches from KeyURL; the TSA uses its first key.
 func JWKS(key *ecdsa.PublicKey) []byte {
 	enc := base64.RawURLEncoding.EncodeToString
-	pad := func(b []byte) []byte { return append(make([]byte, 32-len(b)), b...) }
+	// Uncompressed SEC 1 point: 0x04 || X || Y, each coordinate 32 bytes for P-256.
+	point, err := key.Bytes()
+	if err != nil || len(point) != 65 {
+		return nil
+	}
 	out, _ := json.Marshal(map[string]any{"keys": []map[string]string{{
 		"kty": "EC", "crv": "P-256", "use": "sig", "alg": "ES256",
-		"x": enc(pad(key.X.Bytes())), "y": enc(pad(key.Y.Bytes())),
+		"x": enc(point[1:33]), "y": enc(point[33:]),
 	}}})
 	return out
 }
