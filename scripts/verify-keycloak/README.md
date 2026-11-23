@@ -38,5 +38,5 @@ Limits: this is a local-services proof, not a deployment of ORCE or a mesh. It e
 UIAuth source in a Node harness; dispatch is observed at the authenticated command boundary. The
 machine proof is the existing real Go integration chain, with its documented fixture role outcomes;
 its additional end-to-end test verifies an actual SD-JWT presentation. The two flows are separate
-as specified by the identity model. Packaged ORCE startup and browser rendering still need a runtime
-smoke test after building its image; UI sample journeys remain sample journeys.
+as specified by the identity model. Browser rendering of the packaged UI is not
+tested here; UI sample journeys remain sample journeys.
