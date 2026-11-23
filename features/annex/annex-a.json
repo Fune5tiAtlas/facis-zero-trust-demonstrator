@@ -413,8 +413,8 @@
       "then": "the mesh is present in every cluster and service traffic is routed through it AND traffic attempting to bypass the mesh data path is not delivered.",
       "family": "mesh",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-24",
@@ -449,8 +449,8 @@
       "then": "policy-related workloads communicate according to configured trust policy AND unaffiliated workloads are blocked by the default-deny network policy without relying on IP-address identity.",
       "family": "mesh",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-26",
@@ -467,8 +467,8 @@
       "then": "protected inter-cluster application traffic is routed through the ZT Connector AND explicitly exempt infrastructure/admin traffic uses its separately controlled ingress/egress path.",
       "family": "mesh",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-27",
@@ -1103,8 +1103,8 @@
       "then": "its service communication traverses the service-mesh data path and is subject to the configured identity and policy controls.",
       "family": "mesh",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-62",
@@ -1121,8 +1121,8 @@
       "then": "the permitted identity communicates successfully AND the non-permitted identity is blocked by mesh policy.",
       "family": "mesh",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-63",
