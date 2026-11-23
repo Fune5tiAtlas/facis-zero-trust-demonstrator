@@ -17,8 +17,8 @@
       "then": "the in-mesh call is carried over the mesh under mutual TLS AND the out-of-mesh call is blocked and logged.",
       "family": "mesh",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-02",
@@ -485,8 +485,8 @@
       "then": "traces and metrics are exported from the cluster through the Collector, metrics are retained in Prometheus and traces are queryable in the tracing backend AND a component emitting no telemetry is visible as a gap in the correlated trace.",
       "family": "mesh",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-28",
@@ -1049,8 +1049,8 @@
       "then": "service traffic is captured on each node and protected with workload-certificate-based mutual TLS.",
       "family": "mesh",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-59",

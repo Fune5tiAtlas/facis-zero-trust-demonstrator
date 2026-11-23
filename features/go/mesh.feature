@@ -2,7 +2,7 @@
 Feature: Mesh enrolment and segmentation
   Annex A rows for Mesh enrolment and segmentation, worded exactly as in the Annex.
 
-  @ZT-01 @BDD-ZT-001 @pending
+  @ZT-01 @BDD-ZT-001 @cluster
   Scenario: Secure Service Mesh
     Given the service mesh is deployed in each target cluster with workload identities issued
     When two in-mesh services communicate and a workload outside the mesh attempts the same call
@@ -26,13 +26,13 @@ Feature: Mesh enrolment and segmentation
     When each traffic type leaves or enters a cluster
     Then protected inter-cluster application traffic is routed through the ZT Connector AND explicitly exempt infrastructure/admin traffic uses its separately controlled ingress/egress path.
 
-  @ZT-27 @BDD-ZT-027 @pending
+  @ZT-27 @BDD-ZT-027 @cluster
   Scenario: Observability
     Given the OpenTelemetry Collector, Prometheus and the OTel-compatible tracing backend are deployed
     When demonstrator traffic and security decisions occur
     Then traces and metrics are exported from the cluster through the Collector, metrics are retained in Prometheus and traces are queryable in the tracing backend AND a component emitting no telemetry is visible as a gap in the correlated trace.
 
-  @ZT-58 @BDD-ZT-058 @pending
+  @ZT-58 @BDD-ZT-058 @cluster
   Scenario: Service Mesh Setup
     Given SPIRE-backed identities and the target clusters
     When the service mesh/control plane and traffic-capture layer are enabled
