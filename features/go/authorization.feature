@@ -62,7 +62,7 @@ Feature: Authorization surface
     When each is replaced by a real-world API through the documented interface
     Then the demonstrator journey completes against the real API with no change to the Zero Trust core AND the replacement is demonstrated end to end at least once.
 
-  @TDR-BDD-05 @BDD-TDR-005 @pending
+  @TDR-BDD-05 @BDD-TDR-005 @cluster
   Scenario: Keycloak / policy / token integration
     Given the target Keycloak, policy and token services are reachable
     When a valid and an invalid access flow are executed

@@ -213,6 +213,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	registerSecretsBaseline(ctx, dryRun)
 	registerPlaneSeparationProof(ctx, dryRun)
 	registerAuthorizationProofs(ctx, dryRun)
+	registerKeycloakProof(ctx, dryRun)
 	registerPolicyProofs(ctx, dryRun)
 	registerWorkloadIdentityProof(ctx, dryRun)
 	registerMeshProof(ctx, dryRun)
