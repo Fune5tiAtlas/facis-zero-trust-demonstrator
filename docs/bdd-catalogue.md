@@ -13,7 +13,7 @@ reported is described in [BDD acceptance](bdd.md).
   This page is built from the repository, not from a run: each cluster run publishes its own
   copy of the catalogue with the basis filled in.
 
-94 rows: 32 implemented, 62 pending.
+94 rows: 33 implemented, 61 pending.
 
 | Row | Requirement | Gate | Status | Runner |
 |---|---|---|---|---|
@@ -90,7 +90,7 @@ reported is described in [BDD acceptance](bdd.md).
 | [ZT-71](#zt-71) | Image Signing and mock Attestation | G2 | pending | godog |
 | [ZT-72](#zt-72) | Secure Pod Startup | G2 | implemented | godog |
 | [ZT-73](#zt-73) | Authorized Upstreaming over the Zero Trust Connector | G3 | implemented | godog |
-| [ZT-74](#zt-74) | Participant Backend Mock | G3 | pending | godog |
+| [ZT-74](#zt-74) | Participant Backend Mock | G3 | implemented | godog |
 | [ZT-75](#zt-75) | Protected Resource Mock | G3 | implemented | godog |
 | [ZT-76](#zt-76) | Credential Based Access | G3 | implemented | godog |
 | [ZT-77](#zt-77) | Mock Replaceable | G3 | pending | godog |
@@ -1729,8 +1729,8 @@ Then the request is authorized, traverses the trusted channel and receives the p
 | Test type | BDD / integration |
 | Gate | G3 - Protected-service vertical slice |
 | Evidence | `evidence/bdd-zt-074/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/authorization.feature` |
 

@@ -9,6 +9,9 @@ The Annex wording is unchanged.
 | ZT-75 Protected Resource Mock | implemented, `@cluster` | `features/go/policy.feature`, `@ZT-75 @BDD-ZT-075` | passed, 3 of 3 steps |
 | ZT-74 Participant Backend Mock | pending | `features/go/authorization.feature`, `@ZT-74 @BDD-ZT-074` | not run |
 
+
+> Update (23 Nov): ZT-74 was implemented afterwards on the kind mesh: [participant mock record](../bdd-participant-mock-2026-11-23/README.md).
+
 ## ZT-75
 
 | Step | What it does |

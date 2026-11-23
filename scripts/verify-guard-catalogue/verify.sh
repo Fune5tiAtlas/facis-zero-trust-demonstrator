@@ -22,6 +22,12 @@
 # bundle's revision, and no denied request in the resource's record. Records: cases.jsonl.
 # It needs a linux cosign in BIN (scripts/tools/install.sh <dir> cosign).
 #
+# --participant runs the participant-backend mock proof instead of the catalogue, on the same chain:
+# the Participant service in token mode, installed in the mesh from its chart, bootstraps at the
+# Connector and calls the resource through the guard; its registration, request and status events
+# are read back from the feed bridge, and the receivers' sidecars name the identities of every hop
+# (participant.sh).
+#
 # Needs docker, go, helm, kind, kubectl, curl, jq, openssl. KEEP=1 leaves the cluster running.
 set -euo pipefail
 
@@ -33,16 +39,19 @@ if [ -d "${BIN:-.tools/bin}" ]; then PATH="$(cd "${BIN:-.tools/bin}" && pwd):$PA
 
 out=.dev/guard-catalogue
 tsa=false
+mock=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) out="$2"; shift 2 ;;
     --tsa) tsa=true; shift ;;
+    --participant) mock=true; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 for tool in docker go helm kind kubectl curl jq openssl; do
   command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 2; }
 done
+if [ "$tsa" = true ] && [ "$mock" = true ]; then echo "--tsa and --participant are separate proofs" >&2; exit 2; fi
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 rm -rf "${out:?}"/*
@@ -81,6 +90,7 @@ if [ "$tsa" = true ]; then
   [ -x "${BIN:-.tools/bin}/cosign" ] || { echo "--tsa needs a linux cosign in BIN" >&2; exit 2; }
   bin="$(cd "${BIN:-.tools/bin}" && pwd)"
 fi
+if [ "$mock" = true ]; then images+=(participant); fi
 work="$(mktemp -d)"
 export KUBECONFIG="$work/kubeconfig"
 cluster_owned=false
@@ -667,9 +677,26 @@ expect() {
   if [ "$ok" = yes ]; then pass "$name: $got $code${rule:+ ($rule)}, guard event${pe:+ and policy event} under $id"; else fail "$name: got $got ${reason:-} ${got_rule:-}, events: ${ge:-none} / ${pe:-none}"; fi
 }
 
-if [ "$tsa" = true ]; then
-  # shellcheck source=scripts/verify-guard-catalogue/guarding.sh disable=SC1091
-  . scripts/verify-guard-catalogue/guarding.sh
+bridge=http://ztd-feed-bridge:8090
+# feed_bridge_up: the feed bridge from its chart, in the mesh; the operator's identity is its producer.
+feed_bridge_up() {
+  if helm install ztd-feed-bridge deployment/helm/feed-bridge -n "$ns" --set "image.repository=$reg/feed-bridge" \
+    --set "image.digest=${digest[feed-bridge]}" --set trustDomain=$td --set "ui.namespace=$ns" --set ui.serviceAccount=ztd-ui \
+    --set-json "producers=[{\"namespace\":\"$ns\",\"serviceAccount\":\"operator\"}]" --wait --timeout 5m > "$out/feed-bridge-install.txt" 2>&1; then
+    pass "the feed bridge is ready from its chart: STRICT mTLS, the UI's identity alone admitted to the feed"
+  else
+    fail "feed bridge install: $(tail -3 "$out/feed-bridge-install.txt")"
+  fi
+}
+
+if [ "$tsa" = true ] || [ "$mock" = true ]; then
+  if [ "$tsa" = true ]; then
+    # shellcheck source=scripts/verify-guard-catalogue/guarding.sh disable=SC1091
+    . scripts/verify-guard-catalogue/guarding.sh
+  else
+    # shellcheck source=scripts/verify-guard-catalogue/participant.sh disable=SC1091
+    . scripts/verify-guard-catalogue/participant.sh
+  fi
   environment
   echo
   echo "verdict: $([ "$failures" = 0 ] && echo PASS || echo "FAIL ($failures)")" | tee -a "$out/verdict.txt"
@@ -765,14 +792,7 @@ guarded participant expired-token "$viewer_token" "$work/viewer.pem" >/dev/null;
 step "The feed bridge in the mesh: the UI reads it, nobody else does"
 logs guard > "$out/guard-events.jsonl"
 kubectl -n "$ns" logs deploy/ztd-policy-evaluator -c policy-evaluator >> "$out/policy-events.jsonl" 2>/dev/null || true
-if helm install ztd-feed-bridge deployment/helm/feed-bridge -n "$ns" --set "image.repository=$reg/feed-bridge" \
-  --set "image.digest=${digest[feed-bridge]}" --set trustDomain=$td --set "ui.namespace=$ns" --set ui.serviceAccount=ztd-ui \
-  --set-json "producers=[{\"namespace\":\"$ns\",\"serviceAccount\":\"operator\"}]" --wait --timeout 5m > "$out/feed-bridge-install.txt" 2>&1; then
-  pass "the feed bridge is ready from its chart: STRICT mTLS, the UI's identity alone admitted to the feed"
-else
-  fail "feed bridge install: $(tail -3 "$out/feed-bridge-install.txt")"
-fi
-bridge=http://ztd-feed-bridge:8090
+feed_bridge_up
 # The producers' lines, posted by the one identity the chart admits to /ingest.
 cat "$out/guard-events.jsonl" "$out/policy-events.jsonl" | kubectl -n "$ns" exec -i operator -c curl -- \
   curl -sS -m 30 -X POST -H 'Content-Type: application/x-ndjson' --data-binary @- "$bridge/ingest" > "$out/feed-ingest.json" 2>&1 || true

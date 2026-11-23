@@ -44,7 +44,7 @@ Feature: Authorization surface
     When the backend calls through the Zero Trust Connector
     Then the request is authorized, traverses the trusted channel and receives the policy-permitted protected-resource response AND an unauthorized request does not return protected data.
 
-  @ZT-74 @BDD-ZT-074 @pending
+  @ZT-74 @BDD-ZT-074 @cluster
   Scenario: Participant Backend Mock
     Given the participant-backend mock is configured with the approved Connector endpoints
     When the demonstrator scenario runs
