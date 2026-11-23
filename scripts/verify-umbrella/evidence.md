@@ -1,6 +1,6 @@
-# Umbrella chart evidence (2026-10-17T15:47:44Z)
+# Umbrella chart evidence (2026-11-23T15:33:36Z)
 
-Commit `224ee9ffb2ec95b1e8927e5ec1071e5161b806e4`, tree dirty: false.
+Commit `fe554e03e37493f7031c28b717065c582e582959`, tree dirty: false.
 
 Cluster context `kind-ztd`, chart `deployment/helm/ztd` 0.3.0, zone file `deployment/helm/ztd/ci/values.yaml` (mesh mode sidecar, the installed baseline), excursion fixture `scripts/verify-umbrella/ambient-values.yaml`.
 
@@ -20,8 +20,9 @@ Probe results: `200` means the call went through; `denied(28)` means curl gave u
 
 ```
 NAME STATUS ROLES AGE VERSION INTERNAL-IP EXTERNAL-IP OS-IMAGE KERNEL-VERSION CONTAINER-RUNTIME
-ztd-control-plane Ready control-plane 4d8h v1.35.8 172.18.0.2 <none> Debian GNU/Linux 13 (trixie) 6.8.0-146-generic containerd://2.3.4
-ztd-worker Ready <none> 4d8h v1.35.8 172.18.0.3 <none> Debian GNU/Linux 13 (trixie) 6.8.0-146-generic containerd://2.3.4
+ztd-control-plane Ready control-plane 13d v1.35.8 172.18.0.2 <none> Debian GNU/Linux 13 (trixie) 6.8.0-147-generic containerd://2.3.4
+ztd-worker Ready <none> 13d v1.35.8 172.18.0.4 <none> Debian GNU/Linux 13 (trixie) 6.8.0-147-generic containerd://2.3.4
+ztd-worker2 Ready <none> 13d v1.35.8 172.18.0.3 <none> Debian GNU/Linux 13 (trixie) 6.8.0-147-generic containerd://2.3.4
 ```
 
 
@@ -32,7 +33,7 @@ ztd-worker Ready <none> 4d8h v1.35.8 172.18.0.3 <none> Debian GNU/Linux 13 (trix
 ## 2. Install from zero
 
 - PASS: helm upgrade --install from an empty cluster returns 0
-  9s
+  7s
 
 ```
 Release "ztd" does not exist. Installing it now.
@@ -67,50 +68,50 @@ The control-plane namespaces of the zone file (`spire-system istio-system`) are 
 
 ```
 NAME STATUS AGE PLANE DATAPLANE-MODE ISTIO-INJECTION
-ztd-mgmt Active 9s management enabled
-ztd-data Active 9s data enabled
-spire-system Active 9s management 
-istio-system Active 9s management 
+ztd-mgmt Active 7s management enabled
+ztd-data Active 7s data enabled
+spire-system Active 7s management 
+istio-system Active 7s management 
 ```
 
 
 ```
 NAMESPACE NAME POD-SELECTOR AGE
-istio-system allow-dns-egress <none> 10s
-istio-system allow-intra-plane <none> 10s
-istio-system allow-mesh-control-plane-ingress app=istiod 10s
-istio-system default-deny <none> 10s
-spire-system allow-dns-egress <none> 10s
-spire-system allow-intra-plane <none> 10s
-spire-system default-deny <none> 10s
-ztd-data allow-atls-gateway-to-cmcd-egress app.kubernetes.io/name=atls-gateway 10s
-ztd-data allow-atls-gateway-to-tcr-egress app.kubernetes.io/name=atls-gateway 10s
-ztd-data allow-backend-to-verification-service-egress app.kubernetes.io/name=backend 10s
-ztd-data allow-dns-egress <none> 10s
-ztd-data allow-intra-plane <none> 10s
-ztd-data allow-mesh-control-plane-egress <none> 10s
-ztd-data allow-pdp-adapter-to-tsa-egress app.kubernetes.io/name=pdp-adapter 10s
-ztd-data allow-workloads-to-otel-collector-egress <none> 10s
-ztd-data default-deny <none> 10s
-ztd-mgmt allow-atls-gateway-to-cmcd-ingress app.kubernetes.io/name=cmcd 10s
-ztd-mgmt allow-atls-gateway-to-tcr-ingress app.kubernetes.io/name=tcr 10s
-ztd-mgmt allow-backend-to-verification-service-ingress app.kubernetes.io/name=verification-service 10s
-ztd-mgmt allow-dns-egress <none> 10s
-ztd-mgmt allow-intra-plane <none> 10s
-ztd-mgmt allow-mesh-control-plane-egress <none> 10s
-ztd-mgmt allow-pdp-adapter-to-tsa-ingress app.kubernetes.io/name=tsa-policy-engine 10s
-ztd-mgmt allow-workloads-to-otel-collector-ingress app.kubernetes.io/name=otel-collector 10s
-ztd-mgmt default-deny <none> 10s
+istio-system allow-dns-egress <none> 7s
+istio-system allow-intra-plane <none> 7s
+istio-system allow-mesh-control-plane-ingress app=istiod 7s
+istio-system default-deny <none> 7s
+spire-system allow-dns-egress <none> 7s
+spire-system allow-intra-plane <none> 7s
+spire-system default-deny <none> 7s
+ztd-data allow-atls-gateway-to-cmcd-egress app.kubernetes.io/name=atls-gateway 7s
+ztd-data allow-atls-gateway-to-tcr-egress app.kubernetes.io/name=atls-gateway 7s
+ztd-data allow-backend-to-verification-service-egress app.kubernetes.io/name=backend 7s
+ztd-data allow-dns-egress <none> 7s
+ztd-data allow-intra-plane <none> 7s
+ztd-data allow-mesh-control-plane-egress <none> 7s
+ztd-data allow-pdp-adapter-to-tsa-egress app.kubernetes.io/name=pdp-adapter 7s
+ztd-data allow-workloads-to-otel-collector-egress <none> 7s
+ztd-data default-deny <none> 7s
+ztd-mgmt allow-atls-gateway-to-cmcd-ingress app.kubernetes.io/name=cmcd 7s
+ztd-mgmt allow-atls-gateway-to-tcr-ingress app.kubernetes.io/name=tcr 7s
+ztd-mgmt allow-backend-to-verification-service-ingress app.kubernetes.io/name=verification-service 7s
+ztd-mgmt allow-dns-egress <none> 7s
+ztd-mgmt allow-intra-plane <none> 7s
+ztd-mgmt allow-mesh-control-plane-egress <none> 7s
+ztd-mgmt allow-pdp-adapter-to-tsa-ingress app.kubernetes.io/name=tsa-policy-engine 7s
+ztd-mgmt allow-workloads-to-otel-collector-ingress app.kubernetes.io/name=otel-collector 7s
+ztd-mgmt default-deny <none> 7s
 ```
 
 
 ```
 NAMESPACE NAME AGE VALID
-istio-system allow-control-plane-openings 10s True
-istio-system allow-kube-api-egress 10s True
-spire-system allow-control-plane-openings 10s True
-spire-system allow-kube-api-egress 10s True
-ztd-mgmt allow-kube-api-egress 10s True
+istio-system allow-control-plane-openings 7s True
+istio-system allow-kube-api-egress 7s True
+spire-system allow-control-plane-openings 7s True
+spire-system allow-kube-api-egress 7s True
+ztd-mgmt allow-kube-api-egress 7s True
 ```
 
 - PASS: default-deny present in ztd-mgmt
@@ -150,7 +151,7 @@ Stand-in pods carry the matrix labels; nothing else about them is real. Targets 
 - PASS: management pod → data plane: DENIED (default deny is both directions)
   → denied(28)
 - PASS: DNS bypass: the denied pod still resolves names
-  Address: 10.96.208.149   
+  Address: 10.96.195.48   
 
 ## 6. Mesh mode is one label: the excursion to the parked ambient mode, and back
 
@@ -160,8 +161,8 @@ Sidecar is the installed baseline (ADR-0009). The release is switched to ambient
 
 ```
 NAME STATUS AGE PLANE DATAPLANE-MODE ISTIO-INJECTION
-ztd-mgmt Active 81s management ambient 
-ztd-data Active 81s data ambient 
+ztd-mgmt Active 55s management ambient 
+ztd-data Active 55s data ambient 
 ```
 
 - PASS: ambient mode: istio.io/dataplane-mode=ambient on ztd-mgmt
@@ -176,8 +177,8 @@ ztd-data Active 81s data ambient
 
 ```
 NAME STATUS AGE PLANE DATAPLANE-MODE ISTIO-INJECTION
-ztd-mgmt Active 98s management enabled
-ztd-data Active 98s data enabled
+ztd-mgmt Active 68s management enabled
+ztd-data Active 68s data enabled
 ```
 
 - PASS: sidecar mode restored: istio-injection=enabled on ztd-mgmt
@@ -214,7 +215,7 @@ The CI job runs `helm lint` and then `helm template`. Schema violations fail bot
 
 - PASS: no zone file: lint refused by the schema
 - PASS: no zone file: render refused by the schema
-  at '/zone/name': validation failed
+  at '/zone/storageClass': minLength: got 0, want 1
 - PASS: unknown mesh mode: lint refused by the schema
 - PASS: unknown mesh mode: render refused
   at '/mesh/mode': value must be one of 'ambient', 'sidecar', 'none'
