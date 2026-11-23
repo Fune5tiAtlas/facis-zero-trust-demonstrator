@@ -41,6 +41,15 @@ by 23 October 2026. Pending, each awaiting the IP review request a committer fil
 | `github.com/envoyproxy/protoc-gen-validate` | v1.3.3 | Apache-2.0 |
 | `golang.org/x/text` | v0.43.0 | BSD-3-Clause |
 
+Also pending, added 21 November 2026 for the verification service's own check of
+TRAIN trust-list VCs ([Verification service](verification-service.md)); no review requested yet:
+
+| Dependency | Version | Licence | Why |
+|---|---|---|---|
+| `github.com/piprate/json-gold` | v0.9.1 | Apache-2.0 | JSON-LD URDNA2015 canonicalisation for the JsonWebSignature2020 proof of a trust-list VC |
+| `github.com/cayleygraph/quad` | v1.3.0 | Apache-2.0 | N-Quads serialisation, required by json-gold |
+| `github.com/pquerna/cachecontrol` | v0.2.0 | Apache-2.0 | HTTP cache headers of json-gold's default document loader (not used: contexts are embedded), required by json-gold |
+
 ## Licence exceptions
 
 When a component under a non-Apache-2.0-compatible licence is **prescribed by the requirements** and
@@ -101,6 +110,7 @@ Direct dependencies of the Go module. Transitive dependencies are listed in the 
 | `github.com/envoyproxy/go-control-plane/envoy` | v1.37.0 | Apache-2.0 | the Envoy `ext_authz` and `ext_proc` API types the guard policy hook is served through (`cmd/policy-hook-probe`); only its `envoyhook` package may import them |
 | `google.golang.org/grpc` | v1.83.2 | Apache-2.0 | gRPC transport of the policy hook's Envoy services |
 | `go.opentelemetry.io/otel`, `/otel/sdk`, `/otel/trace`, `/otel/exporters/otlp/otlptrace/otlptracehttp` | v1.47.0 | Apache-2.0 AND BSD-3-Clause | the OpenTelemetry Go SDK of the observability proof's echo service (`tools/trace-echo`): W3C trace-context propagation and one server span per request, exported by OTLP/HTTP |
+| `github.com/piprate/json-gold` | v0.9.1 | Apache-2.0 | URDNA2015 canonicalisation of TRAIN trust-list VCs in the verification service (pending Eclipse IP review, above) |
 
 The SD-JWT VC, Token Status List and OID4VP handling (`internal/sdjwt`, `internal/statuslist`,
 `internal/oid4vp`) is written on the standard library (`crypto/ecdsa`, `crypto/sha256`,

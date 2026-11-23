@@ -38,6 +38,7 @@ nav:
   - Token store: token-store.md
   - Guard policy hook: policy-hook.md
   - TSA policy evaluation: tsa-policy.md
+  - Verification service: verification-service.md
   - API documentation: api-docs.md
   - Interface contracts: contracts/index.md
   - TRAIN trust-list publishing: tspa-publish-api.md

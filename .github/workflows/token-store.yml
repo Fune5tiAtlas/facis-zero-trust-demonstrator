@@ -16,6 +16,7 @@ on:
       - services/policyevaluator/**
       - cmd/guard/**
       - cmd/policy-evaluator/**
+      - services/verification-service/**
       - cmd/participant/**
       - cmd/protected-resource/**
       - cmd/sdjwt-fixture/**
@@ -26,6 +27,7 @@ on:
       - deployment/docker/connector/**
       - deployment/docker/participant/**
       - deployment/docker/protected-resource/**
+      - deployment/docker/verification-service/**
       - deployment/helm/token-store/**
       - deployment/helm/guard/**
       - deployment/docker/guard/**
@@ -47,6 +49,7 @@ on:
       - services/policyevaluator/**
       - cmd/guard/**
       - cmd/policy-evaluator/**
+      - services/verification-service/**
       - cmd/participant/**
       - cmd/protected-resource/**
       - cmd/sdjwt-fixture/**
@@ -57,6 +60,7 @@ on:
       - deployment/docker/connector/**
       - deployment/docker/participant/**
       - deployment/docker/protected-resource/**
+      - deployment/docker/verification-service/**
       - deployment/helm/token-store/**
       - deployment/helm/guard/**
       - deployment/docker/guard/**
@@ -123,7 +127,7 @@ jobs:
           for tokens in opaque jwt; do
             CONNECTOR_TEST_TOKENS=$tokens go test -count=1 -race -timeout 20m -v -skip '^TestOpenBaoKubernetesAuth$' \
               ./services/token-store/... ./services/connector/... ./internal/... \
-              ./services/participant/... ./services/protectedresource/... \
+              ./services/participant/... ./services/protectedresource/... ./services/verification-service/... \
               ./cmd/participant/... ./cmd/protected-resource/... ./cmd/sdjwt-fixture/... \
               ./services/guard/... ./services/policyevaluator/... ./cmd/guard/... ./cmd/policy-evaluator/... \
               | tee "$RUNNER_TEMP/token-path-$tokens.log"
