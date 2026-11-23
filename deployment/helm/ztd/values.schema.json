@@ -212,6 +212,14 @@
         },
         "revision": {
           "type": "string"
+        },
+        "namespaceProxyImages": {
+          "type": "object",
+          "description": "Namespace -> injected proxy image by digest, admitted by zone-policy in that namespace only",
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[a-z0-9./_-]+(:[A-Za-z0-9._-]+)?@sha256:[a-f0-9]{64}$"
+          }
         }
       }
     },

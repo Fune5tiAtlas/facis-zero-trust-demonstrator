@@ -23,6 +23,10 @@ zone:
 # Istio in sidecar mode, the mesh decision of ADR-0009.
 mesh:
   mode: sidecar
+  # ztd-m3-b's workloads run the project's proxy runtime (built from this repository, signed), not
+  # istiod's proxyv2; zone-policy admits it in that namespace only (live since the M3 guard path).
+  namespaceProxyImages:
+    ztd-m3-b: ghcr.io/fune5tiatlas/facis-zero-trust-demonstrator/proxy-runtime@sha256:3b8fe2fb3c11b1d5a24f8f9a56d409e6828fc21e84c47e5d245c226c92faaf98
 
 # kubectl -n kube-system get ds cilium: Cilium 1.19.6, installed and upgraded by the provider, with
 # cni-exclusive=false already set and tunnel routing over VXLAN (kubectl -n kube-system get cm

@@ -189,7 +189,7 @@ PARTICIPANT_STEPS=(
   "istio-base|istio-system|istio-base|$VALUES_DIR/istio-base.yaml||"
   "istiod|istio-system|istiod|$VALUES_DIR/istiod.yaml|meshConfig.trustDomain=zone.trustDomain|"
   "istio-cni|istio-system|istio-cni|$VALUES_DIR/istio-cni.yaml||"
-  "zone-policy|istio-system|zone-policy||trustDomain=zone.trustDomain,planes.management.namespace=planes.management.namespace,planes.data.namespace=planes.data.namespace,pairs=allowMatrix+intraPlanePairs|wait-for-jobs"
+  "zone-policy|istio-system|zone-policy||trustDomain=zone.trustDomain,planes.management.namespace=planes.management.namespace,planes.data.namespace=planes.data.namespace,pairs=allowMatrix+intraPlanePairs,proxySocketPolicy.namespaceProxyImages=mesh.namespaceProxyImages|wait-for-jobs"
   "ztd-openbao|=planes.management.namespace|ztd-openbao||managementNamespace=planes.management.namespace,openbao.global.namespace=planes.management.namespace,openbao.server.dataStorage.storageClass=zone.storageClass,cilium.enabled=cni.cilium.enabled,trustDomain=zone.trustDomain,mesh.mode=mesh.mode|wait-for-jobs"
   "otel-node|ztd-otel-node|otel-collector|$VALUES_DIR/otel-node.yaml||"
   "otel-gateway|=planes.management.namespace|otel-collector|$VALUES_DIR/otel-gateway.yaml||"

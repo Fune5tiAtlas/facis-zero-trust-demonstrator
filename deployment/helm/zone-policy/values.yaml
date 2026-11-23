@@ -68,6 +68,10 @@ proxySocketPolicy:
   # global.proxy.image (deployment/helm/values/istiod.yaml); if the two differ, the policy refuses
   # every injected pod. An Istio upgrade changes both.
   proxyImage: docker.io/istio/proxyv2@sha256:d86cba0dd1eb15c00b6901c69ce5ae3d2d5f8427a47751098cf8c3ab2a4a62e9
+  # Per namespace, a proxy image other than proxyImage that the injected proxy may carry there
+  # (namespace: image by digest), e.g. a proxy runtime built for that namespace's workloads. Empty:
+  # every namespace takes proxyImage. Set from the zone file's mesh.namespaceProxyImages.
+  namespaceProxyImages: {}
 
 # Mesh tracing (docs/adr/0017-central-observability-backends.md): a mesh-wide Telemetry resource in the
 # mesh root namespace turns on the istiod extension provider of deployment/helm/values/istiod.yaml

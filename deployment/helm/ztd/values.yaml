@@ -123,6 +123,9 @@ admissionPolicy:
 mesh:
   mode: sidecar
   revision: ""  # sidecar mode may pin an Istio revision (istio.io/rev) instead of the default injector
+  # Namespaces whose injected proxy runs another image than istiod's (namespace: image by digest);
+  # zone-policy's admission check admits that image there and nowhere else. Empty on most zones.
+  namespaceProxyImages: {}
 
 # --------------------------------------------------------------------------------------------
 # CNI-specific pieces. The openings whose source is an entity (the API server, the
