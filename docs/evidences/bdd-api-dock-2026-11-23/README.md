@@ -6,7 +6,7 @@ other authorization rows: the real `connector` binary on PostgreSQL and OpenBao,
 the Resource built from the environment as their binaries build them. The interfaces, the settings and
 the commands are in [API dock](../../api-dock.md).
 
-**ZT-07 passed. ZT-77 was not run**: it needs the provider's own API and a token for it, which was not
+**ZT-07 passed. ZT-77 is kept pending** (review, 23 Nov: its live test replaces only the resource side with a real-world API, while the row asks for each mock; it stays pending until the participant side is a real-world integration too or the scope is agreed). **ZT-77 was not run**: it needs the provider's own API and a token for it, which was not
 available on the day. Its scenario is skipped without the token file and is reported not run; the
 stand-in does not decide it.
 

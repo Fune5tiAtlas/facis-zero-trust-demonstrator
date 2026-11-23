@@ -54,6 +54,8 @@ test case, which runs only when `KEYCLOAK_GUARD_TOKEN_FILE` is set.
 
 ## Packaged ORCE image
 
+> Superseded in the final tree (23 Nov): the ORCE image packaging commit was reverted; the image keeps its own authentication. The packaged-image results below are historical.
+
 The image was built from the commit (`docker build --platform linux/amd64 -f
 deployment/docker/orce/Dockerfile`) and started with generated credentials and example identity values.
 

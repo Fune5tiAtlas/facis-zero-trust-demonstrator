@@ -21,8 +21,9 @@
 #   ZTD_CONFIRM_CONTEXT=<context> scripts/verify-guard-bypass/verify.sh --namespace NS --url URL --ca CA
 #       --probe-image IMAGE --out DIR [--node NODE]
 #
-# IMAGE is an admitted image with bash (the probe speaks HTTP over /dev/tcp). Exit status: the number
-# of failed checks; 125 refused.
+# IMAGE is an admitted image with bash (the probe speaks HTTP over /dev/tcp). STORE_CLIENT_ID is the
+# token store's OAuth client as the zone seeds it (default ztd-store): the resource must record the
+# guarded request for exactly that client. Exit status: the number of failed checks; 125 refused.
 set -euo pipefail
 
 ns="" url="" ca="" image="" out="" node=""
@@ -132,10 +133,14 @@ if [ -n "$ga" ] && [ -n "$ra" ] && [ "$ga" -gt "${gb:-0}" ] && [ "$ra" -gt "${rb
 else
   fail "guarded: rbac.allowed did not rise at both sidecars (guard ${gb:-?} -> ${ga:-?}, resource ${rb:-?} -> ${ra:-?})"
 fi
-if [ -s "$out/guarded-resource-record.jsonl" ]; then
-  pass "guarded: the resource recorded request $guarded_id with the client of the token store's substituted token ($(jq -r .client_id "$out/guarded-resource-record.jsonl" | head -1)), which only the guard obtains"
+# The token store's client, as the zone seeds it (STORE_CLIENT_ID); the resource must have served it.
+store_client=${STORE_CLIENT_ID:-ztd-store}
+echo "$store_client" > "$out/expected-store-client.txt"
+served_client=$(jq -r .client_id "$out/guarded-resource-record.jsonl" 2>/dev/null | head -1)
+if [ -s "$out/guarded-resource-record.jsonl" ] && [ "$served_client" = "$store_client" ]; then
+  pass "guarded: the resource recorded request $guarded_id with the token store's client $store_client (the substituted token, which only the guard obtains)"
 else
-  fail "guarded: the resource has no record of $guarded_id"
+  fail "guarded: the resource's record of $guarded_id names client '${served_client:-none}', not the token store's $store_client"
 fi
 
 echo "== 2. Direct calls to the resource, skipping the guard"

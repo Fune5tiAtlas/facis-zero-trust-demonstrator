@@ -51,8 +51,10 @@ reasoning, including why Keycloak's own DPoP and OID4VCI support is not depended
 
 ## Packaged runtime and integration proof
 
-The ORCE image packages the OIDC UI at `/dev/facis-demo/`, the identity endpoints at `/dev/ztd/`,
-and the authenticated journey receiver. Set the ORCE chart's `identity.issuer` to the Keycloak
+The viewer identity flows (OIDC UI at `/dev/facis-demo/`, identity endpoints at `/dev/ztd/`, the
+authenticated journey receiver) are proven as a component, not yet packaged: the ORCE image keeps its
+own built-in authentication and copies only the lifecycle flow, so a deployed ORCE does not serve these
+routes until they are packaged with a separate review. When they are, set the ORCE chart's `identity.issuer` to the Keycloak
 chart's `keycloak.publicUrl` plus `/realms/facis-ztd`; set `identity.uiOrigin` and the ingress host
 to the same UI origin configured in Keycloak's `ui.origin`. These become `FACIS_OIDC_ISSUER` and
 `FACIS_UI_ORIGIN` in the function runtime. Both require HTTPS. The realm's exact redirect/logout

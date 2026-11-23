@@ -200,8 +200,18 @@ func decideUpstreaming(dir string) (string, error) {
 	if err := lastJSON("guarded-resource-record.jsonl", &served); err != nil {
 		return "", err
 	}
-	if served.RequestID != response.RequestID || served.Outcome != "success" || served.ClientID == "" {
-		return "", fmt.Errorf("the resource did not record request %s as served for a client: %+v", response.RequestID, served)
+	// The resource must have served the token store's substituted token, the client the run names
+	// (expected-store-client.txt, from the zone's seeded clients), not the Participant's own token.
+	store, err := read("expected-store-client.txt")
+	if err != nil {
+		return "", err
+	}
+	store = strings.TrimSpace(store)
+	if store == "" {
+		return "", errors.New("the run names no expected token-store client")
+	}
+	if served.RequestID != response.RequestID || served.Outcome != "success" || served.ClientID != store {
+		return "", fmt.Errorf("the resource did not record request %s as served for the token store's client %q: %+v", response.RequestID, store, served)
 	}
 	for _, hop := range []string{"guard", "resource"} {
 		before, err := rbacAllowed(dir, "guarded-stats-"+hop+"-before.txt")

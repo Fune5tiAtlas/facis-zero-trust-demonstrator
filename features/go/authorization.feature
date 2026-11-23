@@ -56,7 +56,7 @@ Feature: Authorization surface
     When they are exchanged/verified and used to access the protected resource
     Then valid credentials are mapped into the intended JWT/role authorization and return the permitted response AND invalid/revoked credentials do not grant protected access.
 
-  @ZT-77 @BDD-ZT-077 @cluster
+  @ZT-77 @BDD-ZT-077 @pending
   Scenario: Mock Replaceable
     Given the participant-backend and protected-resource mocks in the running demonstrator
     When each is replaced by a real-world API through the documented interface
