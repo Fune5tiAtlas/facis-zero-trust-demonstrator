@@ -125,7 +125,7 @@ func decideParticipantMock(dir string) (string, error) {
 	// answer splits a recorded HTTP answer into its status and its JSON body.
 	type demoAnswer struct {
 		Mode, Outcome, ReasonCode, CorrelationID string
-		SafeData                                 map[string]struct{ ID string }
+		SafeData                                 map[string]any
 	}
 	answer := func(name string) (string, demoAnswer, error) {
 		var a demoAnswer
@@ -144,8 +144,12 @@ func decideParticipantMock(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data := served.SafeData["report"].ID + served.SafeData["summary"].ID
-	if status != "200" || served.Mode != "token" || served.Outcome != "success" || served.CorrelationID != run.ServedID || data == "" {
+	// The resource's data is the report or its summary, each with an id.
+	data, _ := served.SafeData["report"].(map[string]any)
+	if data == nil {
+		data, _ = served.SafeData["summary"].(map[string]any)
+	}
+	if id, _ := data["id"].(string); status != "200" || served.Mode != "token" || served.Outcome != "success" || served.CorrelationID != run.ServedID || id == "" {
 		return "", fmt.Errorf("the request was not served: status %s, %+v", status, served)
 	}
 	status, refused, err := answer("refused.http")
