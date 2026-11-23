@@ -1,6 +1,7 @@
 package protectedresource
 
 import (
+	"crypto/x509"
 	"fmt"
 	"os"
 	"strings"
@@ -34,6 +35,10 @@ type Config struct {
 	// GRPCAddress, when set, also serves the gRPC sample method (GRPCMethod) there over cleartext
 	// HTTP/2, behind the same Verifier. Token mode only.
 	GRPCAddress string
+	// The cloud-api adapter's settings (cloudSettingsFromEnv); CloudRootCAs nil means the system roots.
+	CloudTokenFile string
+	CloudAPIURL    string
+	CloudRootCAs   *x509.CertPool
 	// Verifier, when set, selects token mode. LoadConfig sets it, to a tokenverify.Verifier, only for
 	// PROTECTED_RESOURCE_MODE=token.
 	Verifier tokenverify.RequestVerifier
@@ -89,9 +94,13 @@ func LoadConfig() (Config, error) {
 		return Config{}, fmt.Errorf("PROTECTED_RESOURCE_GRPC_ADDRESS needs PROTECTED_RESOURCE_MODE=token: the gRPC method is served to verified callers only")
 	}
 	switch cfg.AdapterMode {
+	case cloudMode:
+		if err := cloudSettingsFromEnv(&cfg); err != nil {
+			return Config{}, err
+		}
 	case "sample", "sample-alternative":
 	default:
-		return Config{}, fmt.Errorf("PROTECTED_RESOURCE_ADAPTER_MODE %q is unavailable; supported modes are sample and sample-alternative", cfg.AdapterMode)
+		return Config{}, fmt.Errorf("PROTECTED_RESOURCE_ADAPTER_MODE %q is unavailable; supported modes are sample, sample-alternative and cloud-api", cfg.AdapterMode)
 	}
 	switch cfg.LogLevel {
 	case "debug", "info", "warn", "error":

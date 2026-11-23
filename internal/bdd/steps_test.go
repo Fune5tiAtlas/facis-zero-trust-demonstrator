@@ -221,6 +221,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	registerUpstreamingProof(ctx, dryRun)
 	registerApplicationMockProofs(ctx, dryRun)
 	registerAttestedGateway(ctx, dryRun)
+	registerAPIDockProofs(ctx, dryRun)
 	registerPending(ctx)
 }
 

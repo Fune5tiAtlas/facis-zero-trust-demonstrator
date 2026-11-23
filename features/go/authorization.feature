@@ -2,7 +2,7 @@
 Feature: Authorization surface
   Annex A rows for Authorization surface, worded exactly as in the Annex.
 
-  @ZT-07 @BDD-ZT-007 @pending
+  @ZT-07 @BDD-ZT-007 @cluster
   Scenario: API Dock
     Given the documented participant-backend and protected-resource interfaces
     When a replacement API is docked in place of the supplied mock
@@ -56,7 +56,7 @@ Feature: Authorization surface
     When they are exchanged/verified and used to access the protected resource
     Then valid credentials are mapped into the intended JWT/role authorization and return the permitted response AND invalid/revoked credentials do not grant protected access.
 
-  @ZT-77 @BDD-ZT-077 @pending
+  @ZT-77 @BDD-ZT-077 @cluster
   Scenario: Mock Replaceable
     Given the participant-backend and protected-resource mocks in the running demonstrator
     When each is replaced by a real-world API through the documented interface

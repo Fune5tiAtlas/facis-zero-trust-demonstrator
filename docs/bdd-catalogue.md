@@ -13,7 +13,7 @@ reported is described in [BDD acceptance](bdd.md).
   This page is built from the repository, not from a run: each cluster run publishes its own
   copy of the catalogue with the basis filled in.
 
-94 rows: 27 implemented, 67 pending.
+94 rows: 29 implemented, 65 pending.
 
 | Row | Requirement | Gate | Status | Runner |
 |---|---|---|---|---|
@@ -23,7 +23,7 @@ reported is described in [BDD acceptance](bdd.md).
 | [ZT-04](#zt-04) | Secure Connection | G4 | pending | godog |
 | [ZT-05](#zt-05) | Communication Visualization | G5 | pending | Cucumber.js |
 | [ZT-06](#zt-06) | Attribute/Credential Based Access Control | G3 | implemented | godog |
-| [ZT-07](#zt-07) | API Dock | G3 | pending | godog |
+| [ZT-07](#zt-07) | API Dock | G3 | implemented | godog |
 | [ZT-08](#zt-08) | Visualization | G5 | pending | Cucumber.js |
 | [ZT-09](#zt-09) | User Journey | G5 | pending | Cucumber.js |
 | [ZT-10](#zt-10) | Image Signing and Attestation | G2 | pending | godog |
@@ -93,7 +93,7 @@ reported is described in [BDD acceptance](bdd.md).
 | [ZT-74](#zt-74) | Participant Backend Mock | G3 | pending | godog |
 | [ZT-75](#zt-75) | Protected Resource Mock | G3 | implemented | godog |
 | [ZT-76](#zt-76) | Credential Based Access | G3 | implemented | godog |
-| [ZT-77](#zt-77) | Mock Replaceable | G3 | pending | godog |
+| [ZT-77](#zt-77) | Mock Replaceable | G3 | implemented | godog |
 | [ZT-78](#zt-78) | Visualization UI | G5 | pending | Cucumber.js |
 | [ZT-79](#zt-79) | Visualization Concept | G2 | pending | Cucumber.js |
 | [ZT-80](#zt-80) | Zero Trust Configuration | G5 | pending | Cucumber.js |
@@ -255,8 +255,8 @@ Then the authorized request is permitted according to credential/policy evaluati
 | Test type | BDD / integration |
 | Gate | G3 - Protected-service vertical slice |
 | Evidence | `evidence/bdd-zt-007/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/authorization.feature` |
 
@@ -1795,8 +1795,8 @@ Then valid credentials are mapped into the intended JWT/role authorization and r
 | Test type | BDD / integration |
 | Gate | G3 - Protected-service vertical slice |
 | Evidence | `evidence/bdd-zt-077/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/authorization.feature` |
 

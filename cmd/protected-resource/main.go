@@ -32,7 +32,11 @@ func main() {
 	}
 
 	logger := newLogger(config.LogLevel)
-	resource := protectedresource.NewServer(config, logger)
+	adapter := protectedresource.NewResourceAdapter(config)
+	if err := protectedresource.CheckInterface(context.Background(), config, adapter, logger); err != nil {
+		os.Exit(1)
+	}
+	resource := protectedresource.NewServerWithAdapter(config, logger, adapter)
 	server := resource.HTTPServer()
 
 	shutdownSignal, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
