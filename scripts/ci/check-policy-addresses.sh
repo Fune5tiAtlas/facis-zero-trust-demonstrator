@@ -10,11 +10,14 @@
 # CiliumClusterwideNetworkPolicy or AuthorizationPolicy document carries a key ipBlock, ipBlocks,
 # notIpBlocks, remoteIpBlocks, notRemoteIpBlocks, toCIDR, toCIDRSet, fromCIDR or fromCIDRSet, or a
 # string holding an IPv4 or IPv6 address (with or without a port: 10.0.0.1:8080, [::1]:8080) or a
-# CIDR, naming the zone file, the release, the policy and what it found. Two Connector gateway hops
-# outside the mesh are declared, not failed, and listed as EDGE lines: a CiliumNetworkPolicy of
-# egress only annotated ztd.facis.io/connector-hop: gateway-to-peer (the peer zone's entry), and an
-# ingress-only NetworkPolicy annotated outside-to-entry (the entry's public source ranges); both
-# also carry ztd.facis.io/connector-route. The component charts the
+# CIDR, naming the zone file, the release, the policy and what it found. Only in the render of the
+# connector-gateway chart (and with --edge-manifest), two hops that leave the mesh are declared as EDGE
+# lines instead of failing, and only in the exact shape that chart renders: the egress-only
+# CiliumNetworkPolicy annotated ztd.facis.io/connector-hop: gateway-to-peer (one /32 to the peer
+# zone's entry, TCP ports, selected by service account) and the ingress-only NetworkPolicy annotated
+# outside-to-entry (ipBlock sources and TCP ports only); both carry ztd.facis.io/connector-route, and
+# only their address fields are excused. ZT-25 governs the mesh; these two hops are outside it.
+# The component charts the
 # zone render does not cover (every chart under deployment/helm/ with a ci/values.yaml, except ztd,
 # zone-policy and ztd-openbao) are scanned too, rendered with ci/values.yaml and with each
 # ci/<variant>-values.yaml layered on it, as scripts/ci/check-charts.sh renders them.
@@ -27,9 +30,11 @@
 #   scripts/ci/check-policy-addresses.sh [zone-file...]
 #       the zone files given, or by default the shipped ones and the CI zone file; one line per zone
 #   scripts/ci/check-policy-addresses.sh --manifest <label> <rendered-file>...
+#   scripts/ci/check-policy-addresses.sh --edge-manifest <label> <rendered-file>...
+#       the same, as a connector-gateway render: its two edge hops may be declared
 #       check rendered manifests as they stand, named <label> in the report (the test uses it)
 #
-# Exit status: 0 when no policy names an address, 1 when one does or a render fails, 2 for a bad
+# Exit status: 0 when no policy names an undeclared address, 1 when one does or a render fails, 2 for a bad
 # argument. Needs helm, python3 with PyYAML, and what scripts/install-zone/install.sh needs.
 set -uo pipefail
 
@@ -44,7 +49,7 @@ trap 'rm -rf "$work"' EXIT
 # then a summary line "<n> policies" on the last line; exit 1 when anything was found.
 scan() {
   python3 - "$@" <<'PY'
-import ipaddress, re, sys, yaml
+import ipaddress, os, re, sys, yaml
 label, files = sys.argv[1], sys.argv[2:]
 KINDS = {"NetworkPolicy", "CiliumNetworkPolicy", "CiliumClusterwideNetworkPolicy", "AuthorizationPolicy"}
 KEYS = {"ipBlock", "ipBlocks", "notIpBlocks", "remoteIpBlocks", "notRemoteIpBlocks",
@@ -100,6 +105,47 @@ def walk(node, path, found):
         a = address(node)
         if a:
             found.append(f"address {a} at {path.rstrip('.')}")
+def hop_of(d):
+    return ((d.get("metadata") or {}).get("annotations") or {}).get("ztd.facis.io/connector-hop")
+def edge_fields(d):
+    """The address findings a Connector gateway edge hop may carry, and only those; empty unless this
+    scan is of the connector-gateway chart's own render (EDGE_HOPS=1) and the policy has exactly the
+    shape the chart renders for that hop (ZT-25 covers the mesh; these two hops leave it)."""
+    if os.environ.get("EDGE_HOPS") != "1":
+        return set()
+    ann = (d.get("metadata") or {}).get("annotations") or {}
+    spec, hop = d.get("spec") or {}, hop_of(d)
+    if not ann.get("ztd.facis.io/connector-route"):
+        return set()
+    def tcp_ports(ports):
+        return isinstance(ports, list) and ports and all(
+            isinstance(p, dict) and set(p) == {"port", "protocol"} and p["protocol"] == "TCP" for p in ports)
+    if hop == "gateway-to-peer" and d.get("kind") == "CiliumNetworkPolicy" and set(spec) == {"endpointSelector", "egress"}:
+        sel, eg = spec["endpointSelector"], spec["egress"]
+        if not (sel == {"matchLabels": {"io.cilium.k8s.policy.serviceaccount": (sel.get("matchLabels") or {}).get("io.cilium.k8s.policy.serviceaccount")}}
+                and isinstance(eg, list) and len(eg) == 1 and set(eg[0]) == {"toCIDR", "toPorts"}):
+            return set()
+        cidr, tp = eg[0]["toCIDR"], eg[0]["toPorts"]
+        if not (isinstance(cidr, list) and len(cidr) == 1 and str(cidr[0]).endswith("/32")
+                and isinstance(tp, list) and len(tp) == 1 and set(tp[0]) == {"ports"} and tcp_ports(tp[0]["ports"])):
+            return set()
+        try:
+            ipaddress.IPv4Network(cidr[0])
+        except ValueError:
+            return set()
+        return {"key toCIDR at spec.egress.0.toCIDR", f"address {cidr[0]} at spec.egress.0.toCIDR.0"}
+    if hop == "outside-to-entry" and d.get("kind") == "NetworkPolicy" and set(spec) == {"podSelector", "policyTypes", "ingress"}:
+        ing = spec["ingress"]
+        if not (spec["policyTypes"] == ["Ingress"] and isinstance(ing, list) and len(ing) == 1
+                and set(ing[0]) == {"from", "ports"} and tcp_ports(ing[0]["ports"]) and ing[0]["from"]):
+            return set()
+        allowed = set()
+        for i, src in enumerate(ing[0]["from"]):
+            if not (isinstance(src, dict) and set(src) == {"ipBlock"} and set(src["ipBlock"] or {}) == {"cidr"}):
+                return set()
+            allowed |= {f"key ipBlock at spec.ingress.0.from.{i}.ipBlock", f"address {src['ipBlock']['cidr']} at spec.ingress.0.from.{i}.ipBlock.cidr"}
+        return allowed
+    return set()
 policies, bad = 0, 0
 for f in files:
     release = f.rsplit("/", 1)[-1].removesuffix(".yaml")
@@ -117,18 +163,9 @@ for f in files:
         name = f"{d['kind']} {meta.get('namespace', '<cluster>')}/{meta.get('name')}"
         found = []
         walk(d, "", found)
-        hop = (meta.get("annotations") or {}).get("ztd.facis.io/connector-hop")
-        spec = d.get("spec") or {}
-        # The Connector gateway's two edge hops govern traffic outside the mesh (ZT-25 covers the
-        # mesh): the egress to the peer zone's entry and the entry's public ingress. Each must be
-        # the one shape its chart renders, so the annotation alone admits nothing else.
-        edge = found and (meta.get("annotations") or {}).get("ztd.facis.io/connector-route") and (
-            (hop == "gateway-to-peer" and d["kind"] == "CiliumNetworkPolicy"
-             and set(spec) == {"endpointSelector", "egress"})
-            or (hop == "outside-to-entry" and d["kind"] == "NetworkPolicy"
-                and spec.get("policyTypes") == ["Ingress"] and "egress" not in spec))
-        if edge:
-            print(f"EDGE {label}: {release} {name}: declared Connector edge hop {hop}")
+        found = [w for w in found if w not in edge_fields(d)]
+        if not found and edge_fields(d):
+            print(f"EDGE {label}: {release} {name}: declared Connector edge hop {hop_of(d)}")
             continue
         for what in found:
             print(f"FAIL {label}: {release} {name}: {what}")
@@ -138,12 +175,13 @@ sys.exit(1 if bad else 0)
 PY
 }
 
+if [ "${1:-}" = --edge-manifest ]; then shift; set -- --manifest "$@"; export EDGE_HOPS=1; fi
 if [ "${1:-}" = --manifest ]; then
   [ $# -ge 3 ] || { echo "usage: $0 --manifest <label> <rendered-file>..." >&2; exit 2; }
   label=$2; shift 2
   out=$(scan "$label" "$@"); rc=$?
   grep -E '^(FAIL|EDGE)' <<<"$out"
-  [ $rc -eq 0 ] && echo "$label: $(tail -1 <<<"$out"), no address"
+  [ $rc -eq 0 ] && echo "$label: $(tail -1 <<<"$out"), no undeclared address"
   exit $rc
 fi
 case ${1:-} in -*) echo "unknown option: $1" >&2; exit 2;; esac
@@ -162,7 +200,7 @@ for zone in "${zones[@]}"; do
   out=$(scan "$label" "${render_files[@]}"); rc=$?
   grep -E '^(FAIL|EDGE)' <<<"$out"
   if [ $rc -eq 0 ]; then
-    echo "$label (mesh.mode $render_mode): $(tail -1 <<<"$out") rendered by $render_releases, no address"
+    echo "$label (mesh.mode $render_mode): $(tail -1 <<<"$out") rendered by $render_releases, no undeclared address"
   else
     failures=$((failures + 1))
   fi
@@ -181,9 +219,9 @@ if [ $# -eq 0 ]; then
         echo "FAIL $label: render failed: $(head -1 "$file.err")"
         failures=$((failures + 1)); continue
       fi
-      out=$(scan "$label" "$file"); rc=$?
+      out=$(EDGE_HOPS=$([ "$name" = connector-gateway ] && echo 1) scan "$label" "$file"); rc=$?
       grep -E '^(FAIL|EDGE)' <<<"$out"
-      if [ $rc -eq 0 ]; then echo "$label: $(tail -1 <<<"$out"), no address"; else failures=$((failures + 1)); fi
+      if [ $rc -eq 0 ]; then echo "$label: $(tail -1 <<<"$out"), no undeclared address"; else failures=$((failures + 1)); fi
     done
   done
 fi
@@ -191,4 +229,4 @@ if [ "$failures" -gt 0 ]; then
   echo "$failures zone file(s) or chart rendering(s) render a policy that names an address" >&2
   exit 1
 fi
-echo "no policy of any zone or component chart names an address"
+echo "no policy of any zone or component chart names an undeclared address"
