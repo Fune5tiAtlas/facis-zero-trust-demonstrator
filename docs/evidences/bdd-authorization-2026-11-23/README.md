@@ -56,4 +56,4 @@ A missing input fails the scenario and is named; the cluster dry run lists the f
 | ZT-74 Participant Backend Mock | the Participant publishes no registration, request or status events to the visualization feed |
 | ZT-75 Protected Resource Mock | role-appropriate responses exist (`TestTokenModeScopeTable`, `TestTokenPathEndToEnd`) but the resource's answers are not published to the feed and no run shows them visualized |
 | ZT-07 API Dock, ZT-77 Mock Replaceable | implemented separately: [API dock record](../bdd-api-dock-2026-11-23/README.md) (ZT-77 counts only with the live call) |
-| TDR-BDD-05 Keycloak / policy / token integration | no Keycloak in the access flow on a target (the only Keycloak on the zones is the TRAIN instance's) |
+| TDR-BDD-05 | implemented separately on local services: [Keycloak record](../bdd-keycloak-2026-11-23/README.md) |

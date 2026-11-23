@@ -1559,8 +1559,8 @@
       "then": "the valid flow is authorized and the invalid flow is denied with traceable evidence.",
       "family": "authorization",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "TDR-BDD-06",

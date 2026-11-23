@@ -13,7 +13,7 @@ reported is described in [BDD acceptance](bdd.md).
   This page is built from the repository, not from a run: each cluster run publishes its own
   copy of the catalogue with the basis filled in.
 
-94 rows: 29 implemented, 65 pending.
+94 rows: 30 implemented, 64 pending.
 
 | Row | Requirement | Gate | Status | Runner |
 |---|---|---|---|---|
@@ -102,7 +102,7 @@ reported is described in [BDD acceptance](bdd.md).
 | [TDR-BDD-02](#tdr-bdd-02) | Invalid deployment parameters | G6 | implemented | Cucumber.js |
 | [TDR-BDD-03](#tdr-bdd-03) | Idempotent redeployment | G6 | implemented | Cucumber.js |
 | [TDR-BDD-04](#tdr-bdd-04) | Uninstall | G6 | implemented | Cucumber.js |
-| [TDR-BDD-05](#tdr-bdd-05) | Keycloak / policy / token integration | G3 | pending | godog |
+| [TDR-BDD-05](#tdr-bdd-05) | Keycloak / policy / token integration | G3 | implemented | godog |
 | [TDR-BDD-06](#tdr-bdd-06) | Structured logging and ORCE errors | G5 | implemented | Cucumber.js |
 | [TDR-BDD-07](#tdr-bdd-07) | TLS 1.3 runtime validation | G4 | pending | godog |
 | [TDR-BDD-08](#tdr-bdd-08) | Secrets and log masking | G2 | implemented | godog |
@@ -1997,8 +1997,8 @@ Then the release is removed without manual intervention and the expected project
 | Test type | Integration BDD |
 | Gate | G3 - Protected-service vertical slice |
 | Evidence | `evidence/bdd-tdr-005/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/authorization.feature` |
 

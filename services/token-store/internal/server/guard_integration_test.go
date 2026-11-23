@@ -333,6 +333,21 @@ func TestGuardWithRealConnectorStorePolicyPostgresAndOpenBao(t *testing.T) {
 		noToken.Headers.Del("DPoP")
 		record(t, "no token", runtime.Evaluate(t.Context(), noToken), 401, "TOK-MISSING", "", false)
 
+		// TDR-BDD-05: an actual Keycloak viewer token is never machine authorization.
+		// The local proof writes it mode 0600 outside the evidence tree, then deletes it.
+		if path := os.Getenv("KEYCLOAK_GUARD_TOKEN_FILE"); path != "" {
+			raw, err := os.ReadFile(path)
+			if err != nil || len(raw) == 0 {
+				t.Fatal("Keycloak viewer token file unavailable")
+			}
+			kc := makeRequest(t, viewer)
+			kc.Headers.Set("Authorization", "DPoP "+string(raw))
+			row := record(t, "Keycloak viewer token", runtime.Evaluate(t.Context(), kc), 401, "TOK-INVALID", "", false)
+			if row.GuardEvent.Payload.Detail != "signature_invalid" {
+				t.Fatal("Keycloak token refusal did not record the untrusted signing key")
+			}
+		}
+
 		missing := makeRequest(t, viewer)
 		missing.Headers.Del("DPoP")
 		record(t, "missing proof", runtime.Evaluate(t.Context(), missing), 401, "TOK-PROOF-INVALID", "", false)

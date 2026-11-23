@@ -7,6 +7,11 @@
 
 const crypto = require('node:crypto')
 const base = require('./settings.upstream.js')
+const { createRequire } = require('node:module')
+const { httpAuth } = require('./viewer-runtime.cjs')
+// Resolve from the same installation as red.js, including its bcrypt dependency.
+const runtimeRequire = createRequire(process.argv[1])
+const bcrypt = runtimeRequire('bcryptjs')
 
 function required (name) {
   const value = process.env[name]
@@ -47,6 +52,10 @@ module.exports = {
   ...base,
   // Fixed on purpose: the upstream image sets FLOWS=flows.json, which would load its demo flows.
   flowFile: 'lifecycle.json',
+  httpNodeRoot: '/',
+  httpStatic: [{ path: '/opt/ztd/ui', root: '/dev/facis-demo/' }],
+  httpStaticAuth: undefined,
+  functionExternalModules: true,
 
   // The editor and admin API. A person administers ORCE with the user; the acceptance runner
   // reads the lifecycle results from the flow context with a read-only bearer token.
@@ -64,7 +73,7 @@ module.exports = {
   logging: { json: { level: 'info', metrics: false, audit: false, handler: jsonLogger } },
 
   // The flow's own HTTP endpoints, including the lifecycle command endpoint.
-  httpNodeAuth: { user: required('ORCE_HTTP_USER'), pass: required('ORCE_HTTP_PASSWORD_HASH') },
+  httpNodeAuth: httpAuth(required('ORCE_HTTP_USER'), required('ORCE_HTTP_PASSWORD_HASH'), bcrypt.compare),
 
   // The admin API returns context values through the same encoder as the debug sidebar; the
   // lifecycle results must come back whole, not truncated at the 1000-character default.

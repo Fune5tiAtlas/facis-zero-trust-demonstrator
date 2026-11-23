@@ -1,0 +1,3 @@
+# expect: identity.issuer must be an HTTPS facis-ztd realm URL
+identity:
+  issuer: http://identity.example.test/realms/facis-ztd
