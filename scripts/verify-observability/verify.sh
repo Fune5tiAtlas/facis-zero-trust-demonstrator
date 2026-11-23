@@ -19,6 +19,8 @@
 #   spire-lane-is-narrow        from the gateway's pods, 9988 and 8082 answer, the registration port not
 #   workload-otlp-accepted      a data-plane workload's OTLP is accepted on 4317/4318, another port not
 #   correlated-trace            one trace holds the proxy's span and the echo's child span
+#   silent-component-is-a-gap   a caller that hands on a span and emits no telemetry is the one
+#                               missing parent of the stored trace; with its span exported, none
 #   revocation-probe-reports    the probe reports the status list up, and down when it stops
 #   export-buffered-while-down  telemetry of a 60 s outage of the entry arrives afterwards; a full
 #                               queue counts what it refuses and no workload restarts
@@ -130,6 +132,7 @@ ZONE=$(fact "$ZONE_VALUES" zone.name)
 NSM=$(fact "$ZONE_VALUES" planes.management.namespace)
 NSD=$(fact "$ZONE_VALUES" planes.data.namespace)
 NSB=$(fact "$DEMONSTRATOR_VALUES" observabilityBackends.namespace)
+trust_domain=$(fact "$ZONE_VALUES" zone.trustDomain)
 TRANSPORT=$(fact "$ZONE_VALUES" telemetryExport.entry.transport)
 ZPORT=$(fact "$ZONE_VALUES" telemetryExport.entry.port)
 SERVER_NAME=$(fact "$ZONE_VALUES" telemetryExport.entry.serverName)
@@ -184,6 +187,8 @@ cleanup() {
   kz -n "$NSD" delete deploy,svc -l app.kubernetes.io/part-of=verify-observability --ignore-not-found --wait=false >/dev/null 2>&1
   kz -n "$NSM" delete pod obs-gateway-standin --ignore-not-found --wait=false >/dev/null 2>&1
   kz -n "$NSM" delete deploy,svc -l app.kubernetes.io/part-of=verify-observability --ignore-not-found --wait=false >/dev/null 2>&1
+  kz -n "$NSD" delete authorizationpolicy -l app.kubernetes.io/part-of=verify-observability --ignore-not-found >/dev/null 2>&1
+  kz -n "$NSM" delete authorizationpolicy -l app.kubernetes.io/part-of=verify-observability --ignore-not-found >/dev/null 2>&1
   kz -n "$NSM" delete configmap status-list-fixture --ignore-not-found >/dev/null 2>&1
   kd -n "$NSB" delete pod obs-demonstrator-probe log-export-reader --ignore-not-found --wait=false >/dev/null 2>&1
   kz delete namespace "$NS_SCRATCH" --ignore-not-found --wait=false >/dev/null 2>&1
@@ -201,7 +206,7 @@ if [ "$PIN_WANTED" = true ]; then
 fi
 fixture() { # fixture <file>: the fixture with its placeholders filled
   sed -e "s|\${NS_MGMT}|$NSM|g; s|\${NS_DATA}|$NSD|g; s|\${NS_BACKENDS}|$NSB|g; s|\${NS_SCRATCH}|$NS_SCRATCH|g" \
-      -e "s|\${ECHO_IMAGE}|$ECHO_IMAGE|g; s|\${CLIENT_IMAGE}|$CLIENT_IMAGE|g; s|\${RUN_ID}|$RUN_ID|g; s|\${PIN}|$PIN|g" \
+      -e "s|\${TRUST_DOMAIN}|$trust_domain|g; s|\${ECHO_IMAGE}|$ECHO_IMAGE|g; s|\${CLIENT_IMAGE}|$CLIENT_IMAGE|g; s|\${RUN_ID}|$RUN_ID|g; s|\${PIN}|$PIN|g" \
       "$HERE/fixtures/$1"
 }
 say "verify-observability $RUN_ID: mode $MODE, zone $ZONE on $ZCTX, demonstrator on $DCTX, transport $TRANSPORT"
@@ -209,7 +214,7 @@ jq -r '.output.statusListCredential' "$REPO/features/fixtures/xfsc/status/allow.
 kz -n "$NSM" create configmap status-list-fixture --from-file=status-list.json="$work/status-list.json" \
   --dry-run=client -o yaml | kz apply -f - >>"$LOG"
 kz create namespace "$NS_SCRATCH" --dry-run=client -o yaml | kz apply -f - >>"$LOG"
-for f in status-list.yaml trace-echo.yaml client.yaml gateway-standin.yaml node-address-probe.yaml; do
+for f in mesh-pairs.yaml status-list.yaml trace-echo.yaml client.yaml gateway-standin.yaml node-address-probe.yaml; do
   fixture "$f" | kz apply -f - >>"$LOG" || { say "fixture $f could not be applied"; exit 125; }
 done
 fixture demonstrator-probe.yaml | kd apply -f - >>"$LOG"
@@ -401,7 +406,6 @@ if [ "$srv" = 1 ] && [ "$cm" = 1 ] && [ "${ns_srv:-0}" -gt 0 ] && [ "${ns_cr:-0}
   record spire-server-scraped passed "up == 1 for the server and the controller-manager; ${ns_srv} spire_server_ and ${ns_cr} controller_runtime_ series of $ZONE"
 else record spire-server-scraped failed "server up=$srv controller-manager up=$cm spire_server_ series=$ns_srv controller_runtime_ series=$ns_cr"; fi
 
-trust_domain=$(fact "$ZONE_VALUES" zone.trustDomain)
 gw_id="spiffe://$trust_domain/ns/$NSM/sa/otel-gateway"
 entry=$(kz -n spire-system exec spire-server-0 -c spire-server -- /opt/spire/bin/spire-server entry show -spiffeID "$gw_id" 2>/dev/null | sed -n 's/^Found \([0-9]*\) entr.*/\1/p')
 gw_ready=$(kz -n "$NSM" get pod -l "$GW_PODS" -o json | jq -r '[.items[0].status.containerStatuses[]?, .items[0].status.initContainerStatuses[]? | select(.name == "istio-proxy" or .name == "opentelemetry-collector") | select(.ready)] | length')
@@ -472,6 +476,24 @@ if [ "$ecode" = 200 ] && until_true 90 correlated; then
   services=$(jaeger_trace "$tid" | jq -r '[.data[0].processes[].serviceName] | unique | join(", ")')
   record correlated-trace passed "trace $tid holds the echo's span as the child of a proxy span (services: $services)"
 else record correlated-trace failed "echo HTTP $ecode; trace $tid: $(jaeger_trace "$tid" | jq -c '[.data[0].processes[]?.serviceName]')"; fi
+
+# A component that emits no telemetry. The client application of the request above handed on the span
+# $psid in traceparent and exports nothing, so the trace's spans name $psid as a parent the trace does
+# not hold: that missing parent is the gap, and it is the only one. The control is the same request with
+# the caller's span exported (through the gateway, as a workload's): that trace has no missing parent.
+missing_parents() { # missing_parents <trace id>: the parents the trace's spans name and the trace does not hold
+  jaeger_trace "$1" | jq -r '.data[0] as $t | [$t.spans[].spanID] as $ids
+    | [$t.spans[].references[]? | select(.refType == "CHILD_OF") | .spanID | select(. as $p | $ids | index($p) | not)] | unique | join(",")'
+}
+gap_is() { [ "$(missing_parents "$1")" = "$2" ]; }
+whole() { correlated && gap_is "$tid" ""; }
+gap_tid=$tid; gap_psid=$psid
+tid=$(hex 16); psid=$(hex 8)
+ccode=$(span_json "$tid" "$psid" obs-client | post_otlp traces)
+ecode2=$(client curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H "traceparent: 00-$tid-$psid-01" "http://trace-echo.$NSD.svc.cluster.local:8080/correlated")
+if [ "$ecode" = 200 ] && until_true 60 gap_is "$gap_tid" "$gap_psid" && [ "$ccode" = 200 ] && [ "$ecode2" = 200 ] && until_true 90 whole; then
+  record silent-component-is-a-gap passed "trace $gap_tid: the client application handed on span $gap_psid and emits no telemetry; no span of the trace has that ID, and it is the only parent the trace's spans name that the trace does not hold. Trace $tid, the same request with the caller's span exported: no missing parent"
+else record silent-component-is-a-gap failed "trace $gap_tid (silent caller, span $gap_psid): missing parents '$(missing_parents "$gap_tid")'; trace $tid (caller's span exported, HTTP $ccode, echo HTTP $ecode2): missing parents '$(missing_parents "$tid")'"; fi
 
 # ---------------------------------------------------------------- revocation probe
 probe_up() { [ "$(pqv "max(last_over_time(httpcheck_status{zone=\"$ZONE\",http_status_class=\"2xx\",ztd_source=\"collector\"}[10s]))")" = 1 ] && [ -z "$(pqv "max(last_over_time(httpcheck_error{zone=\"$ZONE\",ztd_source=\"collector\"}[10s])) > 0")" ]; }

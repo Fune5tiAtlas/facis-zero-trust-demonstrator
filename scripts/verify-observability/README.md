@@ -28,7 +28,8 @@ kind load docker-image ztd-proof/trace-echo:dev --name ztd
 scripts/verify-observability/verify.sh
 ```
 
-It installs only its fixtures (`fixtures/`: the meshed echo `tools/trace-echo`, the static server of
+It installs only its fixtures (`fixtures/`: the two pairs the mesh default deny needs to serve them,
+client to echo and zone gateway to status list (`mesh-pairs.yaml`), the meshed echo `tools/trace-echo`, the static server of
 the fixture status list `features/fixtures/xfsc/status/allow.json`, a meshed data-plane client, a
 stand-in with the zone gateway's labels, a probe on the demonstrator side, a reader of the exported
 log files that mounts the entry's volume read-only, a probe in a scratch namespace) and removes them
@@ -67,6 +68,7 @@ Each check is named by what it proves; the result is `passed`, `failed` or `pend
 | `spire-lane-is-narrow` | from the zone gateway's pods 9988 and 8082 answer, the registration port 8081 is refused |
 | `workload-otlp-accepted` | a data-plane workload's OTLP/HTTP span (4318) and OTLP/gRPC call (4317) are accepted and stored with the zone; another gateway port is refused |
 | `correlated-trace` | one trace holds a proxy's span and the echo's span as its child |
+| `silent-component-is-a-gap` | the client application of that request hands on a span ID and emits no telemetry: the stored trace names that span as a parent it does not hold, and no other; the same request with the caller's span exported leaves no missing parent |
 | `revocation-probe-reports` | the probe reports the status list up, down within one probe interval of it stopping, and up again |
 | `export-buffered-while-down` | a span sent and metrics produced during a 60 s outage of the entry arrive afterwards (waiting up to 3 min for them, because the collectors reconnect with gRPC's backoff); a full queue counts what it refuses, and no container restarts |
 | `unknown-client-refused` | the entry refuses no certificate, a foreign CA, another zone's certificate and TLS 1.2, and accepts the zone's own |

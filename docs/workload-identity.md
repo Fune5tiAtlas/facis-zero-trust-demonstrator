@@ -495,9 +495,10 @@ injection label ([the capture rule](#the-capture-rule)), and STRICT refuses its 
 (`meshConfig.extensionProviders`: an Envoy file access log to the proxy's stdout, one JSON object
 per line), and `zone-policy` renders the mesh-wide `Telemetry` `mesh-default` in `istio-system`,
 which enables it for refusals only: its filter is the authorization decision,
-`response.code_details.startsWith("rbac_access_denied") || connection.termination_details.startsWith("rbac_access_denied")`
-(the RBAC filter's detail for an HTTP request, the termination detail for a TCP connection), never
-the status code, so a served request and an application's own 403 are not logged. The destination's
+`response.code_details.startsWith("rbac_access_denied") || connection.termination_details.startsWith("rbac_access_denied") || response.code_details == "filter_chain_not_found"`
+(the RBAC filter's detail for an HTTP request, the termination detail for a TCP connection, and the
+listener's detail for a connection without mutual TLS, which no filter chain of a STRICT listener
+takes), never the status code, so a served request and an application's own 403 are not logged. The destination's
 proxy is the one place that holds both identities, its own certificate and the caller's, so the line
 is read there:
 
@@ -514,10 +515,14 @@ kubectl -n <namespace> logs <pod> -c istio-proxy | grep rbac_access_denied
 | `detail` | `%RESPONSE_CODE_DETAILS%` | for an HTTP request, `rbac_access_denied_matched_policy[none]`: no ALLOW policy matched |
 | `termination` | `%CONNECTION_TERMINATION_DETAILS%` | for a TCP connection (a port the pair does not name, served as TCP), the same decision; `detail` is then empty |
 | `flags`, `time` | `%RESPONSE_FLAGS%`, `%START_TIME%` | Envoy's response flags and the request's start |
+| `address` | `%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%` | the caller's address: all that is known of a caller without an identity |
 
-No body and no other header is logged. A workload refused during the mutual TLS handshake (one
-without a SPIRE entry, whose proxy has no certificate) presents no identity: STRICT refuses it
-before authorization, so no denial line names it. The line is evidence in Envoy's format, not an
+No body and no other header is logged. A workload outside the mesh (one without a proxy, or
+without a SPIRE entry, whose proxy has no certificate) presents no identity: STRICT closes its
+connection before authorization, so no denial line names it. The listener writes a line for the
+closed connection instead: `source` and `destination` empty, `detail` `filter_chain_not_found`,
+`flags` `NR` and the caller's `address`
+(`kubectl -n <namespace> logs <pod> -c istio-proxy | grep filter_chain_not_found`). The line is evidence in Envoy's format, not an
 IF-01 event; its form as a security-state event is pending the observability work
 ([IF-04](api-docs.md#if-04-observability-and-evidence)).
 
@@ -613,7 +618,7 @@ record). A run shows:
 | `svid-over-csi-socket` | a labelled pod gets, over the mounted socket, the SVID of its service account in the zone's trust domain, chained to the SPIRE CA; an unlabelled pod gets no entry and no SVID |
 | `native-sidecar-version` | the server is 1.33 or later and the proxy is an init container with `restartPolicy: Always` |
 | `mesh-identity-issued-by-spire` | the proxy's certificate has `O = SPIRE`, the SPIRE CA as issuer and the SVID's URI SAN, and its `ROOTCA` bundle is the SPIRE CA; under the capture rule (`capture-at-injector-defaults`), a pod in a plane namespace with an excluded application port, capture mode `NONE`, a moved status port, a proxy-config override, an injection opt-out, a swapped proxy image or a pod-supplied `istio-proxy` is refused at admission, an ordinary pod is admitted carrying the injector's status-port exclusion and `REDIRECT`, and the istiod and `istio-cni` pods, which opt out of injection, are admitted in `istio-system` |
-| `unregistered-workload-cut-off` | an unlabelled pod's proxy has no certificate, its application never starts, and the peer refuses a call from it, made from a node other than the peer's, while the labelled pod's call succeeds |
+| `unregistered-workload-cut-off` | an unlabelled pod's proxy has no certificate, its application never starts, and the peer refuses a call from it, made from a node other than the peer's, while the labelled pod's call succeeds; the same call from a pod without a proxy is refused too, and the peer's proxy logs both refused connections with the caller's address (`out-of-mesh-call-blocked-and-logged`) |
 | `traffic-through-the-proxies` | the peer sees the caller's own SPIFFE ID (`sa/caller`, its own service account) in `X-Forwarded-Client-Cert` and both proxies count the request as mTLS |
 | `mesh-on-every-node` | on every node with a SPIRE agent, a meshed stand-in of its own is Ready and its proxy holds a SPIRE-issued certificate for that stand-in's own SPIFFE ID, one check per node |
 | `cross-node-calls` | every node's meshed stand-in calls the next node's across a node boundary; the receiver sees the caller's own SPIFFE ID and both proxies count the request as mTLS, one check per call |

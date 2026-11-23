@@ -35,6 +35,7 @@ meshConfig:
             detail: "%RESPONSE_CODE_DETAILS%"            # an HTTP request's decision
             termination: "%CONNECTION_TERMINATION_DETAILS%"  # a TCP connection's decision
             flags: "%RESPONSE_FLAGS%"
+            address: "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%"  # the caller's address: all a refused plaintext connection has
             time: "%START_TIME%"
     # Envoy spans (docs/adr/0017-central-observability-backends.md): an OpenTelemetry provider pointing at
     # the zone gateway (release otel-gateway in the management namespace, OTLP/gRPC on 4317), enabled

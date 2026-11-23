@@ -16,7 +16,8 @@ import (
 	"github.com/cucumber/godog"
 )
 
-// workloadIdentityProof runs ZT-24, ZT-57, ZT-59 and ZT-60 on a cluster: it runs the mesh identity proof
+// workloadIdentityProof runs ZT-24, ZT-57, ZT-59 and ZT-60, and the mesh rows ZT-01 and ZT-58 that the
+// same record decides, on a cluster: it runs the mesh identity proof
 // (scripts/verify-mesh-identity/verify.sh) once per test process and decides each row from the sections
 // of the evidence.md that proof records (scripts/verify-mesh-identity/README.md, "What a run shows"), so
 // that a row's result is the record's. Every input comes from the environment; a missing one fails the
@@ -36,7 +37,7 @@ type workloadIdentityProof struct {
 	row    string
 }
 
-// identityRun is the one run of the verifier a test process makes; the four rows decide from its record.
+// identityRun is the one run of the verifier a test process makes; every row decides from its record.
 var identityRun *identityRunResult
 
 type identityRunResult struct {
@@ -87,6 +88,33 @@ var identityRows = map[string]struct {
 		"is refused in the handshake: the peer accepts mTLS only (STRICT)",
 		"the peer's proxy wrote no denial line naming it",
 		"the labelled pod's call to the same peer succeeds",
+	}},
+	// ZT-01: the same call from a meshed pair (served, mutual TLS, the caller's identity seen by the peer)
+	// and from workloads outside the mesh (the proxy-less probe and the pod without a certificate): refused
+	// by the peer's STRICT listener and written to its denial log with the caller's address.
+	"ZT-01": {[]string{"0", "1", "2", "5", "8", "9", "10"}, []string{
+		"the proxy's workload certificate (default) has O = SPIRE",
+		"the labelled pod's call to the same peer succeeds",
+		"the labelled pod's served call left no line in the peer's denial log",
+		"the peer sees the caller's own SPIFFE identity in X-Forwarded-Client-Cert",
+		"both proxies counted the request (istio_requests_total)",
+		"the peer's proxy records the requests as mutual_tls",
+		"the call of the proxy-less pod probe, a workload outside the mesh, to the meshed peer is refused",
+		"the peer's proxy logged the refused out-of-mesh call",
+		"is refused in the handshake: the peer accepts mTLS only (STRICT)",
+		"the peer's proxy logged the refused connection of the unlabelled pod",
+	}},
+	// ZT-58: the control plane serves every proxy, the capture layer (the Istio CNI plugin) is chained on
+	// every node, and on every node with a SPIRE agent a meshed stand-in holds a SPIRE-issued certificate
+	// and calls the next node's over mutual TLS. A node whose check failed fails its section.
+	"ZT-58": {[]string{"0", "1", "2", "4", "7", "10", "11", "12"}, []string{
+		"every SPIRE agent is attested by the server",
+		"the SPIRE server and the mesh run with the zone's trust domain",
+		"istio-proxy is an init container with restartPolicy Always (a native sidecar)",
+		"lists the Istio plugin after Cilium",
+		"runs on the node and is Ready, and its proxy's certificate is issued by the SPIRE CA with its own SPIFFE ID",
+		"crosses nodes, the receiver sees the caller's own SPIFFE ID, the caller's proxy saw the receiver's own, and both proxies count it as mutual TLS",
+		"the registered proxies reach istiod through the meshControlPlane opening and report SYNCED for every xDS type",
 	}},
 }
 
@@ -277,4 +305,12 @@ func registerWorkloadIdentityProof(ctx *godog.ScenarioContext, dryRun bool) {
 	ctx.Step(`^a workload cannot satisfy SPIRE attestation$`, p.clusterIsReady("ZT-60"))
 	ctx.Step(`^it requests a workload identity and attempts mesh communication$`, p.proofRuns)
 	ctx.Step(`^no identity is issued and all service communication is denied\.$`, p.rowHolds)
+	// ZT-01
+	ctx.Step(`^the service mesh is deployed in each target cluster with workload identities issued$`, p.clusterIsReady("ZT-01"))
+	ctx.Step(`^two in-mesh services communicate and a workload outside the mesh attempts the same call$`, p.proofRuns)
+	ctx.Step(`^the in-mesh call is carried over the mesh under mutual TLS AND the out-of-mesh call is blocked and logged\.$`, p.rowHolds)
+	// ZT-58
+	ctx.Step(`^SPIRE-backed identities and the target clusters$`, p.clusterIsReady("ZT-58"))
+	ctx.Step(`^the service mesh/control plane and traffic-capture layer are enabled$`, p.proofRuns)
+	ctx.Step(`^service traffic is captured on each node and protected with workload-certificate-based mutual TLS\.$`, p.rowHolds)
 }

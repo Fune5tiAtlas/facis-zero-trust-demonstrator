@@ -13,11 +13,11 @@ reported is described in [BDD acceptance](bdd.md).
   This page is built from the repository, not from a run: each cluster run publishes its own
   copy of the catalogue with the basis filled in.
 
-94 rows: 29 implemented, 65 pending.
+94 rows: 32 implemented, 62 pending.
 
 | Row | Requirement | Gate | Status | Runner |
 |---|---|---|---|---|
-| [ZT-01](#zt-01) | Secure Service Mesh | G3 | pending | godog |
+| [ZT-01](#zt-01) | Secure Service Mesh | G3 | implemented | godog |
 | [ZT-02](#zt-02) | Secure Execution Environment | G2 | pending | godog |
 | [ZT-03](#zt-03) | Trust Zone | G2 | pending | godog |
 | [ZT-04](#zt-04) | Secure Connection | G4 | pending | godog |
@@ -43,7 +43,7 @@ reported is described in [BDD acceptance](bdd.md).
 | [ZT-24](#zt-24) | SPIFFE/SPIRE Deployment | G3 | implemented | godog |
 | [ZT-25](#zt-25) | Routing Policies | G3 | implemented | godog |
 | [ZT-26](#zt-26) | Ingress and Egress | G3 | implemented | godog |
-| [ZT-27](#zt-27) | Observability | G3 | pending | godog |
+| [ZT-27](#zt-27) | Observability | G3 | implemented | godog |
 | [ZT-28](#zt-28) | Attested TLS | G4 | pending | godog |
 | [ZT-29](#zt-29) | Attestation Request | G4 | pending | godog |
 | [ZT-30](#zt-30) | Attestation Response | G4 | pending | godog |
@@ -74,7 +74,7 @@ reported is described in [BDD acceptance](bdd.md).
 | [ZT-55](#zt-55) | Management Plane / Data Plane Separation | G6 | implemented | godog |
 | [ZT-56](#zt-56) | CI/CD Pipeline Security (Zero Trust for the Pipeline) | G6 | pending | godog |
 | [ZT-57](#zt-57) | SPIFFE/SPIRE Setup | G3 | implemented | godog |
-| [ZT-58](#zt-58) | Service Mesh Setup | G3 | pending | godog |
+| [ZT-58](#zt-58) | Service Mesh Setup | G3 | implemented | godog |
 | [ZT-59](#zt-59) | Successful Identification | G3 | implemented | godog |
 | [ZT-60](#zt-60) | Unsuccessful Identification | G3 | implemented | godog |
 | [ZT-61](#zt-61) | Traffic routed via Service Mesh | G3 | implemented | godog |
@@ -123,8 +123,8 @@ reported is described in [BDD acceptance](bdd.md).
 | Test type | BDD / integration |
 | Gate | G3 - Protected-service vertical slice |
 | Evidence | `evidence/bdd-zt-001/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/mesh.feature` |
 
@@ -695,8 +695,8 @@ Then protected inter-cluster application traffic is routed through the ZT Connec
 | Test type | BDD / integration |
 | Gate | G3 - Protected-service vertical slice |
 | Evidence | `evidence/bdd-zt-027/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/mesh.feature` |
 
@@ -1377,8 +1377,8 @@ Then each relevant microservice has access to a SPIRE Agent on its node and can 
 | Test type | BDD / integration |
 | Gate | G3 - Protected-service vertical slice |
 | Evidence | `evidence/bdd-zt-058/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/mesh.feature` |
 

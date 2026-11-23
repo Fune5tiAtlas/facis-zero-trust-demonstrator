@@ -223,6 +223,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	registerApplicationMockProofs(ctx, dryRun)
 	registerAttestedGateway(ctx, dryRun)
 	registerAPIDockProofs(ctx, dryRun)
+	registerObservabilityProof(ctx, dryRun)
 	registerPending(ctx)
 }
 

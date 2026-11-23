@@ -124,8 +124,8 @@ tcp_outcome() {
   case $rc in "") echo "error(no exit code)";; 7|28) echo "denied($rc)";; 1|6|126|127) echo "error($rc)";; *) echo connected;; esac
 }
 # denial_lines <ns> <pod>: the denial-log lines the pod's proxy has written so far (the access-log
-# provider denial-log of the istiod release, enabled for refused requests and connections by
-# zone-policy's Telemetry mesh-default), one compact JSON object per line; the proxy's own log lines
+# provider denial-log of the istiod release, enabled for refused requests and connections, and for
+# connections without mutual TLS closed by a STRICT listener, by zone-policy's Telemetry mesh-default), one compact JSON object per line; the proxy's own log lines
 # are not JSON objects with these keys and are dropped
 denial_lines() {
   k -n "$1" logs "$2" -c istio-proxy 2>/dev/null | jq -cR 'fromjson? | select(type == "object" and has("source") and has("destination") and has("detail"))' 2>/dev/null
