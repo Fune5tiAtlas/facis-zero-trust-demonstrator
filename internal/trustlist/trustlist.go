@@ -1,4 +1,7 @@
-package main
+// Package trustlist retrieves and verifies TRAIN trust lists: the trust-list VC a TSPA signs
+// (JsonWebSignature2020, a validity window) and the list it vouches for. The verification service
+// uses it for the credential issuers, the Connector's entry for the counter-connectors (ZT-18).
+package trustlist
 
 import (
 	"bytes"
@@ -52,16 +55,19 @@ var pinnedContexts = map[string]string{
 	"https://w3id.org/security/suites/jws-2020/v1":     "contexts/jws-2020-v1.jsonld",
 }
 
-// trustListTerms is the inline context our TSPA's VC template carries (deployment/docker/tspa,
+// Terms is the inline context our TSPA's VC template carries (deployment/docker/tspa,
 // patch 0003) so that the proof covers the subject: without it JSON-LD drops trustlistURI and
 // hash from the signed data and anyone could point a valid VC at another list.
-var trustListTerms = map[string]any{
+var Terms = map[string]any{
 	"trustlisttype": "https://tspa.facis.cloud/ns/trustlist#trustlisttype",
 	"trustlistURI":  map[string]any{"@id": "https://tspa.facis.cloud/ns/trustlist#trustlistURI", "@type": "@id"},
 	"hash":          "https://tspa.facis.cloud/ns/trustlist#hash",
 }
 
 const vcCacheTTL = 5 * time.Minute
+
+// MaxDoc bounds every document read: the VC, the DID document and the trust list.
+const MaxDoc = 1 << 20
 
 type pinnedLoader struct{}
 
@@ -81,10 +87,10 @@ func (pinnedLoader) LoadDocument(u string) (*ld.RemoteDocument, error) {
 	return &ld.RemoteDocument{DocumentURL: u, Document: doc}, nil
 }
 
-// vcVerifier verifies trust-list VCs. Safe for concurrent use.
-type vcVerifier struct {
-	http *http.Client
-	now  func() time.Time
+// Verifier verifies trust-list VCs. Safe for concurrent use.
+type Verifier struct {
+	HTTP *http.Client
+	Now  func() time.Time
 
 	mu    sync.Mutex
 	cache map[cacheKey]verifiedList
@@ -103,15 +109,15 @@ type verifiedList struct {
 	expires time.Time // of the VC
 }
 
-// trustList returns the trust list the VC at vcURI vouches for, after the checks above, and the
+// TrustList returns the trust list the VC at vcURI vouches for, after the checks above, and the
 // VC's expiry, the deadline of any trust taken from it; did is the DID the TCR resolved from the
 // pointer.
-func (v *vcVerifier) trustList(ctx context.Context, did, vcURI string) (any, time.Time, error) {
+func (v *Verifier) TrustList(ctx context.Context, did, vcURI string) (any, time.Time, error) {
 	raw, err := v.get(ctx, vcURI)
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("trust-list VC: %w", err)
 	}
-	now := v.now()
+	now := v.Now()
 	key := cacheKey{sha256.Sum256(raw), did}
 	v.mu.Lock()
 	if c, ok := v.cache[key]; ok && now.Before(c.until) {
@@ -150,11 +156,11 @@ func (v *vcVerifier) trustList(ctx context.Context, did, vcURI string) (any, tim
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("trust list: %w", err)
 	}
-	if multihashSHA256(listRaw) != wantHash {
+	if MultihashSHA256(listRaw) != wantHash {
 		return nil, time.Time{}, errors.New("trust list: hash does not match the VC")
 	}
 	// The fetches above took time: the window is checked again before the list is used.
-	if !v.now().Before(until) {
+	if !v.Now().Before(until) {
 		return nil, time.Time{}, errors.New("trust-list VC: expired")
 	}
 	var list any
@@ -182,7 +188,7 @@ func checkContexts(c any) error {
 				return errors.New("trust-list VC: @context names a document that is not pinned")
 			}
 		case map[string]any:
-			if !reflect.DeepEqual(e, trustListTerms) {
+			if !reflect.DeepEqual(e, Terms) {
 				return errors.New("trust-list VC: inline @context is not the trust-list terms")
 			}
 		default:
@@ -246,7 +252,7 @@ func vcWindow(vc map[string]any, now time.Time) (time.Time, error) {
 	return end, nil
 }
 
-func (v *vcVerifier) verifyProof(ctx context.Context, vc map[string]any, did string) error {
+func (v *Verifier) verifyProof(ctx context.Context, vc map[string]any, did string) error {
 	proof, _ := vc["proof"].(map[string]any)
 	if proof == nil || proof["type"] != "JsonWebSignature2020" || proof["proofPurpose"] != "assertionMethod" {
 		return errors.New("trust-list VC: no JsonWebSignature2020 assertion proof")
@@ -292,11 +298,11 @@ func (v *vcVerifier) verifyProof(ctx context.Context, vc map[string]any, did str
 			document[k] = val
 		}
 	}
-	hOpts, err := canonicalSHA256(options)
+	hOpts, err := CanonicalSHA256(options)
 	if err != nil {
 		return err
 	}
-	hDoc, err := canonicalSHA256(document)
+	hDoc, err := CanonicalSHA256(document)
 	if err != nil {
 		return err
 	}
@@ -307,7 +313,9 @@ func (v *vcVerifier) verifyProof(ctx context.Context, vc map[string]any, did str
 	return nil
 }
 
-func canonicalSHA256(doc map[string]any) ([]byte, error) {
+// CanonicalSHA256 is the SHA-256 of doc's URDNA2015 canonical form under the pinned contexts: one
+// half of what a JsonWebSignature2020 proof signs.
+func CanonicalSHA256(doc map[string]any) ([]byte, error) {
 	opts := ld.NewJsonLdOptions("")
 	opts.Algorithm = ld.AlgorithmURDNA2015
 	opts.Format = "application/n-quads"
@@ -327,7 +335,7 @@ func canonicalSHA256(doc map[string]any) ([]byte, error) {
 
 // didKey resolves did (did:web) and returns the Ed25519 key of verification method vm, which the
 // document must list under assertionMethod.
-func (v *vcVerifier) didKey(ctx context.Context, did, vm string) (ed25519.PublicKey, error) {
+func (v *Verifier) didKey(ctx context.Context, did, vm string) (ed25519.PublicKey, error) {
 	docURL, err := didWebURL(did)
 	if err != nil {
 		return nil, err
@@ -396,26 +404,26 @@ func didWebURL(did string) (string, error) {
 	return "https://" + host + path + "/did.json", nil
 }
 
-func (v *vcVerifier) get(ctx context.Context, u string) ([]byte, error) {
+func (v *Verifier) get(ctx context.Context, u string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, errors.New("bad URL")
 	}
-	resp, err := v.http.Do(req)
+	resp, err := v.HTTP.Do(req)
 	if err != nil {
 		return nil, errors.New("unreachable")
 	}
 	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxTrustDoc+1))
-	if err != nil || len(raw) > maxTrustDoc || resp.StatusCode != http.StatusOK {
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, MaxDoc+1))
+	if err != nil || len(raw) > MaxDoc || resp.StatusCode != http.StatusOK {
 		return nil, errors.New("not answered")
 	}
 	return raw, nil
 }
 
-// multihashSHA256 is IPFS's form of the trust list's hash, as TSPA writes it: base58btc of
+// MultihashSHA256 is IPFS's form of the trust list's hash, as TSPA writes it: base58btc of
 // 0x12 0x20 || SHA-256.
-func multihashSHA256(b []byte) string {
+func MultihashSHA256(b []byte) string {
 	sum := sha256.Sum256(b)
 	return base58(append([]byte{0x12, 0x20}, sum[:]...))
 }
@@ -445,4 +453,29 @@ func minTime(a, b time.Time) time.Time {
 		return a
 	}
 	return b
+}
+
+// ListsActive finds, anywhere in a trust list, a service object whose ServiceTypeIdentifier is
+// id (the TCR's lookup key) and whose ServiceCurrentStatus is "active". The search does not
+// depend on the wrapper members around the entries, which differ between TSPA's raw list and the
+// TCR's answer.
+func ListsActive(doc any, id string) bool {
+	switch v := doc.(type) {
+	case map[string]any:
+		if v["ServiceTypeIdentifier"] == id && v["ServiceCurrentStatus"] == "active" {
+			return true
+		}
+		for _, child := range v {
+			if ListsActive(child, id) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if ListsActive(child, id) {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/trustlist"
 	"io"
 	"log/slog"
 	"net/http"
@@ -99,11 +100,11 @@ func (s *trainSite) publish(from, until time.Time, edit func(vc map[string]any))
 	s.t.Helper()
 	vc := map[string]any{
 		"@context": []any{"https://www.w3.org/2018/credentials/v1", "https://w3id.org/security/suites/ed25519-2020/v1",
-			"https://w3id.org/security/suites/jws-2020/v1", trustListTerms},
+			"https://w3id.org/security/suites/jws-2020/v1", trustlist.Terms},
 		"type": []any{"VerifiableCredential"}, "id": s.did + "#issuer-lists", "issuer": s.did,
 		"issuanceDate": from.UTC().Format(time.RFC3339),
 		"credentialSubject": map[string]any{"id": "uuid:test", "trustlisttype": "JSON based Trust-lists",
-			"trustlistURI": s.srv.URL + "/list", "hash": multihashSHA256(s.list)},
+			"trustlistURI": s.srv.URL + "/list", "hash": trustlist.MultihashSHA256(s.list)},
 	}
 	if !until.IsZero() {
 		vc["expirationDate"] = until.UTC().Format(time.RFC3339)
@@ -111,12 +112,12 @@ func (s *trainSite) publish(from, until time.Time, edit func(vc map[string]any))
 	proof := map[string]any{"type": "JsonWebSignature2020", "created": time.Now().UTC().Format(time.RFC3339),
 		"proofPurpose": "assertionMethod", "verificationMethod": s.did + "#trust-list-1"}
 	header := jose.B64([]byte(`{"b64":false,"crit":["b64"],"alg":"EdDSA"}`))
-	hOpts, err := canonicalSHA256(map[string]any{"@context": vc["@context"], "type": proof["type"], "created": proof["created"],
+	hOpts, err := trustlist.CanonicalSHA256(map[string]any{"@context": vc["@context"], "type": proof["type"], "created": proof["created"],
 		"proofPurpose": proof["proofPurpose"], "verificationMethod": proof["verificationMethod"]})
 	if err != nil {
 		s.t.Fatal(err)
 	}
-	hDoc, err := canonicalSHA256(vc)
+	hDoc, err := trustlist.CanonicalSHA256(vc)
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -131,7 +132,7 @@ func (s *trainSite) publish(from, until time.Time, edit func(vc map[string]any))
 }
 
 func (s *trainSite) lister() lister {
-	return tcrList(s.srv.Client(), s.srv.URL, []string{"trust.zone-a.test"}, &vcVerifier{http: s.srv.Client(), now: time.Now})
+	return tcrList(s.srv.Client(), s.srv.URL, []string{"trust.zone-a.test"}, &trustlist.Verifier{HTTP: s.srv.Client(), Now: time.Now})
 }
 
 func TestAVerifiedCurrentTrustListListsTheIssuer(t *testing.T) {
@@ -204,7 +205,7 @@ func TestAVerifiedVCIsCachedNoLongerThanItsExpiry(t *testing.T) {
 	now := time.Now()
 	s.publish(now.Add(-time.Hour), now.Add(time.Minute), nil)
 	clock := now
-	v := &vcVerifier{http: s.srv.Client(), now: func() time.Time { return clock }}
+	v := &trustlist.Verifier{HTTP: s.srv.Client(), Now: func() time.Time { return clock }}
 	l := tcrList(s.srv.Client(), s.srv.URL, []string{"trust.zone-a.test"}, v)
 	if ok, _, err := l(context.Background(), listedIssuer); !ok || err != nil {
 		t.Fatalf("%v %v", ok, err)
@@ -216,30 +217,6 @@ func TestAVerifiedVCIsCachedNoLongerThanItsExpiry(t *testing.T) {
 	clock = now.Add(2 * time.Minute) // past the VC's expiry, inside vcCacheTTL
 	if ok, _, err := l(context.Background(), listedIssuer); ok || err == nil {
 		t.Errorf("an expired VC was served from the cache: %v %v", ok, err)
-	}
-}
-
-func TestDIDWebURL(t *testing.T) {
-	for did, want := range map[string]string{
-		"did:web:tspa.facis.cloud":             "https://tspa.facis.cloud/.well-known/did.json",
-		"did:web:127.0.0.1%3A8443":             "https://127.0.0.1:8443/.well-known/did.json",
-		"did:web:tspa.facis.cloud:ztd:release": "https://tspa.facis.cloud/ztd/release/did.json",
-	} {
-		if got, err := didWebURL(did); err != nil || got != want {
-			t.Errorf("%s: %s %v", did, got, err)
-		}
-	}
-	for _, bad := range []string{"did:key:z6Mk", "did:web:", "did:web:a%2Fb"} {
-		if _, err := didWebURL(bad); err == nil {
-			t.Errorf("%s accepted", bad)
-		}
-	}
-}
-
-func TestMultihashIsIPFSBase58(t *testing.T) {
-	// The multihash of the empty input, as IPFS writes it.
-	if got := multihashSHA256(nil); got != "QmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n" {
-		t.Errorf("got %s", got)
 	}
 }
 
@@ -281,9 +258,9 @@ func TestAVCSignedByOurTSPAVerifies(t *testing.T) {
 		vc.CredentialSubject.TrustlistURI:              "testdata/tspa/trust-list.json",
 	}
 	at := func(now time.Time) error {
-		v := &vcVerifier{http: &http.Client{Transport: files}, now: func() time.Time { return now }}
-		list, _, err := v.trustList(context.Background(), "did:web:tspa.local.test", "https://tspa.example/vc")
-		if err == nil && !listsActive(list, "did:web:connector-b.facis-ztd.local") {
+		v := &trustlist.Verifier{HTTP: &http.Client{Transport: files}, Now: func() time.Time { return now }}
+		list, _, err := v.TrustList(context.Background(), "did:web:tspa.local.test", "https://tspa.example/vc")
+		if err == nil && !trustlist.ListsActive(list, "did:web:connector-b.facis-ztd.local") {
 			return errors.New("the verified list does not list the published entry")
 		}
 		return err
@@ -317,7 +294,7 @@ func TestANestedContextCannotSubstituteTheHash(t *testing.T) {
 		cs := vc["credentialSubject"].(map[string]any)
 		cs["https://tspa.facis.cloud/ns/trustlist#hash"] = cs["hash"]
 		cs["@context"] = map[string]any{"hash": "@index"}
-		cs["hash"] = multihashSHA256(forged)
+		cs["hash"] = trustlist.MultihashSHA256(forged)
 	})
 	s.list = forged
 	ok, _, err := s.lister()(context.Background(), "did:web:attacker.test")
@@ -330,11 +307,11 @@ func TestANestedContextCannotSubstituteTheHash(t *testing.T) {
 // A verified VC is cached for the DID it was verified under only.
 func TestACachedVCIsNotAcceptedForAnotherDID(t *testing.T) {
 	s := newTrainSite(t)
-	v := &vcVerifier{http: s.srv.Client(), now: time.Now}
-	if _, _, err := v.trustList(context.Background(), s.did, s.srv.URL+"/vc"); err != nil {
+	v := &trustlist.Verifier{HTTP: s.srv.Client(), Now: time.Now}
+	if _, _, err := v.TrustList(context.Background(), s.did, s.srv.URL+"/vc"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := v.trustList(context.Background(), "did:web:other.test", s.srv.URL+"/vc"); err == nil {
+	if _, _, err := v.TrustList(context.Background(), "did:web:other.test", s.srv.URL+"/vc"); err == nil {
 		t.Error("bytes verified under one DID were accepted for another")
 	}
 }
@@ -362,14 +339,14 @@ func TestAVCThatExpiresDuringRetrievalIsRefused(t *testing.T) {
 	now := time.Now()
 	s.publish(now.Add(-time.Hour), now.Add(time.Minute), nil)
 	calls := 0
-	v := &vcVerifier{http: s.srv.Client(), now: func() time.Time {
+	v := &trustlist.Verifier{HTTP: s.srv.Client(), Now: func() time.Time {
 		calls++
 		if calls > 1 {
 			return now.Add(2 * time.Minute) // after the fetches
 		}
 		return now
 	}}
-	if _, _, err := v.trustList(context.Background(), s.did, s.srv.URL+"/vc"); err == nil {
+	if _, _, err := v.TrustList(context.Background(), s.did, s.srv.URL+"/vc"); err == nil {
 		t.Error("a VC that expired while it was being checked was accepted")
 	}
 }
