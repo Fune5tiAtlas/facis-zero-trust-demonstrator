@@ -132,6 +132,78 @@ lists the managers `helm` and `validatingadmissionpolicy-status` only, and the p
 the one read before the run (the generation rose by 2 on each zone: the lift and the restore). No probe pod
 remains, and the release revisions are those listed above.
 
+## Second rerun (harness fixes) (23 Nov 2026, 17:14-17:53Z)
+
+Two harness fixes landed after the rerun above (commit `30931034`): the plane-separation verifier's legitimate
+caller requests `/v1/sys/health` on the two OpenBao lanes, and the ZT-25 scenario scans the live policies owned
+by a connector-gateway Helm release with `--edge-manifest` and every other live policy with `--manifest`. The
+five rows were run again at that commit with the same inputs, environment and command; the zones were not
+changed (same release revisions as above). The runs above stay as history.
+
+| Target | kube-system UID | BDD run id | Plane-separation run | Routing run |
+|---|---|---|---|---|
+| `zerotrust-a` | `3fbf9fda-5cd2-459a-87f0-769126697d9a` | `mesh-a-20261123-r4` (17:14-17:53Z) | `r816c8192`: 120 pass, 1 fail, 14 n/a, 3 declared | `20261123T175008Z-84736`: 0 failed |
+| `zerotrust-b` | `a39ae8ea-ac02-4aec-9c13-cda127b17e2d` | `mesh-b-20261123-r4` (17:14-17:32Z) | `r9a554da6`: 40 pass, 1 fail, 6 n/a, 1 declared | `20261123T172704Z-73347`: 2 failed |
+
+| Row | zone A | zone B |
+|---|---|---|
+| ZT-23 | failed | failed |
+| ZT-25 | failed | failed |
+| ZT-61 | failed | failed |
+| ZT-62 | failed | failed |
+| ZT-26 | **passed** | failed |
+
+### What the fixes settled
+
+- **The OpenBao lanes pass on both zones.** The legitimate callers of `connector-to-openbao` and
+  `token-store-to-openbao` are answered `200` on `/v1/sys/health` over mTLS (`"initialized":true,"sealed":false`)
+  and counted by their proxy to `spiffe://zone-<a|b>.trust.invalid/ns/ztd-mgmt/sa/ztd-openbao`.
+- **The live address check passes on both zones.** Zone A: 69 live policies scanned strictly, no undeclared
+  address; the 3 policies of the gateway release report `EDGE ... CiliumNetworkPolicy
+  ztd-data/ztd-connector-gateway-peer: declared Connector edge hop gateway-to-peer`. Zone B: 80 live policies
+  scanned strictly, no undeclared address; the 3 gateway-owned policies report `EDGE ... NetworkPolicy
+  ztd-m3-b/ztd-edge-entry: declared Connector edge hop outside-to-entry`. The render of each zone file names no
+  undeclared address.
+
+### Why the rows still fail
+
+Each zone's verifier run has one failed line, a different one on each zone, and both lines passed in the rerun
+above. The four rows on the plane-separation verifier require the verifier's run to have no failed check, so
+one line fails all four. In both lines the probe's outcome is the expected refusal; what is missing is the
+record of it.
+
+- **Zone A, `management-to-data` to `ztd-data/ztd-policy-evaluator`: the denial line was not read.**
+
+  `"management-to-data","any data-plane workload (from the management plane)","ztd-mgmt","behind a probe-scoped opening","mesh-prober-0","ztd-data/ztd-policy-evaluator","8080","refused by the destination's proxy, a denial line with both SPIFFE IDs, the opening removed","403 RBAC: access denied","mesh","no denial line naming the prober in any of the 1 pod(s) the Service selects; opening removed: yes","real","fail"`
+
+  The prober was answered `403 RBAC: access denied` and the opening was removed, but the verifier found no line
+  naming the prober in the destination proxy's log. In the rerun above the same line carried the proxy's
+  denial with both SPIFFE IDs; the other five lines of this probe (gateway, guard, tenant data, `tspa`) carry
+  it in this run. The verifier reads the proxy's log once, 3 s after the request
+  (`scripts/verify-plane-separation/verify.sh`, the probe-scoped opening); a log line written later than that
+  is the likely cause, not established.
+- **Zone B, `token-store-to-verification-service`, unlabelled caller: Hubble's drop was not read.**
+
+  `"token-store-to-verification-service","OCM","ztd-data","unlabelled (service account ztd-token-store, no row labels)","token-store-to-verification-service-unlabelled","verification-service.ztd-mgmt.svc","8080","dropped, no denial line","denied(28)","network","dropped, but Hubble, available on the caller's node, recorded no policy drop for the flow: ...; no new denial line of spiffe://zone-b.trust.invalid/ns/ztd-data/sa/ztd-token-store in the destination's proxy","stand-in","fail"`
+
+  The call timed out (`denied(28)`) and no denial line appeared, as expected, but `hubble observe` returned no
+  drop for the flow. In the rerun above the same line cited `Policy denied DROPPED (TCP Flags: SYN)`; the other
+  five unlabelled callers of this run cite theirs. The verifier asks Hubble once after the probe; a flow not
+  yet, or no longer, in the node's flow buffer is the likely cause, not established.
+- **ZT-26 on zone B**: unchanged and expected. The trust list of `trust.facis.cloud` and its VC answer `404`
+  through `tspa-public`; `Result: 2 failed check(s).` The other 23 entry checks, the 6 direct paths (each with
+  Hubble's drop) and both exemptions passed. Nothing was published to TRAIN.
+
+Neither failed line is in the scope of the two fixes, so the harness was left as it is and the runs were not
+repeated. Whether these two reads need a retry in the verifier is open.
+
+### State of the zones after the rerun
+
+On both zones `kubectl get validatingadmissionpolicy proxy-takes-spire-socket -o json --show-managed-fields`
+lists the managers `helm` and `validatingadmissionpolicy-status` only, and the policy's spec is identical to
+the one read before the run (the generation rose by 2 on each zone: the lift and the restore). No probe pod
+remains, and the release revisions are unchanged.
+
 ## Rows left pending
 
 - **ZT-01 Secure Service Mesh**: needs "a workload outside the mesh attempts the same call" as an in-mesh pair.
