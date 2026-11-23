@@ -5,6 +5,11 @@ processes built from the pinned CMC module, one per zone, and the two connector 
 no container, no zone: there is no `kube-system` UID for this run. Commit `3b1c088e` (tree clean),
 run id `20261123T144105Z-2174089622`, target `local`.
 
+**Scope decision (Project Leader, Daniel Pires, 2026-11-23):** for M3, ZT-19 is proven on the
+component, with real attestation, as recorded here. Deploying the attested gateway on the zone
+clusters, with a `cmcd` per zone, is delivered with M4 (bidirectional inter-cluster trust); until
+then the zones' inter-zone hop is the Connector routing over verified TLS.
+
 ZT-19 (Upstream / Downstream Proxy Functionality, BDD-ZT-019) is implemented in
 `features/annex/annex-a.json` as a `@cluster` row, because its proof owns external processes. The
 attested channel itself is the library of `internal/atls` ([Attested channel control](../../attested-channel.md)),
