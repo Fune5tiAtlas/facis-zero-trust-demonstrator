@@ -133,8 +133,14 @@ events_of ztd-participant > "$out/participant-events.jsonl"
 events_of ztd-protected-resource > "$out/resource-events.jsonl"
 logs guard > "$out/guard-events.jsonl"
 feed_bridge_up
-cat "$out/participant-events.jsonl" "$out/resource-events.jsonl" "$out/guard-events.jsonl" "$out/policy-events.jsonl" | kubectl -n "$ns" exec -i operator -c curl -- \
-  curl -sS -m 30 -X POST -H 'Content-Type: application/x-ndjson' --data-binary @- "$bridge/ingest" > "$out/feed-ingest.json" 2>&1 || true
+# The operator's sidecar can learn of the new bridge a moment after its rollout ("no healthy upstream"):
+# the post is repeated until the bridge answers it.
+ingest() {
+  cat "$out/participant-events.jsonl" "$out/resource-events.jsonl" "$out/guard-events.jsonl" "$out/policy-events.jsonl" | kubectl -n "$ns" exec -i operator -c curl -- \
+    curl -sS -m 30 -X POST -H 'Content-Type: application/x-ndjson' --data-binary @- "$bridge/ingest" > "$out/feed-ingest.json" 2>&1 || true
+  jq -e '.accepted' "$out/feed-ingest.json" >/dev/null 2>&1
+}
+wait_until 60 ingest || true
 if [ "$(jq -r '.accepted // 0' "$out/feed-ingest.json" 2>/dev/null)" -gt 0 ]; then pass "ingest by the producer identity: $(cat "$out/feed-ingest.json")"; else fail "ingest: $(head -c 200 "$out/feed-ingest.json")"; fi
 : > "$out/feed.jsonl"
 for run in $(jq -rR 'fromjson? | .run_id? // empty' "$out/participant-events.jsonl" "$out/resource-events.jsonl" "$out/guard-events.jsonl" "$out/policy-events.jsonl" | sort -u); do
