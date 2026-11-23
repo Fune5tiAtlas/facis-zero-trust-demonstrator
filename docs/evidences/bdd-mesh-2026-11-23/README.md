@@ -289,7 +289,50 @@ stand-in caller, impostor and unlabelled pod of `fixtures/rows/*.yaml` now holds
 so it runs and is never a Service endpoint, and the verifier waits for `ContainersReady` instead of `Ready`
 (`verify_test.sh` holds the fixtures to it). Before the fix a run also sent two thirds of the guard's decision
 calls to the stand-ins for its length; the evaluator's proxy counted no such call that day. The probe objects
-were removed; the five rows have not been run again on zone A with the fix.
+were removed; the rerun with the fix is the next section.
+
+## Fourth rerun (stand-ins out of Services) (23 Nov 2026, 19:03-19:42Z)
+
+Commit `159a37ce` gives every stand-in caller, impostor and unlabelled pod of the plane-separation fixtures a
+readiness gate nothing sets, so none of them is ever an endpoint of a zone Service (the cause recorded just
+above). The five rows were run again at `2f514aa9` with the same inputs, environment and command; the zones
+were not changed (same release revisions as above). The runs above stay as history.
+
+| Target | kube-system UID | BDD run id | Plane-separation run | Routing run |
+|---|---|---|---|---|
+| `zerotrust-a` | `3fbf9fda-5cd2-459a-87f0-769126697d9a` | `mesh-a-20261123-r6` (19:03-19:42Z) | `rf285a874`: 121 pass, 0 fail, 14 n/a, 3 declared | `20261123T193927Z-84587`: 0 failed |
+| `zerotrust-b` | `a39ae8ea-ac02-4aec-9c13-cda127b17e2d` | `mesh-b-20261123-r6` (19:03-19:21Z) | `rdf1526e2`: 41 pass, 0 fail, 6 n/a, 1 declared | `20261123T191645Z-56759`: 2 failed |
+
+| Row | zone A | zone B |
+|---|---|---|
+| ZT-23 | **passed** | **passed** |
+| ZT-25 | **passed** | **passed** |
+| ZT-61 | **passed** | **passed** |
+| ZT-62 | **passed** | **passed** |
+| ZT-26 | **passed** | failed |
+
+### What the fix settled
+
+- **Zone A: the four plane-separation rows pass**, and with ZT-26 the whole run passes (`go test` exit 0). The
+  verifier's run has no failed line. The line that failed in three of the five earlier runs now cites the
+  record of the destination's own proxy:
+  `"management-to-data","any data-plane workload (from the management plane)","ztd-mgmt","behind a probe-scoped opening","mesh-prober-0","ztd-data/ztd-policy-evaluator","8080","refused by the destination's proxy, a denial line with both SPIFFE IDs, the opening removed","403 RBAC: access denied","mesh","{""authority"":""ztd-policy-evaluator.ztd-data.svc:8080"",""code"":403,""destination"":""spiffe://zone-a.trust.invalid/ns/ztd-data/sa/ztd-policy-evaluator"",""detail"":""rbac_access_denied_matched_policy[none]"",""flags"":""-"",""source"":""spiffe://zone-a.trust.invalid/ns/ztd-mgmt/sa/mesh-prober"",""termination"":null,""time"":""2026-11-23T19:36:03.281Z""}; opening removed: yes","real","pass"`.
+  This is one passing run; before the fix the line passed in about one run out of three by chance, so the
+  result rests on the cause and its reproduction above as much as on this run.
+- **Zone B: the four plane-separation rows pass** again, with the same counts as the third rerun.
+- **ZT-26 on zone B**: unchanged and expected. `declared entry ztd-train/tspa-public: GET the trust list of
+  trust.facis.cloud answers 200 with a JSON or XML body` and `GET the VC of trust.facis.cloud's trust list
+  answers 200 with a credential valid now` were each answered `404 application/json`; `Result: 2 failed
+  check(s).` The other 23 entry checks, the 6 direct paths (each with Hubble's drop) and both exemptions
+  passed. Nothing was published to TRAIN.
+
+### State of the zones after the rerun
+
+On both zones `kubectl get validatingadmissionpolicy proxy-takes-spire-socket -o json --show-managed-fields`
+lists the managers `helm` and `validatingadmissionpolicy-status` only, and the policy's spec is identical to
+the one read before the run (the generation rose by 2 on each zone, 19 to 21 on zone A and 17 to 19 on zone
+B: the lift and the restore). No object labelled `app.kubernetes.io/part-of=verify-plane-separation` or
+`verify-connector-routing` remains, and the release revisions are unchanged.
 
 ## Rows left pending
 
