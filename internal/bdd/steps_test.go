@@ -214,6 +214,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	registerPlaneSeparationProof(ctx, dryRun)
 	registerAuthorizationProofs(ctx, dryRun)
 	registerPolicyProofs(ctx, dryRun)
+	registerWorkloadIdentityProof(ctx, dryRun)
 	registerPending(ctx)
 }
 
