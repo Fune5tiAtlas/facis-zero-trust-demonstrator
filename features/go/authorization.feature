@@ -14,13 +14,13 @@ Feature: Authorization surface
     When a request with matching authorization and a request without matching authorization are executed
     Then the authorized request passes the PEP/PDP policy chain AND the unauthorized request is denied before the protected resource returns data.
 
-  @ZT-21 @BDD-ZT-021 @pending
+  @ZT-21 @BDD-ZT-021 @cluster
   Scenario: OAuth2 Server
     Given a registered participant backend and a valid OID4VP presentation
     When the Connector OAuth2 server processes the respective flows
     Then it issues the appropriate DPoP-bound access tokens AND an invalid presentation or unregistered/unauthorized client does not receive a usable access token.
 
-  @ZT-22 @BDD-ZT-022 @pending
+  @ZT-22 @BDD-ZT-022 @cluster
   Scenario: Token Storage
     Given a participant-backend token and a stored counter-connector resource token
     When the backend calls the protected resource through the Connector
@@ -50,7 +50,7 @@ Feature: Authorization surface
     When the demonstrator scenario runs
     Then the mock behaves as a participant backend using the trusted channel and publishes its registration/request/status events to the visualization.
 
-  @ZT-76 @BDD-ZT-076 @pending
+  @ZT-76 @BDD-ZT-076 @cluster
   Scenario: Credential Based Access
     Given credentials that map to different application roles and a credential that is invalid/revoked
     When they are exchanged/verified and used to access the protected resource

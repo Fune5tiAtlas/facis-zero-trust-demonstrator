@@ -13,7 +13,7 @@ reported is described in [BDD acceptance](bdd.md).
   This page is built from the repository, not from a run: each cluster run publishes its own
   copy of the catalogue with the basis filled in.
 
-94 rows: 9 implemented, 85 pending.
+94 rows: 13 implemented, 81 pending.
 
 | Row | Requirement | Gate | Status | Runner |
 |---|---|---|---|---|
@@ -22,7 +22,7 @@ reported is described in [BDD acceptance](bdd.md).
 | [ZT-03](#zt-03) | Trust Zone | G2 | pending | godog |
 | [ZT-04](#zt-04) | Secure Connection | G4 | pending | godog |
 | [ZT-05](#zt-05) | Communication Visualization | G5 | pending | Cucumber.js |
-| [ZT-06](#zt-06) | Attribute/Credential Based Access Control | G3 | pending | godog |
+| [ZT-06](#zt-06) | Attribute/Credential Based Access Control | G3 | implemented | godog |
 | [ZT-07](#zt-07) | API Dock | G3 | pending | godog |
 | [ZT-08](#zt-08) | Visualization | G5 | pending | Cucumber.js |
 | [ZT-09](#zt-09) | User Journey | G5 | pending | Cucumber.js |
@@ -37,8 +37,8 @@ reported is described in [BDD acceptance](bdd.md).
 | [ZT-18](#zt-18) | TRAIN Allow List | G3 | pending | godog |
 | [ZT-19](#zt-19) | Upstream / Downstream Proxy Functionality | G3 | pending | godog |
 | [ZT-20](#zt-20) | Guarding Functionality | G3 | pending | godog |
-| [ZT-21](#zt-21) | OAuth2 Server | G3 | pending | godog |
-| [ZT-22](#zt-22) | Token Storage | G3 | pending | godog |
+| [ZT-21](#zt-21) | OAuth2 Server | G3 | implemented | godog |
+| [ZT-22](#zt-22) | Token Storage | G3 | implemented | godog |
 | [ZT-23](#zt-23) | Service Mesh Implementation | G3 | pending | godog |
 | [ZT-24](#zt-24) | SPIFFE/SPIRE Deployment | G3 | pending | godog |
 | [ZT-25](#zt-25) | Routing Policies | G3 | pending | godog |
@@ -92,7 +92,7 @@ reported is described in [BDD acceptance](bdd.md).
 | [ZT-73](#zt-73) | Authorized Upstreaming over the Zero Trust Connector | G3 | pending | godog |
 | [ZT-74](#zt-74) | Participant Backend Mock | G3 | pending | godog |
 | [ZT-75](#zt-75) | Protected Resource Mock | G3 | pending | godog |
-| [ZT-76](#zt-76) | Credential Based Access | G3 | pending | godog |
+| [ZT-76](#zt-76) | Credential Based Access | G3 | implemented | godog |
 | [ZT-77](#zt-77) | Mock Replaceable | G3 | pending | godog |
 | [ZT-78](#zt-78) | Visualization UI | G5 | pending | Cucumber.js |
 | [ZT-79](#zt-79) | Visualization Concept | G2 | pending | Cucumber.js |
@@ -233,8 +233,8 @@ Then the demonstrator visibly presents connection and trust state, the decisions
 | Test type | BDD / integration |
 | Gate | G3 - Protected-service vertical slice |
 | Evidence | `evidence/bdd-zt-006/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/policy.feature` |
 
@@ -563,8 +563,8 @@ Then the authorized request passes the PEP/PDP policy chain AND the unauthorized
 | Test type | BDD / integration |
 | Gate | G3 - Protected-service vertical slice |
 | Evidence | `evidence/bdd-zt-021/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/authorization.feature` |
 
@@ -585,8 +585,8 @@ Then it issues the appropriate DPoP-bound access tokens AND an invalid presentat
 | Test type | BDD / integration |
 | Gate | G3 - Protected-service vertical slice |
 | Evidence | `evidence/bdd-zt-022/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/authorization.feature` |
 
@@ -1773,8 +1773,8 @@ Then role-appropriate responses are returned and visualized AND unauthorized rol
 | Test type | BDD / integration |
 | Gate | G3 - Protected-service vertical slice |
 | Evidence | `evidence/bdd-zt-076/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/authorization.feature` |
 
