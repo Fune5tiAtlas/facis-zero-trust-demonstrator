@@ -860,6 +860,7 @@ jobs:
             -f "$RUNNER_TEMP/gatekeeper/crds/config-customresourcedefinition.yaml" -f "$RUNNER_TEMP/bin/cilium-crds/"
           kubectl apply --server-side -f "$RUNNER_TEMP/bin/istio-crds/"
           kubectl wait --for condition=established --timeout=60s -f "$RUNNER_TEMP/bin/istio-crds/"
+          scripts/ci/apply-gate-crds.sh
           kubectl wait --for condition=established --timeout=60s crd/providers.externaldata.gatekeeper.sh \
             crd/constrainttemplates.templates.gatekeeper.sh crd/configs.config.gatekeeper.sh \
             crd/ciliumclusterwidenetworkpolicies.cilium.io crd/ciliumnetworkpolicies.cilium.io
