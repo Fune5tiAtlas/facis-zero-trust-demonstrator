@@ -278,6 +278,12 @@ func TestPolicyDecidesAConfiguredGRPCMethodLikeTheRESTRoute(t *testing.T) {
 			}
 		})
 	}
+	// The decision event names the gRPC method as the resource.
+	events := &sink{}
+	recordDecision(events, "resource.test", grpc, got)
+	if events.ps[0].Resource != "POST resource.test"+method || events.ps[0].State != "allowed" {
+		t.Fatalf("gRPC decision event: %+v", events.ps[0])
+	}
 	// Without the configuration the same call is no route at all.
 	plain, err := New(Config{Revision: "test-1", Audience: "resource", Host: "resource.test", GuardCallers: []string{"spiffe://zone-b.test/ns/m3/sa/guard"}, ParticipantCallers: []string{participant}, ScopeTenants: map[string]string{"report:read": "read", "report:summary": "summary"}, EventSource: "policy-b"}, nil)
 	if err != nil {

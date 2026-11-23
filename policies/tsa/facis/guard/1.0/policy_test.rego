@@ -83,3 +83,38 @@ test_unlisted_caller_is_default_deny if {
 	d := decide(tenant_a, request("spiffe://zone-a.test/ns/x/sa/y", "tenant-a", "tenant-a-summary"))
 	d.rule_id == "m3-default-deny"
 }
+
+# The cases of the built-in evaluator's TestPolicyDecidesAConfiguredGRPCMethodLikeTheRESTRoute and
+# its presentation-required denial.
+grpc_method := "/grpc.health.v1.Health/Check"
+
+link := "openid4vp://authorize?request_uri=https%3A%2F%2Fverifier.test%2Frequest"
+
+with_grpc := object.union(untenanted, {"grpc_methods": [grpc_method], "presentation": {"scopes": ["report:full"], "oid4vp_link": link}})
+
+grpc_call(path, service) := object.union(untargeted(member_a, "report-summary"), {"request": {"path": path, "grpc_service": service}})
+
+test_grpc_method_decided_like_the_rest_route if {
+	rest := decide(with_grpc, untargeted(member_a, "report-summary"))
+	grpc := decide(with_grpc, grpc_call(grpc_method, "grpc.health.v1.Health"))
+	rest.allow
+	grpc == rest
+}
+
+test_grpc_denied_when_not_a_configured_route if {
+	decide(with_grpc, grpc_call("/grpc.health.v1.Health/Watch", "grpc.health.v1.Health")).rule_id == "m3-default-deny"
+	decide(with_grpc, grpc_call(grpc_method, "other.Service")).rule_id == "m3-default-deny"
+	decide(with_grpc, grpc_call(grpc_method, "")).rule_id == "m3-default-deny"
+	decide(with_grpc, grpc_call("/demo", "grpc.health.v1.Health")).rule_id == "m3-default-deny"
+	decide(untenanted, grpc_call(grpc_method, "grpc.health.v1.Health")).rule_id == "m3-default-deny"
+}
+
+full := {"token": {"scope": "report:full report:summary"}}
+
+presentation_denial := {"allow": false, "reason_code": "POL-PRESENTATION-REQUIRED", "rule_id": "m3-presentation-required", "bundle_revision": "t", "deny_body": {"error": "presentation_required", "oid4vp_link": link}}
+
+test_presentation_required_carries_the_link if {
+	decide(with_grpc, object.union(untargeted(member_a, "report-summary"), full)) == presentation_denial
+	decide(with_grpc, object.union(grpc_call(grpc_method, "grpc.health.v1.Health"), full)) == presentation_denial
+	decide(untenanted, object.union(untargeted(member_a, "report-summary"), {"token": {"scope": "report:full"}})).rule_id == "m3-default-deny"
+}

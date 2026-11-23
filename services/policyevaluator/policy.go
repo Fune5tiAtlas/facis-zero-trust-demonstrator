@@ -200,7 +200,7 @@ func recordDecision(events hook.EventSink, host string, in hook.Input, d hook.De
 		host = in.Request.Host
 	}
 	e.Resource = "UNKNOWN " + host + "/"
-	if slices.Contains([]string{http.MethodPost, http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch}, in.Request.Method) && in.Request.Host == host && in.Request.Path == "/demo" {
+	if slices.Contains([]string{http.MethodPost, http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch}, in.Request.Method) && in.Request.Host == host && (in.Request.Path == "/demo" || in.Request.GRPCService != "" && grpcMethod.MatchString(in.Request.Path)) {
 		e.Resource = in.Request.Method + " " + host + in.Request.Path
 	}
 	if host == "" {
@@ -212,6 +212,9 @@ func recordDecision(events hook.EventSink, host string, in hook.Input, d hook.De
 	}
 	events.Emit(id, e)
 }
+
+// grpcMethod is a full gRPC method path, the form the guard accepts in its configuration.
+var grpcMethod = regexp.MustCompile(`^/[A-Za-z_][A-Za-z0-9_.]*/[A-Za-z_][A-Za-z0-9_]*$`)
 
 // spiffeID is the v2 event schema's pattern for caller_spiffe_id.
 var spiffeID = regexp.MustCompile(`^spiffe://[a-z0-9._-]+(/[A-Za-z0-9._~%!$&'()*+,;=:@-]+)+$`)
