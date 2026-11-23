@@ -218,6 +218,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	registerMeshProof(ctx, dryRun)
 	registerTrustListProofs(ctx, dryRun)
 	registerUpstreamingProof(ctx, dryRun)
+	registerAPIDockProofs(ctx, dryRun)
 	registerPending(ctx)
 }
 

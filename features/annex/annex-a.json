@@ -125,8 +125,8 @@
       "then": "it serves the demonstrator flow with no change to Connector, policy or trust configuration AND an API that does not satisfy the documented interface is rejected at configuration time.",
       "family": "authorization",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-08",
@@ -1391,8 +1391,8 @@
       "then": "the demonstrator journey completes against the real API with no change to the Zero Trust core AND the replacement is demonstrated end to end at least once.",
       "family": "authorization",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-78",
