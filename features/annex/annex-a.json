@@ -1319,8 +1319,8 @@
       "then": "the request is authorized, traverses the trusted channel and receives the policy-permitted protected-resource response AND an unauthorized request does not return protected data.",
       "family": "authorization",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-74",
