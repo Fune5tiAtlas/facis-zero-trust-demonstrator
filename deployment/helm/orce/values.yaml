@@ -42,3 +42,9 @@ ingressController:
   namespace: ztd-edge
   podLabels:
     app.kubernetes.io/name: traefik
+
+# Must match facis-ztd-keycloak's publicUrl + realm, and ui.origin.
+# HTTPS is mandatory. The callback remains /dev/ztd/oidc/callback.
+identity:
+  issuer: https://keycloak.85.215.131.155.sslip.io/realms/facis-ztd
+  uiOrigin: https://orce.85-215-131-155.sslip.io
