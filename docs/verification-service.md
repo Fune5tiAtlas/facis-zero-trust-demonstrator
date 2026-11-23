@@ -37,7 +37,7 @@ signature, envelope, disclosures, holder binding, validity, status reference), `
 ## Trust-list VC check
 
 For each VC location the TCR resolves, in this order, failing closed at every step
-(`services/verification-service/trustvc.go`):
+(`internal/trustlist/trustlist.go`):
 
 1. The VC's `@context` is exactly the three pinned documents (W3C credentials v1, Ed25519 2020,
    JWS 2020; embedded in `contexts/`, fetched once on 2026-11-21, never loaded from the network) and

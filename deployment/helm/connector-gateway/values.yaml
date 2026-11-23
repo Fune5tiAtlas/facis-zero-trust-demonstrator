@@ -29,6 +29,9 @@ egress:
     port: 443
     serverName: ""   # the subject alternative name the entry's certificate must carry; default: address
     caCert: ""       # PEM of the CA that issued the entry's certificate (public)
+    # The gateway's own TLS client certificate (a kubernetes.io/tls Secret), presented to the entry:
+    # its subject alternative name is the identity an entry with ingress.peerAllowList looks up.
+    clientTlsSecret: ""
 
 # Ingress role: the zone's entry. TLS terminated with `tlsSecret`, every request routed to one
 # upstream Service of the namespace (whose own policies must admit this gateway).
@@ -40,3 +43,23 @@ ingress:
   sourceRanges: []
   service: {type: LoadBalancer, port: 443}
   upstream: {name: "", port: 8080}
+  # The TRAIN allow list (ZT-18), off by default. Enabled, the entry demands a client certificate
+  # issued by clientCaCert and asks `connector admit-peers` (a container of this pod, the connector
+  # image) before forwarding each request: the peer is admitted only when a URI or DNS subject
+  # alternative name of its certificate is the ServiceTypeIdentifier of an active service in the
+  # framework's trust list, retrieved from the TSPA and verified under issuerDid (its
+  # JsonWebSignature2020 proof, validity window and hash). Refused otherwise: 403 CHAN-ZONE-UNKNOWN,
+  # or 503 CHAN-TRUST-UNREACHABLE while the list cannot be retrieved or verified.
+  peerAllowList:
+    enabled: false
+    image: {repository: ghcr.io/eclipse-xfsc/facis-zero-trust-demonstrator/connector, digest: ""}
+    zone: ""           # a | b: the source of the decision events (connector-<zone>)
+    tspaUrl: ""        # the TSPA's REST base, http(s)://host[:port]/tspa-service/tspa/v1
+    framework: ""      # the trust framework whose list names the counter-connectors
+    issuerDid: ""      # did:web of the trust list's issuer; its DID document is fetched over HTTPS
+    caCert: ""         # PEM CA for those HTTPS fetches; empty: the image's public roots
+    clientCaCert: ""   # PEM of the CA that issued the counter-connectors' client certificates
+    refresh: 5m        # how long a verified list is kept, never past its VC's expiry
+    # NetworkPolicy egress rules of the lane to the TSPA and the DID document's host (selectors, no
+    # addresses: ZT-25).
+    egress: []

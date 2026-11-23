@@ -323,8 +323,8 @@
       "then": "the listed peer is admitted on the basis of the retrieved trust list AND the unlisted peer is refused.",
       "family": "trust-lists",
       "runner": "go",
-      "status": "pending",
-      "cluster": false
+      "status": "implemented",
+      "cluster": true
     },
     {
       "id": "ZT-19",

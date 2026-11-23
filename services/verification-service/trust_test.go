@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/trustlist"
 	"io"
 	"log/slog"
 	"os"
@@ -23,10 +24,10 @@ func entry(id, status string) map[string]any {
 func TestListsActiveFindsAnActiveServiceByItsTypeIdentifier(t *testing.T) {
 	doc := map[string]any{"TrustServiceStatusList": map[string]any{"TrustServiceProviderList": map[string]any{
 		"TrustServiceProvider": []any{entry(listed, "active"), entry("did:web:withdrawn.test", "withdrawn")}}}}
-	if !listsActive(doc, listed) {
+	if !trustlist.ListsActive(doc, listed) {
 		t.Error("active entry not found")
 	}
-	if listsActive(doc, "did:web:withdrawn.test") || listsActive(doc, "did:web:absent.test") {
+	if trustlist.ListsActive(doc, "did:web:withdrawn.test") || trustlist.ListsActive(doc, "did:web:absent.test") {
 		t.Error("a withdrawn or absent issuer was listed")
 	}
 }

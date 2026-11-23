@@ -65,6 +65,10 @@ statuses (400 for a DPoP proof or nonce problem at the token endpoint, for examp
 own, and the verification service's request endpoints answer with the two `CRED-REQUEST-*`
 statuses above; the guard maps all of them to the caller's refusal.
 
+The zone entry's TRAIN allow list ([Connector service](connector.md#train-allow-list-of-the-zone-entry-zt-18))
+refuses a counter-connector after the TLS handshake, on its request, so it answers two `CHAN` codes
+with a status: `CHAN-ZONE-UNKNOWN` 403 and `CHAN-TRUST-UNREACHABLE` 503.
+
 Admission refusals, one code per cause: `ADM-UNSIGNED`, `ADM-NO-ATTESTATION`,
 `ADM-ATTESTATION-INVALID`, `ADM-SBOM-MISSING`, `ADM-SBOM-INVALID`, `ADM-NOT-LINUX`,
 `ADM-ARCH-UNSUPPORTED` (only `linux/amd64` is admitted), `ADM-INDEX-UNSUPPORTED` (only

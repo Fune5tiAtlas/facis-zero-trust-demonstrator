@@ -11,6 +11,7 @@ Bash is the language for scripts under `scripts/` per the Technical Development 
 | `dev/kind-cilium-up.sh` | the local kind cluster with Cilium chained (`cni.exclusive=false`) |
 | `dev/kind-cert-manager-up.sh` | cert-manager on kind (pinned), for the demonstrator role that shares the cluster |
 | `verify-umbrella/verify.sh` | evidence for the umbrella chart alone on kind |
+| `verify-train-allow-list/verify.sh` | the TRAIN allow list of the zone entry (ZT-18) on local Docker services: our TSPA image publishes a trust list naming one counter-connector; the listed one is served, an unlisted or withdrawn one refused, and every one refused while the TSPA is stopped ([TRAIN allow list](../docs/connector.md#train-allow-list-of-the-zone-entry-zt-18)) |
 | `verify-tsa-policy/verify.sh` | the TSA policy proof on kind: allow under bundle v1, deny under v2 without restart, refused bundles, rollback, decision log ([TSA policy evaluation](../docs/tsa-policy.md#proof)) |
 | `supplychain/publish-tsa-bundle.sh` | pack, sign, push and sign a Rego bundle for the TSA; prints its digest reference |
 | `verify-mesh-identity/verify.sh` | evidence that the mesh identities are SPIRE's, the whole zone on kind |

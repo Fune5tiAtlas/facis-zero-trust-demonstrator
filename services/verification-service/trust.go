@@ -12,11 +12,12 @@ import (
 	"time"
 
 	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/if03"
+	"github.com/eclipse-xfsc/facis-zero-trust-demonstrator/internal/trustlist"
 )
 
 // maxTrustDoc bounds every trust document read: the issuer keys file, the pinned trust list and a
 // TCR answer.
-const maxTrustDoc = 1 << 20
+const maxTrustDoc = trustlist.MaxDoc
 
 // lister says whether TRAIN lists issuer as an active trust service, and until when the listing
 // may be relied on (the expiry of the trust-list VC that lists it; zero for a source without one).
@@ -78,7 +79,7 @@ func pinnedList(path string) lister {
 		if err := json.Unmarshal(b, &doc); err != nil {
 			return false, time.Time{}, errors.New("the trust list is not JSON")
 		}
-		return listsActive(doc, issuer), time.Time{}, nil
+		return trustlist.ListsActive(doc, issuer), time.Time{}, nil
 	}
 }
 
@@ -86,10 +87,10 @@ func pinnedList(path string) lister {
 // POST /tcr/v1/resolve, docs/tspa-publish-api.md section 4) for what only it does: walking the DNS
 // chain from the trust framework pointers to the trust list issuers' DIDs and their trust-list VC
 // locations. Its vcVerified is not relied on (it ignores the VC's validity window): the service
-// fetches each VC from the resolved location and verifies it itself (vcVerifier), and the issuer
+// fetches each VC from the resolved location and verifies it itself (trustlist.Verifier), and the issuer
 // is listed when a list so verified holds an active service whose ServiceTypeIdentifier is the
 // issuer. Any failure leaves the issuer unlisted.
-func tcrList(client *http.Client, base string, pointers []string, vcs *vcVerifier) lister {
+func tcrList(client *http.Client, base string, pointers []string, vcs *trustlist.Verifier) lister {
 	endpoint := strings.TrimRight(base, "/") + "/tcr/v1/resolve"
 	return func(ctx context.Context, issuer string) (bool, time.Time, error) {
 		body, _ := json.Marshal(map[string]any{"issuer": issuer, "trustSchemePointers": pointers})
@@ -126,41 +127,16 @@ func tcrList(client *http.Client, base string, pointers []string, vcs *vcVerifie
 				continue
 			}
 			for _, e := range r.ResolvedDoc.Endpoints {
-				list, until, err := vcs.trustList(ctx, r.DID, e.VCURI)
+				list, until, err := vcs.TrustList(ctx, r.DID, e.VCURI)
 				if err != nil {
 					refused = err
 					continue
 				}
-				if listsActive(list, issuer) {
+				if trustlist.ListsActive(list, issuer) {
 					return true, until, nil
 				}
 			}
 		}
 		return false, time.Time{}, refused
 	}
-}
-
-// listsActive finds, anywhere in a trust list, a service object whose ServiceTypeIdentifier is
-// issuer (the TCR's lookup key) and whose ServiceCurrentStatus is "active". The search does not
-// depend on the wrapper members around the entries, which differ between TSPA's raw list and the
-// TCR's answer.
-func listsActive(doc any, issuer string) bool {
-	switch v := doc.(type) {
-	case map[string]any:
-		if v["ServiceTypeIdentifier"] == issuer && v["ServiceCurrentStatus"] == "active" {
-			return true
-		}
-		for _, child := range v {
-			if listsActive(child, issuer) {
-				return true
-			}
-		}
-	case []any:
-		for _, child := range v {
-			if listsActive(child, issuer) {
-				return true
-			}
-		}
-	}
-	return false
 }

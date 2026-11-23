@@ -212,6 +212,42 @@ data plane reach it through a lane of the umbrella chart's allow matrix (data to
 8080, pods labelled `app.kubernetes.io/name: ztd-connector`), which joins the umbrella when the
 connector joins a zone; until then the connector is reachable within the management plane.
 
+## TRAIN allow list of the zone entry (ZT-18)
+
+ZT-18 has the Connector read TRAIN trust lists to allow counter-connector connections. The check
+sits where the counter-connector is accepted, the zone entry (the `connector-gateway` chart's ingress
+role, `ingress.peerAllowList`, off by default), and is answered by `connector admit-peers`, a
+container of the entry's pod that the entry's Envoy asks through `ext_authz` before it forwards any
+request.
+
+- **The peer's identity** is the subject alternative name (URI or DNS) of the client certificate
+  the counter-connector presents on the inter-zone TLS connection. The entry demands that
+  certificate and verifies it against `clientCaCert`; a client without one does not complete the
+  handshake. The identity is taken from the certificate the proxy forwards, never from a header the
+  caller can set. The counter-connector's gateway presents it with `egress.peer.clientTlsSecret`.
+- **The list** is the trust list of the configured trust framework, retrieved from the TSPA
+  (`GET <tspaUrl>/<framework>/vc/trust-list`, then the list the VC points at) and verified with the
+  code the verification service uses (`internal/trustlist`): the VC's JsonWebSignature2020 proof
+  under the configured issuer DID (its `did:web` document, fetched over HTTPS), its validity window,
+  and the list's hash. The issuer DID is configuration here; the TCR's DNS walk from the trust
+  framework pointer is not repeated.
+- **The decision.** The peer is admitted when one of its names is the `ServiceTypeIdentifier` of a
+  service whose `ServiceCurrentStatus` is `active`. Otherwise the request is refused with 403
+  `CHAN-ZONE-UNKNOWN`. When the list cannot be retrieved or verified (the TSPA down, the VC expired
+  or its proof wrong), every request is refused with 503 `CHAN-TRUST-UNREACHABLE`; so is every
+  request while `admit-peers` itself does not answer (503 from the proxy). The refusal's body is
+  `{"error", "reason_code"}` and its code is also in `x-facis-reason-code`.
+- **The record.** Each decision is one IF-01 `decision` event on the container's stdout, source
+  `connector-<zone>`, under the request id of the entry: `allowed` with the peer, the framework, the
+  issuer and the VC's expiry, or `denied` with the reason code.
+- **Caching.** A verified list is kept for `refresh` (default 5 minutes) and never past its VC's
+  expiry; a withdrawn peer is refused once the interval has passed.
+
+`scripts/verify-train-allow-list/verify.sh` proves it on local Docker services with our TSPA image:
+a listed counter-connector served, an unlisted one refused, a withdrawn one refused, and every one
+refused while the TSPA is stopped. It has not run on a zone: the entry of zone B does not demand a
+client certificate today.
+
 ## Verification
 
 - **The policy and the gate**, in `services/connector`: a table over every rule, the accepted

@@ -13,7 +13,7 @@ reported is described in [BDD acceptance](bdd.md).
   This page is built from the repository, not from a run: each cluster run publishes its own
   copy of the catalogue with the basis filled in.
 
-94 rows: 22 implemented, 72 pending.
+94 rows: 23 implemented, 71 pending.
 
 | Row | Requirement | Gate | Status | Runner |
 |---|---|---|---|---|
@@ -34,7 +34,7 @@ reported is described in [BDD acceptance](bdd.md).
 | [ZT-15](#zt-15) | IONOS Cloud Environment | G2 | pending | godog |
 | [ZT-16](#zt-16) | Cloud Environments | G2 | pending | Cucumber.js |
 | [ZT-17](#zt-17) | Demonstrator Usage | G2 | pending | Cucumber.js |
-| [ZT-18](#zt-18) | TRAIN Allow List | G3 | pending | godog |
+| [ZT-18](#zt-18) | TRAIN Allow List | G3 | implemented | godog |
 | [ZT-19](#zt-19) | Upstream / Downstream Proxy Functionality | G3 | pending | godog |
 | [ZT-20](#zt-20) | Guarding Functionality | G3 | pending | godog |
 | [ZT-21](#zt-21) | OAuth2 Server | G3 | implemented | godog |
@@ -497,8 +497,8 @@ Then the documented setup/usage can be reproduced step by step and the documenta
 | Test type | BDD / integration |
 | Gate | G3 - Protected-service vertical slice |
 | Evidence | `evidence/bdd-zt-018/` |
-| Automation status | pending |
-| Evidence basis | none (pending) |
+| Automation status | implemented, runs on a cluster |
+| Evidence basis | recorded per run |
 | Runner | godog |
 | Scenario file | `features/go/trust-lists.feature` |
 
