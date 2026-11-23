@@ -19,8 +19,24 @@ restore_capture() {
     return 0
   fi
   jq -e '[.spec.validations[].expression | contains("variables.captureDefaults")] | index(true) == null' <<<"$live" >/dev/null || return 0
-  kubectl --context "$CONTEXT" patch validatingadmissionpolicy "$POLICY" --type=json --patch-file "$work/restore.json" >/dev/null 2>"$work/restore.err" \
-    || echo "$PROOF_NAME: the capture validation of the admission policy $POLICY could not be put back; it is still lifted: $(head -1 "$work/restore.err")" >&2
+  if kubectl --context "$CONTEXT" patch validatingadmissionpolicy "$POLICY" --field-manager="$CAPTURE_MANAGER" --type=json --patch-file "$work/restore.json" >/dev/null 2>"$work/restore.err"; then
+    drop_capture_manager
+  else
+    echo "$PROOF_NAME: the capture validation of the admission policy $POLICY could not be put back; it is still lifted: $(head -1 "$work/restore.err")" >&2
+  fi
+}
+# The field manager of the lift and the restore. Once the restore has put the content back, its entry
+# is removed from the policy's managedFields, so the zone-policy release stays the only owner of the
+# validations and its next upgrade applies without a conflict.
+CAPTURE_MANAGER=ztd-capture-lift
+drop_capture_manager() {
+  local ops
+  ops=$(kubectl --context "$CONTEXT" get validatingadmissionpolicy "$POLICY" -o json --show-managed-fields 2>/dev/null \
+    | jq -c --arg m "$CAPTURE_MANAGER" '[.metadata.managedFields | to_entries | reverse[] | select(.value.manager == $m)
+        | {op: "test", path: "/metadata/managedFields/\(.key)/manager", value: $m}, {op: "remove", path: "/metadata/managedFields/\(.key)"}]')
+  [ -n "$ops" ] && [ "$ops" != "[]" ] || return 0
+  kubectl --context "$CONTEXT" patch validatingadmissionpolicy "$POLICY" --type=json -p "$ops" >/dev/null 2>"$work/restore.err" \
+    || echo "$PROOF_NAME: the policy is restored, but its $CAPTURE_MANAGER field ownership could not be dropped; the next zone-policy upgrade may need it removed: $(head -1 "$work/restore.err")" >&2
 }
 # capture_index <policy JSON file>: the index of the capture validation of the admission policy (the one
 # validation that reads variables.captureDefaults), null when the policy holds none
@@ -273,7 +289,7 @@ capture_lift_create() {
   # retried while the capture rule still refuses it (any other error ends the retries), and after the
   # restore the refusal must hold five times in a row, a second apart, which the check requires. The
   # lift lasts at most about 45 s: up to 20 dry runs a second apart, then up to 10 creates 2 s apart.
-  if [ "${idx:-null}" != null ] && k patch validatingadmissionpolicy "$POLICY" --type=json --patch-file "$work/lift.json" >/dev/null 2>&1; then
+  if [ "${idx:-null}" != null ] && k patch validatingadmissionpolicy "$POLICY" --field-manager="$CAPTURE_MANAGER" --type=json --patch-file "$work/lift.json" >/dev/null 2>&1; then
     for _ in $(seq 20); do "$3" && break; sleep 1; done
     for _ in $(seq 10); do
       k apply -f "$1" >/dev/null 2>"$work/proxyless-create.err"; rc_create=$?
