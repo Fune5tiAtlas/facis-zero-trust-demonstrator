@@ -310,8 +310,8 @@ The feed bridge accepts the same lines through `/ingest`; the authorized collect
 that hop. This change does not install a new continuous forwarder. The integration proof posts the
 producer lines to the real bridge and checks its SSE output and both snapshot contracts.
 
-Run `PATH=/opt/homebrew/bin:$PATH scripts/verify-application-feed/verify.sh` outside the sandbox.
-It creates isolated local Docker PostgreSQL and OpenBao containers, runs only ZT-74/75 in BDD cluster
+Run `PATH=/opt/homebrew/bin:$PATH scripts/verify-application-feed/verify.sh` on a workstation with Docker.
+It creates isolated local Docker PostgreSQL and OpenBao containers, runs only ZT-75 in BDD cluster
 mode, saves the SSE events and cucumber report under `bundles/bdd/`, and removes its containers.
 It does not deploy to Kubernetes. It proves the DPoP-protected application path and feed behavior;
 mesh/attested-channel transport and a browser rendering require their existing deployment proofs.

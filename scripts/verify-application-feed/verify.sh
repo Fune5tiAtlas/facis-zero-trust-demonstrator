@@ -4,7 +4,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 for tool in docker go openssl; do command -v "$tool" >/dev/null || { echo "missing $tool" >&2; exit 1; }; done
-docker info >/dev/null 2>&1 || { echo 'Docker daemon unavailable; run outside the sandbox' >&2; exit 1; }
+docker info >/dev/null 2>&1 || { echo 'Docker daemon unavailable' >&2; exit 1; }
 run="application-feed-$(date -u +%Y%m%dT%H%M%SZ)-$(openssl rand -hex 3)"
 pg="$run-pg"
 bao="$run-bao"
