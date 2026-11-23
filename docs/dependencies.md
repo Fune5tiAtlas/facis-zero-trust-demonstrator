@@ -162,7 +162,7 @@ the in-process backend.
 | `go.uber.org/atomic` | v1.11.0 | MIT | no |
 | `go.uber.org/multierr` | v1.11.0 | MIT | no |
 | `golang.org/x/exp` | v0.0.0-20260410095643-746e56fc9e2f | BSD-3-Clause | yes |
-| `golang.org/x/sync` | v0.23.0 | BSD-3-Clause | yes |
+| `golang.org/x/sync` | v0.24.0 | BSD-3-Clause | yes |
 | `google.golang.org/protobuf` | v1.36.12-0.20260120151049-f2248ac996af | BSD-3-Clause | yes |
 | `gopkg.in/sourcemap.v1` | v1.0.5 | BSD-2-Clause | no |
 
