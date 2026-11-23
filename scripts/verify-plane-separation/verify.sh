@@ -245,6 +245,10 @@ MGMT=$(yaml_get "$CHART/values.yaml" planes management namespace)
 DATA=$(yaml_get "$CHART/values.yaml" planes data namespace)
 SPIRE_NS=spire-system; ISTIO_NS=istio-system
 POLICY=proxy-takes-spire-socket
+# probe_path <row>: the path the legitimate caller requests. A real OpenBao answers / with a redirect to
+# its UI; its health endpoint answers 200 when it is initialised, unsealed and active, so a 200 there
+# shows the lane reaches a working server. Every stand-in answers / with 200.
+probe_path() { case $1 in *-to-openbao) echo /v1/sys/health ;; *) echo / ;; esac; }
 # A run that finds the capture validation of the admission policy missing (an earlier run of this script
 # or of verify-mesh-identity killed while it was lifted) refuses to start, naming the restore: the snapshot
 # would take the lifted policy for the zone's (capture_start_check, scripts/lib/probe.sh).
@@ -706,10 +710,10 @@ for ns in "${DATANS[@]}"; do
     fi
     for p in "${ports[@]}"; do
       before=$(mtls_requests "$ns" "$caller" source "destination_principal=\"$dest_id\"")
-      o=$(http "$ns" "$caller" app "http://$host:$p/")
+      o=$(http "$ns" "$caller" app "http://$host:$p$(probe_path "$r")")
       after=$(mtls_requests "$ns" "$caller" source "destination_principal=\"$dest_id\"")
       if [ "${o%% *}" = 200 ] && [ "$after" -gt "$before" ]; then v=pass; else v=fail; fi
-      probe_line "$v" "$r" "$ns" "legitimate caller" "$caller" "$host" "$p" "200 over mTLS, destination principal $dest_id" "$o" "control channel" "the caller's proxy counted $((after - before)) request(s) to destination_principal $dest_id (istio_requests_total, reporter source)" "${KIND[$r]}"
+      probe_line "$v" "$r" "$ns" "legitimate caller" "$caller" "$host" "$p" "200 on $(probe_path "$r") over mTLS, destination principal $dest_id" "$o" "control channel" "the caller's proxy counted $((after - before)) request(s) to destination_principal $dest_id (istio_requests_total, reporter source)" "${KIND[$r]}"
     done
     if [ -n "$from_sa" ]; then
       imp=$r-impostor

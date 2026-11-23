@@ -305,13 +305,14 @@ func (m *meshProof) noAddressInPolicies(ctx context.Context) ([]string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, "live-policies.yaml")
-	f, err := os.Create(path)
+	// The policies a connector-gateway release owns (Helm's release annotations, the release's chart
+	// from helm list) are checked as that chart's render, where the check declares its two edge hops
+	// in their exact shape; every other live policy is checked strictly.
+	gateways, err := m.gatewayReleases(ctx)
 	if err != nil {
 		return nil, err
 	}
-	w := bufio.NewWriter(f)
-	n := 0
+	var plane, gateway []map[string]any
 	for _, item := range list.Items {
 		meta, _ := item["metadata"].(map[string]any)
 		ns, _ := meta["namespace"].(string)
@@ -320,23 +321,70 @@ func (m *meshProof) noAddressInPolicies(ctx context.Context) ([]string, error) {
 		}
 		delete(meta, "managedFields")
 		delete(item, "status")
-		doc, _ := json.Marshal(item) // JSON is YAML
-		if _, err := fmt.Fprintf(w, "---\n%s\n", doc); err != nil {
-			return nil, errors.Join(err, f.Close())
+		ann, _ := meta["annotations"].(map[string]any)
+		rel, _ := ann["meta.helm.sh/release-name"].(string)
+		relNS, _ := ann["meta.helm.sh/release-namespace"].(string)
+		if gateways[relNS+"/"+rel] {
+			gateway = append(gateway, item)
+		} else {
+			plane = append(plane, item)
 		}
-		n++
 	}
-	if err := errors.Join(w.Flush(), f.Close()); err != nil {
+	results := []string{"address check of the zone file's render: " + lastLines(string(rendered), 1)}
+	for _, set := range []struct {
+		name, mode string
+		items      []map[string]any
+	}{{"live-policies.yaml", "--manifest", plane}, {"live-gateway-policies.yaml", "--edge-manifest", gateway}} {
+		if len(set.items) == 0 {
+			continue
+		}
+		path := filepath.Join(dir, set.name)
+		if err := writeManifest(path, set.items); err != nil {
+			return nil, err
+		}
+		live, err := exec.CommandContext(ctx, "bash", script, set.mode, "live-"+m.target, path).CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("the address check of %s failed: %s", set.name, lastLines(proofMask(string(live)), 10))
+		}
+		results = append(results, fmt.Sprintf("address check of %d live policies (%s, %s): %s", len(set.items), set.name, set.mode,
+			strings.ReplaceAll(proofMask(strings.TrimSpace(string(live))), "\n", "; ")))
+	}
+	return results, nil
+}
+
+// gatewayReleases is the set of namespace/release of the connector-gateway releases on the target.
+func (m *meshProof) gatewayReleases(ctx context.Context) (map[string]bool, error) {
+	out, err := exec.CommandContext(ctx, "helm", "--kube-context", envOr("KUBE_CONTEXT", "kind-ztd"), "list", "-A", "-o", "json").Output()
+	if err != nil {
+		return nil, fmt.Errorf("listing the Helm releases: %w", err)
+	}
+	var rels []struct{ Name, Namespace, Chart string }
+	if err := json.Unmarshal(out, &rels); err != nil {
 		return nil, err
 	}
-	live, err := exec.CommandContext(ctx, "bash", script, "--manifest", "live-"+m.target, path).CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("the address check of the live policies failed: %s", lastLines(proofMask(string(live)), 10))
+	set := map[string]bool{}
+	for _, r := range rels {
+		if strings.HasPrefix(r.Chart, "connector-gateway-") {
+			set[r.Namespace+"/"+r.Name] = true
+		}
 	}
-	return []string{
-		"address check of the zone file's render: " + lastLines(string(rendered), 1),
-		fmt.Sprintf("address check of the %d live policies of the plane namespaces and cluster-wide: %s", n, strings.ReplaceAll(proofMask(strings.TrimSpace(string(live))), "\n", "; ")),
-	}, nil
+	return set, nil
+}
+
+// writeManifest writes items as a multi-document YAML file (JSON documents are YAML).
+func writeManifest(path string, items []map[string]any) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	w := bufio.NewWriter(f)
+	for _, item := range items {
+		doc, _ := json.Marshal(item)
+		if _, err := fmt.Fprintf(w, "---\n%s\n", doc); err != nil {
+			return errors.Join(err, f.Close())
+		}
+	}
+	return errors.Join(w.Flush(), f.Close())
 }
 
 var ipv4 = regexp.MustCompile(`\b[0-9]{1,3}(\.[0-9]{1,3}){3}\b`)
