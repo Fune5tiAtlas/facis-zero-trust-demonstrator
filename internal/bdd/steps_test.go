@@ -220,6 +220,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	registerTrustListProofs(ctx, dryRun)
 	registerUpstreamingProof(ctx, dryRun)
 	registerApplicationMockProofs(ctx, dryRun)
+	registerAttestedGateway(ctx, dryRun)
 	registerPending(ctx)
 }
 
