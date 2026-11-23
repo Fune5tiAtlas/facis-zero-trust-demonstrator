@@ -355,8 +355,12 @@ forwarded_flow() {
 # network_evidence <caller node> <ns/pod> <ips> <port> <since> <what the denial log showed>: the drop Hubble
 # read (to any of the space-separated <ips>, the pods behind a Service), or what the outcome rests on without one
 network_evidence() {
-  local f="" ip
-  for ip in $3; do f=$(drop_flow "$1" "$2" "$ip" "$4" "$5"); [ -n "$f" ] && break; done
+  local f="" ip try
+  # Hubble's flow log of the caller's node can trail the attempt: read it up to five times, 3 s apart.
+  for try in 1 2 3 4 5; do
+    for ip in $3; do f=$(drop_flow "$1" "$2" "$ip" "$4" "$5"); [ -n "$f" ] && break; done
+    [ -n "$f" ] && break; [ "$try" = 5 ] || sleep 3
+  done
   if [ -n "$f" ]; then echo "Hubble drop: $f; $6"
   elif hubble_ok "$1"; then echo "no Hubble drop line read for the flow: the outcome rests on its class, and $6"
   else echo "Hubble not available on the node's Cilium agent: the outcome rests on its class, and $6"; fi
@@ -373,10 +377,15 @@ probe_start() { local pods; read -ra pods <<<"$2"; denials_start "$1" "${pods[@]
 # takes to flush its log), the first denial line one of the destination pods' proxies wrote since
 # probe_start, of <source> when one is given (a proxy-less probe has no identity, so then any new line counts)
 probe_denial() {
-  local pods; read -ra pods <<<"$2"
-  sleep 3
-  if [ -n "$3" ]; then denials_new "$1" "${pods[@]}" | jq -c --arg s "$3" 'select(.source == $s)' | head -1
-  else denials_new "$1" "${pods[@]}" | head -1; fi
+  local pods line try; read -ra pods <<<"$2"
+  # Envoy flushes its access log every few seconds: read up to five times, 3 s apart.
+  for try in 1 2 3 4 5; do
+    sleep 3
+    if [ -n "$3" ]; then line=$(denials_new "$1" "${pods[@]}" | jq -c --arg s "$3" 'select(.source == $s)' | head -1)
+    else line=$(denials_new "$1" "${pods[@]}" | head -1); fi
+    [ -n "$line" ] && break
+  done
+  echo "$line"
 }
 # other_node <node>: an agent node other than <node> (the first in name order), or <node> when none
 other_node() { local n; n=$(grep -vxF -- "$1" <<<"$AGENT_NODES" | head -1); echo "${n:-$1}"; }
@@ -718,9 +727,14 @@ for ns in "${DATANS[@]}"; do
     if [ -n "$from_sa" ]; then
       imp=$r-impostor
       denials_start "$to_ns" "${dpod_list[@]}"
-      o=$(http "$ns" "$imp" app "http://$host:${ports[0]}/"); sleep 3
-      denials_new "$to_ns" "${dpod_list[@]}" >"$work/den-new"
-      line=$(jq -c --arg s "$(spiffe "$ns" "$imp")" --arg d "$dest_id" 'select(.source == $s and .destination == $d and (((.detail // "") + " " + (.termination // "")) | test("(^| )rbac_access_denied")))' "$work/den-new" | head -1)
+      o=$(http "$ns" "$imp" app "http://$host:${ports[0]}/")
+      line=""
+      for _ in 1 2 3 4 5; do
+        sleep 3
+        denials_new "$to_ns" "${dpod_list[@]}" >"$work/den-new"
+        line=$(jq -c --arg s "$(spiffe "$ns" "$imp")" --arg d "$dest_id" 'select(.source == $s and .destination == $d and (((.detail // "") + " " + (.termination // "")) | test("(^| )rbac_access_denied")))' "$work/den-new" | head -1)
+        [ -n "$line" ] && break
+      done
       if [ "$o" = "403 RBAC: access denied" ] && [ -n "$line" ]; then v=pass; else v=fail; fi
       probe_line "$v" "$r" "$ns" "impostor (row labels, service account $imp)" "$imp" "$host" "${ports[0]}" "403 RBAC and a denial line with both SPIFFE IDs" "$o" "mesh" "${line:-no denial line naming the impostor}" "${KIND[$r]}"
       un=$r-unlabelled; unode=$(node_of "$ns" "$un"); usrc=$(spiffe "$ns" "$from_sa")
@@ -776,8 +790,12 @@ mesh_probe() {
   denials_start "$dns" "${pods[@]}"
   o=""
   for _ in 1 2 3 4 5; do o=$(http "$ns" "$prober" app "http://$dsvc.$dns.svc:$sport/"); not_through "$o" || break; sleep 3; done
-  sleep 3
-  line=$(denials_new "$dns" "${pods[@]}" | jq -c --arg s "$(spiffe "$ns" mesh-prober)" --arg d "$(spiffe "$dns" "$dsa")" 'select(.source == $s and .destination == $d and (((.detail // "") + " " + (.termination // "")) | test("(^| )rbac_access_denied")))' | head -1)
+  line=""
+  for _ in 1 2 3 4 5; do
+    sleep 3
+    line=$(denials_new "$dns" "${pods[@]}" | jq -c --arg s "$(spiffe "$ns" mesh-prober)" --arg d "$(spiffe "$dns" "$dsa")" 'select(.source == $s and .destination == $d and (((.detail // "") + " " + (.termination // "")) | test("(^| )rbac_access_denied")))' | head -1)
+    [ -n "$line" ] && break
+  done
   remove_opening
   served=0; [[ ${o%% *} =~ ^[0-9]+$ ]] && [ "$o" != "403 RBAC: access denied" ] && served=1
   if [ "$served" = 0 ] && [ -n "$line" ] && [ -z "$gone" ]; then v=pass; else v=fail; fi
