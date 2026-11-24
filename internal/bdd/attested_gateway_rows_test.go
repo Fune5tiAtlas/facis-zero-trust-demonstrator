@@ -28,7 +28,7 @@ type attestedGatewayProof struct {
 
 func (p *attestedGatewayProof) established() error {
 	if p.dry {
-		return godog.ErrPending
+		return godog.ErrSkip
 	}
 	root := repoPath("bundles/bdd/evidence/bdd-zt-019/local")
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -79,7 +79,7 @@ func (p *attestedGatewayProof) established() error {
 }
 func (p *attestedGatewayProof) forwarded() error {
 	if p.dry {
-		return godog.ErrPending
+		return godog.ErrSkip
 	}
 	if p.done == nil {
 		return fmt.Errorf("no running gateway proof")
@@ -96,7 +96,7 @@ func (p *attestedGatewayProof) forwarded() error {
 }
 func (p *attestedGatewayProof) preserved() error {
 	if p.dry {
-		return godog.ErrPending
+		return godog.ErrSkip
 	}
 	data, err := os.ReadFile(filepath.Join(p.dir, "attested-gateway/record.json"))
 	if err != nil {
