@@ -375,8 +375,13 @@ jobs:
           helm dependency build deployment/helm/ztd
           scripts/ci/verify-chart-dependencies.sh deployment/helm/ztd
 
+      # The installer rolls a failed release back, so the cluster's events are kept beside the record:
+      # without them a release that never became ready leaves nothing to read.
       - name: Install the kind zone without its telemetry releases
-        run: scripts/install-zone/install.sh install ztd spire-crds spire istio-base istiod istio-cni zone-policy ztd-openbao
+        run: |
+          mkdir -p "$RUNNER_TEMP/verify-observability"
+          kubectl get events -A --watch-only -o wide >"$RUNNER_TEMP/verify-observability/install-events.log" 2>&1 &
+          scripts/install-zone/install.sh install ztd spire-crds spire istio-base istiod istio-cni zone-policy ztd-openbao
 
       - name: Install the demonstrator role and copy the zone's client certificate
         env:
