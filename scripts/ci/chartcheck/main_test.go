@@ -57,7 +57,7 @@ func TestDenialLogFilter(t *testing.T) {
 	}
 	if _, err := exec.LookPath("helm"); err == nil {
 		root, _ := filepath.Abs("../../..")
-		mesh, err := render(filepath.Join(root, "deployment/helm/zone-policy"), false)
+		mesh, err := render(filepath.Join(root, "deployment/helm/zone-policy"), "")
 		if err != nil {
 			t.Fatal(err)
 		}

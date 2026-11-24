@@ -184,7 +184,8 @@ provisioned credentials, which this command produces.
 The chart `deployment/helm/connector` (its README documents the values) runs the connector as a
 Deployment with its own ServiceAccount, a Service on the API port and probes on the ops port, in
 the management plane beside the token store, whose chart applies the schema first and whose
-database Secret the connector reads. The chart never carries a credential: the database URL comes
+database Secret the connector reads; a connector with a database of its own applies the schema
+itself, by the chart's migration hook (`schema.enabled`, the chart's README). The chart never carries a credential: the database URL comes
 from a Secret of the release namespace, and the key-value store token and the connector's three
 secrets (the two HMAC secrets and the registrar's client secret) are the four keys of one
 credentials Secret, mounted as files. The zone (`zone`, `a` or `b`) names the source of the
@@ -269,9 +270,11 @@ client certificate today.
   expected state, code and rule; and the client secret, the registration access token and the
   registrar's token appear in no record and no row. `connector register` against the binary writes
   a file whose credentials obtain a token, and exits 1 on a refusal.
-- **On kind**, `scripts/verify-connector/verify.sh`, which the `Connector` workflow runs: both
-  charts installed against PostgreSQL and OpenBao from the pinned images, the connector ready on
-  all four checks, a client registered by a pod running `connector register` out of the connector's
+- **On kind**, `scripts/verify-connector/verify.sh`, which the `Connector` workflow runs: the
+  chart installed against PostgreSQL and OpenBao from the pinned images, its hook applying the
+  schema to the empty database, the connector ready on all four checks, not ready
+  (`schema_behind`) once the newest migration is reverted and ready again after an upgrade whose
+  hook applies it, a client registered by a pod running `connector register` out of the connector's
   image, a registration the policy refuses with its specific error, exactly the two audit rows and
   the two events for them, the identity (ServiceAccount, label, no restart), a clean drain, and an
-  uninstall that leaves the schema empty. Its records are the run's artefact.
+  uninstall that leaves the schema in place. Its records are the run's artefact.
