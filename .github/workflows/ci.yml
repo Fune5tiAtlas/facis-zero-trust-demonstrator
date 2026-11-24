@@ -381,6 +381,17 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/verify-observability"
           kubectl get events -A --watch-only -o wide >"$RUNNER_TEMP/verify-observability/install-events.log" 2>&1 &
+          # The Istio CNI agent crashes when the host's inotify instances, shared by the three kind
+          # nodes, run out (docs/troubleshooting.md); the limit is recorded, raised, and the agent's
+          # last log kept in case it still fails.
+          sysctl fs.inotify.max_user_instances fs.inotify.max_user_watches | tee "$RUNNER_TEMP/verify-observability/inotify-before.txt"
+          sudo sysctl -w fs.inotify.max_user_instances=8192 fs.inotify.max_user_watches=1048576
+          ( while sleep 10; do
+              kubectl -n istio-system logs -l k8s-app=istio-cni-node --all-containers --prefix --tail=30 --previous \
+                >"$RUNNER_TEMP/verify-observability/istio-cni-previous.log.new" 2>/dev/null \
+                && [ -s "$RUNNER_TEMP/verify-observability/istio-cni-previous.log.new" ] \
+                && mv "$RUNNER_TEMP/verify-observability/istio-cni-previous.log.new" "$RUNNER_TEMP/verify-observability/istio-cni-previous.log"
+            done ) &
           scripts/install-zone/install.sh install ztd spire-crds spire istio-base istiod istio-cni zone-policy ztd-openbao
 
       - name: Install the demonstrator role and copy the zone's client certificate
