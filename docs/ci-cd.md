@@ -555,7 +555,9 @@ upstream component that this project cannot fix in its own layer, a `scan-except
 the image's Dockerfile may exclude named paths from the gate. It must carry an expiry date, the
 reason and the tracking of the upstream fix; the job prints it into the run summary and fails the
 build once it has expired. The ORCE image carries one for the upstream ORCE runtime and kubectl, expiring 18 December 2026;
-the Helm it builds from source is back under the gate.
+the Helm it builds from source is back under the gate. The TSPA image carries one for the
+dependencies of the upstream TRAIN trust-framework manager inside its WAR, expiring the same day; the
+Tomcat it runs on and its operating system packages stay under the gate.
 
 ## Repository protection and least privilege
 
