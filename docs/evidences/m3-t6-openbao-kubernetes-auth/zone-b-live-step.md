@@ -4,11 +4,11 @@ Date: 21 to 22 November 2026, approved by the project lead ("Approve (Recommende
 reviewed recovery procedure with a "configure Kubernetes auth" action, add the auth-delegator
 binding, then switch both deployments with rollback to token mode).
 
-**Outcome.** The server side is done and verified. The switch of the two deployments **did not
-happen**: it needs images built from this branch and signed with the interim Cosign key, which only
-the release workflow holds, and running that workflow needs a push, which this task may not do. Both
-deployments still run token mode on the scoped tokens (hard ceiling about 28 November, 17:26 UTC),
-and the guarded path works.
+**Outcome.** The server side was done and verified on 21 November. The switch of the two
+deployments waited for images built from this branch and signed with the interim Cosign key, and was
+done on 23 November ([Workload switch](#workload-switch-23-november-2026)): both now log in with
+their projected ServiceAccount tokens, the scoped tokens (ceiling about 28 November, 17:26 UTC) are
+no longer used, and the guarded path works.
 
 ## Steps
 
