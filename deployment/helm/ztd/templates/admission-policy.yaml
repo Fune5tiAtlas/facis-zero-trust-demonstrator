@@ -34,7 +34,9 @@ Helm leaves the objects in place instead of deleting them. */}}
 {{- end }}
 {{- if $policy.constraints }}
 {{- $trust := .Values.admissionProvider.trust }}
+{{- /* kustomization.yaml is the reconciler's index of that directory (deployment/argocd), not a cluster object. */}}
 {{- range $path, $_ := .Files.Glob "files/admission/constraints/*.yaml" }}
+{{- if not (hasSuffix "/kustomization.yaml" $path) }}
 {{- $c := $.Files.Get $path | fromYaml }}
 {{- if hasSuffix "/allowed-repositories.yaml" $path }}
 {{- $_ := set $c.spec.parameters "repositories" $trust.repositories }}
@@ -47,6 +49,7 @@ allow-list (no allowedDigests in its schema) then takes the constraint it alread
 {{- end }}
 {{- end }}
 {{- $docs = append $docs $c }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- range $docs }}
