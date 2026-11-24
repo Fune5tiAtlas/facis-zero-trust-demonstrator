@@ -310,9 +310,11 @@ for cl in c["static_resources"]["clusters"]:
                v=$(jq -r 'def t(x): (x // "") ; [t(.validFrom // .issuanceDate), t(.validUntil // .expirationDate)] | @tsv' "$WORK/vc" 2>/dev/null)
                from=${v%%$'\t'*}; until=${v##*$'\t'}
                # Compared as instants: TSPA writes its local offset (+01:00), which no string comparison with a UTC "now" survives.
-               jq -e 'def instant: capture("^(?<t>[0-9-]+T[0-9:]+)([.][0-9]+)?(?<z>Z|[+-][0-9]{2}:[0-9]{2})$")
-                        | ((.t + "Z") | fromdateiso8601) - (if .z == "Z" then 0 else (if .z[0:1] == "-" then -1 else 1 end) * ((.z[1:3] | tonumber) * 3600 + (.z[4:6] | tonumber) * 60) end);
-                      ((.validFrom // .issuanceDate) | instant) < now and now < ((.validUntil // .expirationDate) | instant)' "$WORK/vc" >/dev/null 2>&1; valid=$?
+               # ponytail: a window check, not a date validator (the signature and the grammar are the verification service's).
+               jq -e 'def instant: capture("^(?<t>[0-9-]+T[0-9:]+)(?<f>[.][0-9]+)?(?<z>Z|[+-][0-9]{2}:[0-9]{2})$")
+                        | ((.t + "Z") | fromdateiso8601) + (("0" + (.f // ".0")) | tonumber)
+                          - (if .z == "Z" then 0 else (if .z[0:1] == "-" then -1 else 1 end) * ((.z[1:3] | tonumber) * 3600 + (.z[4:6] | tonumber) * 60) end);
+                      ((.validFrom // .issuanceDate) | instant) <= now and now < ((.validUntil // .expirationDate) | instant)' "$WORK/vc" >/dev/null 2>&1; valid=$?
                [[ $ct == "200 "* && $valid == 0 ]]
                check $? "declared entry $e: GET the VC of $fw's trust list answers 200 with a credential valid now" "answered $ct; valid from ${from:-none} until ${until:-none}";;
         *)     check 1 "declared entry $e: unknown probe kind $kind";;
