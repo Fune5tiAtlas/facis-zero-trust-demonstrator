@@ -120,12 +120,16 @@ jobs:
       # Run twice, once per access-token form the connector issues.
       # A skipped test means a missing dependency, so it fails the job. The OpenBao Kubernetes-auth
       # test needs a cluster's service-account tokens and runs in its own kind proof
-      # (scripts/verify-openbao-kubernetes-auth), so it is left out here.
+      # (scripts/verify-openbao-kubernetes-auth), so it is left out here. Left out for the same reason:
+      # the in-process CMC tests, which skip themselves under the race detector (the library races on
+      # its process-global drivers; the handshake is covered over gRPC), the live API dock, which needs
+      # a provider token, and the guarded gRPC call through Envoy, which policy-hook.yml runs.
       - name: Run the token path with opaque and with signed access tokens
         run: |
           set -o pipefail
           for tokens in opaque jwt; do
-            CONNECTOR_TEST_TOKENS=$tokens go test -count=1 -race -timeout 20m -v -skip '^TestOpenBaoKubernetesAuth$' \
+            CONNECTOR_TEST_TOKENS=$tokens go test -count=1 -race -timeout 20m -v \
+              -skip '^(TestOpenBaoKubernetesAuth|TestAPIDockLive|TestGuardedGRPCThroughEnvoy|TestMutualHandshakeInProcess|TestCMCFinding1ServerDeadlineNotReset|TestCMCFinding2ClientAttestationPhaseUnbounded|TestCMCFinding4CallbackOnFailureBeforeReturn|TestCMCFinding4WarnIsSuccess|TestCMCFindingN1GoroutineLeakOnPeerError|TestCMCValidityFields)$' \
               ./services/token-store/... ./services/connector/... ./internal/... \
               ./services/participant/... ./services/protectedresource/... ./services/verification-service/... \
               ./cmd/participant/... ./cmd/protected-resource/... ./cmd/sdjwt-fixture/... \
