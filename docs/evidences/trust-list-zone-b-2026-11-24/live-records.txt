@@ -11,6 +11,11 @@ sha256:cbe575d40cf1cb35c2217211c1d750b0aafb2c9023bdd3751d7504dfbc6d4da5, pulled 
   200 with the same bytes again
 cosign v3.1.4, anonymous, key docs/contracts/keys/interim-cosign.pub, transparency log not consulted: the signature of
   this digest verifies, and so do its two attestations (https://cyclonedx.org/bom, https://facis.eu/ztd/mock-attestation/v1)
+18:54:20-18:55:25Z: helm upgrade of the release tspa to revision 5, deployed: the image rebuilt on Tomcat 10.1.62
+  (candidate-2c34b1e72933@sha256:5da1146629043a47051a7746d030a3d9e8462f918726475065d0ba4a75c62601, built and signed by
+  release.yml from candidate/m3-closeout at 2c34b1e7), nothing else in the values changed; its signature and both
+  attestations verify with the same key; scanned with the gate's settings and the WAR excluded, no HIGH or CRITICAL
+  finding; the pod logs Apache Tomcat/10.1.62; one restart; list and VC 200 with the same bytes, did.json 200
 trustlist.vc: issuer did:web:tspa.facis.cloud, signer key trust-list-1, validity P30D; tspa.signing-key-file /var/run/tspa/signing-key.jwk; request.get.mapping http://localhost:16003/tspa-service/tspa/v1/
 
 ## TSPA store before the publication (find /tmp/train-tspa -type f, 09:56Z)
