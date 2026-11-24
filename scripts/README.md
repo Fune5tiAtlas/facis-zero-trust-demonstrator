@@ -166,14 +166,15 @@ openssl. The `Token store` workflow runs it as its own job.
 
 `verify.sh` proves the connector chart and its registration path on a throwaway kind cluster: both
 images built from the working tree, PostgreSQL and OpenBao from the pinned images with the
-connector's Secrets and transit key prepared; the token-store chart applying the schema and the
-connector chart installed and ready on all four checks; a client registered by a pod running
+connector's Secrets and transit key prepared; the connector chart installed, its hook applying the
+schema with the token-store image, and ready on all four checks; not ready (`schema_behind`) once
+the newest migration is reverted, and ready again after an upgrade whose hook applies it; a client registered by a pod running
 `connector register` out of the connector's image, with credentials of the right shape and the
 secret in no record; a registration the policy refuses, exit 1 with its specific error; exactly the
 two `registration.*` rows in `audit_event` and the two IF-01 events on the connector's stdout,
 correlated with the two requests; no secret, token or header in any record; the pod as its own
 ServiceAccount with the identity label and no restart; a clean drain; and an uninstall that leaves
-the schema empty. Records and the verdict go to `--out` (default the git-ignored
+the schema in place. Records and the verdict go to `--out` (default the git-ignored
 `.dev/connector-evidence/`). Needs docker, helm, kind, kubectl, curl and jq, and the pinned Istio CRDs
 for the chart's PeerAuthentication (`BIN=`'s `istio-crds/`, or fetched); `BIN=` as above. The
 `Connector` workflow runs it on every change to the connector, its image, either chart, the proof

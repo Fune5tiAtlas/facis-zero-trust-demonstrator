@@ -44,6 +44,49 @@
       ],
       "additionalProperties": false
     },
+    "schema": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^(sha256:[a-f0-9]{64})?$"
+            }
+          },
+          "required": [
+            "repository",
+            "digest"
+          ],
+          "additionalProperties": false
+        },
+        "serviceAccountName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "egress": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "image",
+        "serviceAccountName",
+        "egress"
+      ],
+      "additionalProperties": false
+    },
     "credentials": {
       "type": "object",
       "properties": {
@@ -369,6 +412,7 @@
     "zone",
     "image",
     "database",
+    "schema",
     "credentials",
     "openbao",
     "oauth",

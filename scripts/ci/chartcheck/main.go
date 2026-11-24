@@ -35,10 +35,12 @@ func need(ok bool, message string) error {
 	}
 	return nil
 }
-func render(chart string, runtime bool) ([]object, error) {
+
+// render renders the chart with ci/values.yaml and, when variant is set, ci/<variant>-values.yaml.
+func render(chart, variant string) ([]object, error) {
 	args := []string{"template", "check", chart, "-n", "chart-check", "-f", filepath.Join(chart, "ci/values.yaml")}
-	if runtime {
-		args = append(args, "-f", filepath.Join(chart, "ci/runtime-values.yaml"))
+	if variant != "" {
+		args = append(args, "-f", filepath.Join(chart, "ci/"+variant+"-values.yaml"))
 	}
 	out, err := exec.Command("helm", args...).Output()
 	if err != nil {
@@ -86,7 +88,8 @@ func check(root, chart string) error {
 			return nil
 		}
 	}
-	docs, err := render(chart, runtime)
+	variant := map[string]string{"token-store": "runtime", "connector": "schema"}[name]
+	docs, err := render(chart, variant)
 	if err != nil {
 		return err
 	}
@@ -119,7 +122,14 @@ func check(root, chart string) error {
 		return err
 	}
 	if !runtime {
-		return nil
+		// The connector's selector has no component label, so its migration Job's pods must differ in
+		// one of the selector's own labels or the Service and the policies take them for the service.
+		labels := at(find(docs, "Job", "ztd-connector-migrate"), "spec", "template", "metadata", "labels")
+		apart := false
+		for key, value := range selector.(map[string]any) {
+			apart = apart || at(labels, key) != value
+		}
+		return need(labels != nil && apart, "the connector's selector must not select the schema Job's pods")
 	}
 	refused, renderErr := exec.Command("helm", "template", "check", chart, "-f", filepath.Join(chart, "ci/values.yaml"), "-f", filepath.Join(chart, "ci/runtime-values.yaml"), "--set-json", "networkPolicy.schemaEgress=[]").CombinedOutput()
 	if renderErr == nil || !strings.Contains(string(refused), "networkPolicy.schemaEgress must include the database lane") {
@@ -183,7 +193,7 @@ func check(root, chart string) error {
 			}
 		}
 	}
-	mesh, err := render(filepath.Join(root, "deployment/helm/zone-policy"), false)
+	mesh, err := render(filepath.Join(root, "deployment/helm/zone-policy"), "")
 	if err != nil {
 		return err
 	}
@@ -282,7 +292,7 @@ func checkGuarded(root string) error {
 	if at(gv, "config", "inbound_audience") != inbound || at(gv, "config", "upstream_audience") != upstream {
 		return errors.New("guard audiences must match Participant and Resource examples")
 	}
-	_, err = render(guard, false)
+	_, err = render(guard, "")
 	return err
 }
 

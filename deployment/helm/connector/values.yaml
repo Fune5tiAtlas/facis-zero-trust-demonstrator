@@ -7,6 +7,20 @@ zone: ""
 database:
   existingSecret: ""
   secretKey: url
+# The issuer schema, applied by the chart: a pre-install/pre-upgrade hook Job runs `token-store
+# migrate up` against the database above before the connector is created or updated. The migrations
+# are embedded in the token-store image only, so image is that image, by digest, of a build whose
+# migrations reach the version this connector expects. Off by default: where the connector shares
+# the token store's database, the token-store chart applies the schema. The Job runs as its own
+# ServiceAccount (created as a hook with serviceAccount.create) under its own NetworkPolicy: DNS and
+# `egress`, which must carry the database lane (and istiod's, where the namespace is meshed).
+schema:
+  enabled: false
+  image:
+    repository: ghcr.io/eclipse-xfsc/facis-zero-trust-demonstrator/token-store
+    digest: ""
+  serviceAccountName: ztd-connector-schema
+  egress: []
 credentials:
   existingSecret: ""
   keys:
