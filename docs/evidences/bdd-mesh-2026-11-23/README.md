@@ -334,6 +334,13 @@ the one read before the run (the generation rose by 2 on each zone, 19 to 21 on 
 B: the lift and the restore). No object labelled `app.kubernetes.io/part-of=verify-plane-separation` or
 `verify-connector-routing` remains, and the release revisions are unchanged.
 
+## ZT-26 on zone B after the trust list's publication (24 Nov 2026)
+
+The trust list of `trust.facis.cloud` was published on 24 Nov, with a weekly renewal job deployed; ZT-26 was run again on
+zone B alone and **passed** (run `trustlist-b-20261124-r5`, routing run `20261124T103249Z-21005`: 34 PASS, 0
+failed). The record, with what was changed on the zone and its limits, is
+[trust-list-zone-b-2026-11-24](../trust-list-zone-b-2026-11-24/README.md).
+
 ## Rows left pending
 
 - **ZT-01 Secure Service Mesh**: needs "a workload outside the mesh attempts the same call" as an in-mesh pair.

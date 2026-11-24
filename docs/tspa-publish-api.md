@@ -354,8 +354,9 @@ document must list that key's public half under `assertionMethod`.
 **Renewal.** A publication (`PUT` or `PATCH` of an entry, `PUT /init/...`) signs a new VC with a new
 window, and nothing else does. With `P30D` the list must be re-published at least every 30 days, or
 verifiers refuse it. The cadence to deploy with the image is weekly, a CronJob that `PATCH`es the
-framework's entry unchanged, so a missed run leaves three weeks of margin; it is not deployed yet
-(zone B still runs the upstream image).
+framework's entry unchanged, so a missed run leaves three weeks of margin: the chart
+`deployment/helm/tspa-republish`, deployed on zone B (`ztd-train`) since 24 Nov 2026 with our image
+([record](evidences/trust-list-zone-b-2026-11-24/README.md)).
 
 `scripts/verify-tspa-vc/run.sh` runs the image on Docker with a fresh key and Keycloak's test realm,
 creates and publishes a list, checks the window and its renewal, checks that the private key reaches
