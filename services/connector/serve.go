@@ -26,18 +26,18 @@ const minSecret = 32
 // config is the service's configuration surface. Secrets are not in it: only the paths of the
 // files that hold them.
 type config struct {
-	addr, opsAddr          string
-	databaseURL            string // a credential; never logged
-	openBaoURL             string
-	openBaoTokenFile       string
+	addr, opsAddr    string
+	databaseURL      string // a credential; never logged
+	openBaoURL       string
+	openBaoTokenFile string
 	// Kubernetes auth instead of the token file: set by the role (exclusive with the file).
 	openBaoAuthRole, openBaoAuthMount, openBaoJWTFile string
-	issuer                 string
-	signingKey             string
-	signingKeyVersion      int
-	registrationEndpoint   string
-	tokenSecretFile        string
-	registrationSecretFile string
+	issuer                                            string
+	signingKey                                        string
+	signingKeyVersion                                 int
+	registrationEndpoint                              string
+	tokenSecretFile                                   string
+	registrationSecretFile                            string
 	// The registrar (D12): the client allowed to register others, seeded at start.
 	registrarID            string
 	registrarSecretFile    string
