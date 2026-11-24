@@ -31,7 +31,7 @@ RUN set -e; \
     mvn -q -B clean package -DskipTests; \
     if jar tf target/tspa-service.war | grep -q 'Vault/PrivateKey/.'; then echo 'the WAR carries the published key' >&2; exit 1; fi
 
-FROM tomcat:10.1.16-jdk21-temurin-jammy@sha256:394d69a9ab4aaff2a7e073d90a0def17e46eb8515cfc368cfb50236025db66d1
+FROM tomcat:10.1.62-jdk21-temurin-jammy@sha256:47f597973609529f5ee73dcb91655aeeec4881bbc1f21937f0dde154c2429801
 RUN sed -i 's/port="8080"/port="16003"/' "${CATALINA_HOME}/conf/server.xml"
 COPY --from=builder /build/target/tspa-service.war /usr/local/tomcat/webapps/tspa-service.war
 CMD ["catalina.sh", "run"]
