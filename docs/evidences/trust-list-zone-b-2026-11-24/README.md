@@ -4,7 +4,8 @@ Zone B (`zerotrust-b`, kube-system UID `a39ae8ea-ac02-4aec-9c13-cda127b17e2d`), 
 09:55 and 10:38 UTC, authorised by the project lead. Until this run the row ZT-26 failed on zone B only
 because the trust list of `trust.facis.cloud` and its VC answered 404 through the public entry `tspa-public`
 ([mesh rows, 23 Nov](../bdd-mesh-2026-11-23/README.md)). TSPA there is our image
-(`ghcr.io/lfortes-dev/facis-zero-trust-demonstrator/tspa@sha256:cbe575d4…`, issuer `did:web:tspa.facis.cloud`, key
+(digest `sha256:cbe575d4…`, at `ghcr.io/fune5tiatlas/facis-zero-trust-demonstrator/tspa` since 15:56Z; during the run the
+same digest came from a temporary public copy while that package was private; issuer `did:web:tspa.facis.cloud`, key
 `trust-list-1`, `trustlist.vc.validity` `P30D`; [Publishing to TRAIN](../../tspa-publish-api.md), section 11),
 with an empty store. What is not in a record beside this file was read by the operator on the cluster;
 `live-records.txt` keeps those readings, without secrets, tokens or addresses.
