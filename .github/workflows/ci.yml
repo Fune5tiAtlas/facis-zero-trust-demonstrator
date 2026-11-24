@@ -512,7 +512,7 @@ jobs:
           for field in statusPort proxyImage; do
             copy="$RUNNER_TEMP/coupling-$field"
             mkdir -p "$copy/scripts" "$copy/deployment/helm"
-            cp -r scripts/install-zone "$copy/scripts/"
+            cp -r scripts/install-zone scripts/tools scripts/admission "$copy/scripts/"
             cp -r deployment/helm/values deployment/helm/zone-policy deployment/helm/ztd "$copy/deployment/helm/"
             case $field in
               statusPort) sed -i 's/^  statusPort: 15020$/  statusPort: 15021/' "$copy/deployment/helm/zone-policy/values.yaml" ;;
